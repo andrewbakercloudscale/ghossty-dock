@@ -1,5 +1,22 @@
+diff --git a/macos/Sources/.omc/state/sessions/658a6aff-5a3e-4642-96fd-48580b1307f8/pre-tool-advisory-throttle.json b/macos/Sources/.omc/state/sessions/658a6aff-5a3e-4642-96fd-48580b1307f8/pre-tool-advisory-throttle.json
+new file mode 100644
+index 0000000..0aa0f24
+--- /dev/null
++++ b/macos/Sources/.omc/state/sessions/658a6aff-5a3e-4642-96fd-48580b1307f8/pre-tool-advisory-throttle.json
+@@ -0,0 +1,10 @@
++{
++  "version": 1,
++  "entries": {
++    "79a93d4a2f8f50b95f852280616242fee1855dc99a3c75211917f55e72e95fae": {
++      "last_emitted_at_ms": 1792529466872,
++      "message": "Use parallel execution for independent tasks. Use run_in_background for long operations (npm install, builds, tests)."
++    }
++  },
++  "updated_at": "2026-10-20T20:51:06.872Z"
++}
+\ No newline at end of file
 diff --git a/macos/Sources/App/macOS/AppDelegate.swift b/macos/Sources/App/macOS/AppDelegate.swift
-index b02337e..7f8bbbb 100644
+index b02337e..b50dc95 100644
 --- a/macos/Sources/App/macOS/AppDelegate.swift
 +++ b/macos/Sources/App/macOS/AppDelegate.swift
 @@ -210,6 +210,11 @@ class AppDelegate: NSObject,
@@ -14,7 +31,17 @@ index b02337e..7f8bbbb 100644
          // Check if secure input was enabled when we last quit.
          if UserDefaults.ghostty.bool(forKey: "SecureInput") != SecureInput.shared.enabled {
              toggleSecureInput(self)
-@@ -796,13 +801,9 @@ class AppDelegate: NSObject,
+@@ -574,6 +579,9 @@ class AppDelegate: NSObject,
+     }
+ 
+     private func localEventKeyDown(_ event: NSEvent) -> NSEvent? {
++        // Ghostty Dock: its shortcuts follow the sidebar, ahead of Ghostty's.
++        if DockShortcuts.handle(event) { return nil }
++
+         // If the tab overview is visible and escape is pressed, close it.
+         // This can't POSSIBLY be right and is probably a FirstResponder problem
+         // that we should handle elsewhere in our program. But this works and it
+@@ -796,13 +804,9 @@ class AppDelegate: NSObject,
          DispatchQueue.main.async { self.syncAppearance(config: config) }
  
          // Decide whether to hide/unhide app from dock and app switcher
@@ -31,7 +58,7 @@ index b02337e..7f8bbbb 100644
  
          // If we have configuration errors, we need to show them.
          let c = ConfigurationErrorsController.sharedInstance
-@@ -941,7 +942,7 @@ class AppDelegate: NSObject,
+@@ -941,7 +945,7 @@ class AppDelegate: NSObject,
      // MARK: - IB Actions
  
      @IBAction func openConfig(_ sender: Any?) {
@@ -40,7 +67,7 @@ index b02337e..7f8bbbb 100644
      }
  
      @IBAction func reloadConfig(_ sender: Any?) {
-@@ -949,7 +950,10 @@ class AppDelegate: NSObject,
+@@ -949,7 +953,10 @@ class AppDelegate: NSObject,
      }
  
      @IBAction func checkForUpdates(_ sender: Any?) {
@@ -52,7 +79,7 @@ index b02337e..7f8bbbb 100644
          // UpdateSimulator.happyPath.simulate(with: updateViewModel)
      }
  
-@@ -970,7 +974,7 @@ class AppDelegate: NSObject,
+@@ -970,7 +977,7 @@ class AppDelegate: NSObject,
      }
  
      @IBAction func showAbout(_ sender: Any?) {
@@ -61,7 +88,7 @@ index b02337e..7f8bbbb 100644
      }
  
      @IBAction func showHelp(_ sender: Any) {
-@@ -1104,6 +1108,7 @@ extension AppDelegate {
+@@ -1104,6 +1111,7 @@ extension AppDelegate {
          // Note: This COULD Be done all in the xib file, but I find it easier to
          // modify this stuff as code.
          self.menuAbout?.setImageIfDesired(systemSymbolName: "info.circle")
@@ -883,10 +910,10 @@ index 0000000..fa00ead
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..ff1ea86
+index 0000000..5da0f2a
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,148 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -969,6 +996,13 @@ index 0000000..ff1ea86
 +                    .font(.callout)
 +                Toggle("Dock icon shows how many sessions need you", isOn: $dockBadge)
 +            }
++            Section("Keyboard shortcuts") {
++                ForEach(DockShortcuts.summary, id: \.0) { title, keys in
++                    LabeledContent(title) { Text(keys).monospaced() }
++                }
++                Text("⌘1–9 and the next/previous keys follow the sidebar's order while it is showing.")
++                    .font(.callout)
++            }
 +            Section("App") {
 +                Toggle("Reopen Claude sessions when Ghostty Dock starts", isOn: $restoreSessions)
 +                Text("After a quit or crash, every session that was open comes back as a tab with claude --resume.")
@@ -1026,6 +1060,103 @@ index 0000000..ff1ea86
 +        }
 +        NSApp.activate(ignoringOtherApps: true)
 +        window?.makeKeyAndOrderFront(nil)
++    }
++}
+diff --git a/macos/Sources/Features/Dock/DockShortcuts.swift b/macos/Sources/Features/Dock/DockShortcuts.swift
+new file mode 100644
+index 0000000..690d975
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockShortcuts.swift
+@@ -0,0 +1,91 @@
++import AppKit
++import Carbon
++
++/// Ghostty Dock's keyboard shortcuts. They follow the sidebar, so ⌘1 is the
++/// first row you see, not the first tab Ghostty opened. AppDelegate offers
++/// every key-down here before Ghostty's own bindings get it.
++enum DockShortcuts {
++    struct Shortcut {
++        var keys: String
++        var title: String
++        var keyCode: Int
++        var modifiers: NSEvent.ModifierFlags
++        /// Only while the sidebar is showing: with it hidden, Ghostty's own
++        /// tab order (and its ⌘1–9) is what you see.
++        var needsSidebar = false
++        var action: () -> Void
++    }
++
++    private static var model: DockSessions { DockSessions.shared }
++
++    static let all: [Shortcut] = {
++        var list: [Shortcut] = []
++        let digits = [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5, kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8]
++        for (i, code) in digits.enumerated() {
++            list.append(Shortcut(keys: "⌘\(i + 1)", title: "Go to Session \(i + 1)", keyCode: code,
++                                 modifiers: .command, needsSidebar: true) { go(to: i) })
++        }
++        list += [
++            Shortcut(keys: "⌘9", title: "Go to Last Session", keyCode: kVK_ANSI_9,
++                     modifiers: .command, needsSidebar: true) { go(to: model.rows.count - 1) },
++            Shortcut(keys: "⌃⇥", title: "Next Session", keyCode: kVK_Tab,
++                     modifiers: .control, needsSidebar: true) { step(1) },
++            Shortcut(keys: "⌃⇧⇥", title: "Previous Session", keyCode: kVK_Tab,
++                     modifiers: [.control, .shift], needsSidebar: true) { step(-1) },
++            Shortcut(keys: "⌘⇧]", title: "Next Session", keyCode: kVK_ANSI_RightBracket,
++                     modifiers: [.command, .shift], needsSidebar: true) { step(1) },
++            Shortcut(keys: "⌘⇧[", title: "Previous Session", keyCode: kVK_ANSI_LeftBracket,
++                     modifiers: [.command, .shift], needsSidebar: true) { step(-1) },
++            Shortcut(keys: "⌘⇧J", title: "Next Session That Needs You", keyCode: kVK_ANSI_J,
++                     modifiers: [.command, .shift]) { model.jumpToNextWaiting() },
++            Shortcut(keys: "⌘⇧R", title: "Restart Session", keyCode: kVK_ANSI_R,
++                     modifiers: [.command, .shift]) { current.map(model.restart) ?? NSSound.beep() },
++            Shortcut(keys: "⌘⇧U", title: "Undock Session", keyCode: kVK_ANSI_U,
++                     modifiers: [.command, .shift]) { current.map(model.undock) ?? NSSound.beep() },
++            Shortcut(keys: "⌘⇧S", title: "Show or Hide the Sidebar", keyCode: kVK_ANSI_S,
++                     modifiers: [.command, .shift]) {
++                UserDefaults.standard.set(!DockSettings.showSidebar, forKey: DockSettings.showSidebarKey)
++            },
++        ]
++        return list
++    }()
++
++    /// The shortcuts as Settings lists them, the duplicates folded together.
++    static let summary: [(String, String)] = [
++        ("Go to session 1–8, or the last", "⌘1–8, ⌘9"),
++        ("Next / previous session", "⌃⇥ ⌃⇧⇥  or  ⌘⇧] ⌘⇧["),
++        ("Next session that needs you", "⌘⇧J  (⌃⌥J from any app)"),
++        ("Restart session", "⌘⇧R"),
++        ("Undock session", "⌘⇧U"),
++        ("Show or hide the sidebar", "⌘⇧S"),
++    ]
++
++    /// The selected row, when it holds a Claude Code session.
++    private static var current: DockSessions.Row? {
++        model.rows.first { $0.selected && $0.sessionId != nil }
++    }
++
++    private static func go(to index: Int) {
++        let rows = model.rows
++        guard rows.indices.contains(index) else { NSSound.beep(); return }
++        model.select(rows[index])
++    }
++
++    private static func step(_ by: Int) {
++        let rows = model.rows
++        guard !rows.isEmpty else { return }
++        let at = rows.firstIndex(where: \.selected) ?? (by > 0 ? -1 : 0)
++        model.select(rows[(at + by + rows.count) % rows.count])
++    }
++
++    /// Runs the shortcut for this key-down, if there is one. True when it
++    /// was used, so the key goes no further.
++    static func handle(_ event: NSEvent) -> Bool {
++        guard NSApp.keyWindow is TerminalWindow else { return false }
++        let mods = event.modifierFlags.intersection([.command, .shift, .control, .option])
++        guard let s = all.first(where: { Int(event.keyCode) == $0.keyCode && $0.modifiers == mods }),
++              !s.needsSidebar || DockSettings.showSidebar else { return false }
++        s.action()
++        return true
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
