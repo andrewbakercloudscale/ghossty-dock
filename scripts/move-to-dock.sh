@@ -89,6 +89,8 @@ function move_one() {
     log "$(basename "$cwd"): moving ($cmd)"
     $dry && return 0
 
+    # What scripts/undo.sh reopens if this goes wrong.
+    printf '%s\t%s\t%s\n' "$sid" "$cwd" "$flags" >>"$STATE_DIR/sessions-snapshot.tsv"
     kill -TERM "$cpid" 2>/dev/null
     local i
     for ((i = 0; i < 40; i++)); do kill -0 "$cpid" 2>/dev/null || break; sleep 0.25; done

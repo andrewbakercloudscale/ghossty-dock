@@ -14,7 +14,8 @@ SCRIPT_NAME=$(basename "$0")
 STATE_DIR="${GHOSTTY_DOCK_STATE:-$HOME/.local/state/ghostty-dock}"
 DOCK_APP="$HOME/Applications/Ghostty Dock.app"
 # Ghostty Dock (Ghostty with the session sidebar) when installed, else Ghostty.
-if [ -z "${GHOSTTY_APP:-}" ] && [ -d "$DOCK_APP" ]; then
+# scripts/undo.sh leaves a "disabled" mark to send everything back to Ghostty.
+if [ -z "${GHOSTTY_APP:-}" ] && [ -d "$DOCK_APP" ] && [ ! -e "$STATE_DIR/disabled" ]; then
     GHOSTTY_APP="$DOCK_APP"
     APP_REF='application id "consulting.cloudscale.ghosttydock"'
 fi

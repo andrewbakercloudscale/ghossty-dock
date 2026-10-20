@@ -39,6 +39,23 @@ index b02337e..b156728 100644
      }
  
      @IBAction func reloadConfig(_ sender: Any?) {
+diff --git a/macos/Sources/Features/Dock/.omc/state/sessions/658a6aff-5a3e-4642-96fd-48580b1307f8/pre-tool-advisory-throttle.json b/macos/Sources/Features/Dock/.omc/state/sessions/658a6aff-5a3e-4642-96fd-48580b1307f8/pre-tool-advisory-throttle.json
+new file mode 100644
+index 0000000..c7fabc9
+--- /dev/null
++++ b/macos/Sources/Features/Dock/.omc/state/sessions/658a6aff-5a3e-4642-96fd-48580b1307f8/pre-tool-advisory-throttle.json
+@@ -0,0 +1,10 @@
++{
++  "version": 1,
++  "entries": {
++    "79a93d4a2f8f50b95f852280616242fee1855dc99a3c75211917f55e72e95fae": {
++      "last_emitted_at_ms": 1792490071880,
++      "message": "Use parallel execution for independent tasks. Use run_in_background for long operations (npm install, builds, tests)."
++    }
++  },
++  "updated_at": "2026-10-20T09:54:31.880Z"
++}
+\ No newline at end of file
 diff --git a/macos/Sources/Features/Dock/DockHotKey.swift b/macos/Sources/Features/Dock/DockHotKey.swift
 new file mode 100644
 index 0000000..4b8472f
@@ -421,10 +438,10 @@ index 0000000..ecab181
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..0065754
+index 0000000..324a614
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,224 @@
 +import SwiftUI
 +
 +/// Catppuccin Mocha. All text is DockPalette.text or a status colour, never
@@ -607,28 +624,45 @@ index 0000000..0065754
 +    }
 +}
 +
++/// The status as an icon in its colour: a spinning arrow while running, a
++/// pulsing question mark when it needs you, a moon when idle.
 +struct DockStatusDot: View {
 +    var status: DockSessions.Status
 +    @State private var pulse = false
++    @State private var spin = false
++
++    static func symbol(_ s: DockSessions.Status) -> String {
++        switch s {
++        case .running: return "arrow.triangle.2.circlepath"
++        case .waiting: return "questionmark.circle.fill"
++        case .unread: return "checkmark.circle.fill"
++        case .idle: return "moon.zzz.fill"
++        case .shell: return "terminal"
++        }
++    }
 +
 +    var body: some View {
 +        ZStack {
 +            if status == .waiting {
 +                Circle()
 +                    .fill(DockPalette.peach.opacity(0.35))
-+                    .frame(width: 16, height: 16)
++                    .frame(width: 22, height: 22)
 +                    .scaleEffect(pulse ? 1.0 : 0.5)
 +                    .opacity(pulse ? 0 : 1)
 +                    .animation(.easeOut(duration: 1.2).repeatForever(autoreverses: false), value: pulse)
 +            }
-+            if status == .shell {
-+                Circle().strokeBorder(DockPalette.color(status), lineWidth: 1.5).frame(width: 9, height: 9)
-+            } else {
-+                Circle().fill(DockPalette.color(status)).frame(width: 9, height: 9)
-+            }
++            Image(systemName: Self.symbol(status))
++                .font(.system(size: 13, weight: .semibold))
++                .foregroundStyle(DockPalette.color(status))
++                .rotationEffect(.degrees(status == .running && spin ? 360 : 0))
++                .animation(status == .running ? .linear(duration: 2).repeatForever(autoreverses: false) : .default,
++                           value: spin)
 +        }
-+        .frame(width: 16, height: 16)
-+        .onAppear { pulse = true }
++        .frame(width: 18, height: 18)
++        .onAppear {
++            pulse = true
++            spin = true
++        }
 +        .accessibilityLabel(DockPalette.label(status))
 +    }
 +}
