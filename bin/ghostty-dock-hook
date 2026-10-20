@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+
+# Claude Code hook: records what each session is doing so Ghostty Dock can
+# show it. Registered for SessionStart, UserPromptSubmit, PreToolUse,
+# PostToolUse, Notification, Stop and SessionEnd. It reads the hook's JSON on
+# stdin and writes one small file per terminal under $STATE_DIR/sessions.
+#
+# It must never get in Claude's way: no output, always exit 0, and nothing
+# happens at all if jq is missing.
+
+DEPENDENCIES=(jq ps)
+SCRIPT_NAME=$(basename "$0")
+STATE_DIR="${GHOSTTY_DOCK_STATE:-$HOME/.local/state/ghostty-dock}"
+
+function usage() {
+    cat <<EOM
+
+Claude Code hook for Ghostty Dock. Reads hook JSON on stdin and records the
+session's status (running, waiting, done, idle) in ${STATE_DIR}/sessions.
+
+usage: ${SCRIPT_NAME} < hook.json
+
+environment:
+    GHOSTTY_DOCK_STATE         state directory (default ~/.local/state/ghostty-dock)
+    DOCK_TAB_ID                set by ghostty-dock-open on the tab it creates
+    GHOSTTY_DOCK_TEST_LINEAGE  "claude_pid ghostty_pid tty", skips the process walk (tests)
+
+dependencies: ${DEPENDENCIES[@]}
+
+EOM
+    exit 1
+}
+
+function main() {
+    case "${1:-}" in
+    -h | --help) usage ;;
+    esac
+    for cmd in "${DEPENDENCIES[@]}"; do
+        command -v "$cmd" >/dev/null 2>&1 || exit 0
+    done
+
+    local input
+    input=$(cat)
+    [ -n "$input" ] || exit 0
+
+    local lineage claude_pid ghostty_pid tty
+    lineage=$(find_lineage)
+    read -r claude_pid ghostty_pid tty <<<"$lineage"
+
+    local key
+    key=$(session_key "$tty" "$input")
+    [ -n "$key" ] || exit 0
+
+    mkdir -p "$STATE_DIR/sessions" 2>/dev/null || exit 0
+    already_running "$STATE_DIR/sessions/$key.json" "$input" && exit 0
+    record_state "$STATE_DIR/sessions/$key.json" "$key" "$input" "$claude_pid" "$ghostty_pid" "$tty"
+}
+
+# Walks up from this hook to the claude process and the Ghostty process that
+# hosts it. The tty is claude's, which identifies the terminal. One ps per hop
+# (~5ms) rather than one `ps -A` (~110ms), since this runs on every tool call;
+# the answer is cached per claude pid, so after the first event it is one hop
+# or two.
+function find_lineage() {
+    if [ -n "${GHOSTTY_DOCK_TEST_LINEAGE:-}" ]; then
+        echo "$GHOSTTY_DOCK_TEST_LINEAGE"
+        return
+    fi
+    local pid="$PPID" claude="" ghostty="" tty="" hops line ppid ptty comm
+    for ((hops = 0; pid > 1 && hops < 40; hops++)); do
+        line=$(ps -o ppid=,tty=,comm= -p "$pid" 2>/dev/null) || break
+        read -r ppid ptty comm <<<"$line"
+        comm="${comm##*/}"
+        if [ -z "$claude" ] && [ "$comm" = "claude" ]; then
+            claude="$pid"
+            tty="$ptty"
+            local cached
+            cached=$(cat "$STATE_DIR/lineage/$claude" 2>/dev/null)
+            if [ -n "$cached" ]; then
+                echo "$cached"
+                return
+            fi
+        fi
+        if [ "$comm" = "ghostty" ]; then
+            ghostty="$pid"
+            break
+        fi
+        pid="$ppid"
+    done
+    [ "$tty" = "??" ] && tty=""
+    local result="${claude:--} ${ghostty:--} ${tty:--}"
+    if [ -n "$claude" ] && mkdir -p "$STATE_DIR/lineage" 2>/dev/null; then
+        echo "$result" >"$STATE_DIR/lineage/$claude" 2>/dev/null
+    fi
+    echo "$result"
+}
+
+# One file per terminal: the dock's own tab id when it opened the tab, else
+# the tty, so a /clear or a resume in the same terminal updates the same row.
+function session_key() {
+    local tty="$1"
+    local input="$2"
+    if [ -n "${DOCK_TAB_ID:-}" ]; then
+        echo "tab-${DOCK_TAB_ID//[^A-Za-z0-9-]/}"
+    elif [ -n "$tty" ] && [ "$tty" != "-" ]; then
+        echo "tty-${tty//[^A-Za-z0-9]/}"
+    else
+        local sid
+        sid=$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null)
+        [ -n "$sid" ] && echo "sid-${sid//[^A-Za-z0-9-]/}"
+    fi
+}
+
+# PostToolUse fires after every tool call and Claude waits for it. When the
+# row already says running there is nothing to write, so skip the jq rewrite.
+function already_running() {
+    local file="$1"
+    local input="$2"
+    case "$input" in
+    *'"hook_event_name":"PostToolUse"'* | *'"hook_event_name": "PostToolUse"'*) ;;
+    *) return 1 ;;
+    esac
+    grep -q '"status":"running"' "$file" 2>/dev/null
+}
+
+function record_state() {
+    local file="$1"
+    local key="$2"
+    local input="$3"
+    local claude_pid="$4"
+    local ghostty_pid="$5"
+    local tty="$6"
+
+    local old="{}"
+    [ -s "$file" ] && old=$(cat "$file" 2>/dev/null)
+    jq -e . >/dev/null 2>&1 <<<"$old" || old="{}"
+
+    local out
+    out=$(jq -c -n \
+        --argjson in "$input" \
+        --argjson o "$old" \
+        --arg key "$key" \
+        --arg dock "${DOCK_TAB_ID:-}" \
+        --arg claude_pid "$claude_pid" \
+        --arg ghostty_pid "$ghostty_pid" \
+        --arg tty "$tty" \
+        -f /dev/stdin <<'JQ' 2>/dev/null
+def num($s): if $s == "-" or $s == "" then null else ($s | tonumber) end;
+($in.hook_event_name // "") as $ev
+| ($in.notification_type // "") as $nt
+| ($in.message // "") as $msg
+| (if $ev == "UserPromptSubmit" or $ev == "PostToolUse" then "running"
+   elif $ev == "PreToolUse" then
+     (if ($in.tool_name // "") as $t | ["AskUserQuestion", "ExitPlanMode"] | index($t) then "waiting" else "running" end)
+   elif $ev == "Notification" then
+     (if $nt == "permission_prompt" or $nt == "elicitation_dialog" then "waiting"
+      elif $nt == "" and ($msg | test("permission"; "i")) then "waiting"
+      else null end)
+   elif $ev == "Stop" then "done"
+   elif $ev == "SessionStart" then
+     (if ($in.source // "") == "compact" then ($o.status // "running") else "idle" end)
+   elif $ev == "SessionEnd" then
+     (if ($in.reason // "") == "clear" then null else "ended" end)
+   else null end) as $st
+| if $st == null then empty
+  else
+    (now | floor) as $now
+    | (if $ev == "SessionStart" and ($in.source // "") != "compact" then ($in.cwd // "")
+       else ($o.project // $in.cwd // "") end) as $project
+    | {
+        key: $key,
+        status: $st,
+        since: (if $o.status == $st and $o.session_id == $in.session_id then $o.since else $now end),
+        updated: $now,
+        created: ($o.created // $now),
+        session_id: ($in.session_id // ""),
+        project: $project,
+        cwd: ($in.cwd // $o.cwd // ""),
+        name: ($project | sub("/+$"; "") | split("/") | last // ""),
+        dock_tab_id: (if $dock == "" then null else $dock end),
+        claude_pid: num($claude_pid),
+        ghostty_pid: num($ghostty_pid),
+        tty: (if $tty == "-" then null else $tty end),
+        event: $ev,
+        tool: ($in.tool_name // null)
+      }
+  end
+JQ
+)
+    [ -n "$out" ] || return 0
+
+    if [ "$(jq -r .status <<<"$out")" = "ended" ]; then
+        rm -f "$file"
+        return 0
+    fi
+    local tmp="$file.$$.tmp"
+    printf '%s\n' "$out" >"$tmp" 2>/dev/null && mv -f "$tmp" "$file" 2>/dev/null
+    rm -f "$tmp" 2>/dev/null
+    return 0
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+    exit 0
+fi
