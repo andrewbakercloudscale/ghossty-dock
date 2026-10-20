@@ -576,10 +576,10 @@ index 0000000..a69ab05
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..6685740
+index 0000000..44ef3eb
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,318 @@
+@@ -0,0 +1,327 @@
 +import SwiftUI
 +
 +/// Catppuccin Mocha. All text is DockPalette.text or a status colour; grey
@@ -721,7 +721,6 @@ index 0000000..6685740
 +    var onUndock: () -> Void
 +    @State private var hover = false
 +    @State private var hoverClose = false
-+    @State private var hoverUndock = false
 +
 +    var body: some View {
 +        HStack(spacing: 9) {
@@ -741,18 +740,9 @@ index 0000000..6685740
 +            }
 +            Spacer(minLength: 0)
 +            if row.sessionId != nil {
-+                Button(action: onUndock) {
-+                    Text(undocking ? "Undocking…" : "Undock")
-+                        .font(.system(size: 10.5, weight: .semibold))
-+                        .foregroundStyle(DockPalette.text)
-+                        .padding(.horizontal, 6)
-+                        .padding(.vertical, 3)
-+                        .background(Capsule().fill(hoverUndock ? DockPalette.surface.opacity(1.6) : DockPalette.surface))
-+                }
-+                .buttonStyle(.plain)
-+                .disabled(undocking)
-+                .onHover { hoverUndock = $0 }
-+                .help(undocking ? "Undocking…" : "Undock: restart it in its own Ghostty window")
++                DockIconButton(symbol: "arrow.up.right.square", busy: undocking,
++                               help: undocking ? "Undocking…" : "Undock: restart it in its own Ghostty window",
++                               action: onUndock)
 +            }
 +            // On every row, so any tab can be closed without hunting for it.
 +            Button(action: onClose) {
@@ -803,13 +793,41 @@ index 0000000..6685740
 +    }
 +}
 +
++/// A row's Undock or Dock button: an icon the size of the close button, so
++/// the name keeps the width. A spinner while the move is under way.
++struct DockIconButton: View {
++    var symbol: String
++    var busy: Bool
++    var help: String
++    var action: () -> Void
++    @State private var hover = false
++
++    var body: some View {
++        Button(action: action) {
++            Group {
++                if busy {
++                    ProgressView().controlSize(.mini)
++                } else {
++                    Image(systemName: symbol).font(.system(size: 12, weight: .semibold))
++                }
++            }
++            .foregroundStyle(DockPalette.text)
++            .frame(width: 18, height: 18)
++            .background(RoundedRectangle(cornerRadius: 4).fill(hover ? DockPalette.surface.opacity(1.6) : Color.clear))
++        }
++        .buttonStyle(.plain)
++        .disabled(busy)
++        .onHover { hover = $0 }
++        .help(help)
++    }
++}
++
 +/// A session in a Ghostty app of its own: grey, in a dashed outline, with a
 +/// button to dock it. Clicking the row shows its window.
 +struct DockUndockedRowView: View {
 +    var session: DockSessions.Undocked
 +    var onDock: () -> Void
 +    @State private var hover = false
-+    @State private var hoverDock = false
 +
 +    var body: some View {
 +        HStack(spacing: 9) {
@@ -830,18 +848,9 @@ index 0000000..6685740
 +                    .lineLimit(1)
 +            }
 +            Spacer(minLength: 0)
-+            Button(action: onDock) {
-+                Text(session.moving ? "Docking…" : "Dock")
-+                    .font(.system(size: 10.5, weight: .semibold))
-+                .foregroundStyle(DockPalette.text)
-+                .padding(.horizontal, 6)
-+                .padding(.vertical, 3)
-+                .background(Capsule().fill(hoverDock ? DockPalette.surface.opacity(1.6) : DockPalette.surface))
-+            }
-+            .buttonStyle(.plain)
-+            .disabled(session.moving)
-+            .onHover { hoverDock = $0 }
-+            .help(session.moving ? "Docking…" : "Restart it in a tab here")
++            DockIconButton(symbol: "arrow.down.left.square", busy: session.moving,
++                           help: session.moving ? "Docking…" : "Dock: restart it in a tab here",
++                           action: onDock)
 +        }
 +        .padding(.horizontal, 8)
 +        .padding(.vertical, 6)
