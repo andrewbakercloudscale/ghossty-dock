@@ -22,6 +22,7 @@ usage: ${SCRIPT_NAME} < hook.json
 
 environment:
     GHOSTTY_DOCK_STATE         state directory (default ~/.local/state/ghostty-dock)
+    GHOSTTY_DOCK_SURFACE       set by Ghostty Dock on every terminal it runs
     DOCK_TAB_ID                set by ghostty-dock-open on the tab it creates
     GHOSTTY_DOCK_TEST_LINEAGE  "claude_pid ghostty_pid tty", skips the process walk (tests)
 
@@ -95,12 +96,15 @@ function find_lineage() {
     echo "$result"
 }
 
-# One file per terminal: the dock's own tab id when it opened the tab, else
-# the tty, so a /clear or a resume in the same terminal updates the same row.
+# One file per terminal: the surface id Ghostty Dock gives every terminal,
+# else the dock's own tab id when it opened the tab, else the tty, so a
+# /clear or a resume in the same terminal updates the same row.
 function session_key() {
     local tty="$1"
     local input="$2"
-    if [ -n "${DOCK_TAB_ID:-}" ]; then
+    if [ -n "${GHOSTTY_DOCK_SURFACE:-}" ]; then
+        echo "srf-${GHOSTTY_DOCK_SURFACE//[^A-Za-z0-9-]/}"
+    elif [ -n "${DOCK_TAB_ID:-}" ]; then
         echo "tab-${DOCK_TAB_ID//[^A-Za-z0-9-]/}"
     elif [ -n "$tty" ] && [ "$tty" != "-" ]; then
         echo "tty-${tty//[^A-Za-z0-9]/}"

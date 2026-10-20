@@ -1,0 +1,504 @@
+diff --git a/macos/Sources/App/macOS/AppDelegate.swift b/macos/Sources/App/macOS/AppDelegate.swift
+index b02337e..6cee01b 100644
+--- a/macos/Sources/App/macOS/AppDelegate.swift
++++ b/macos/Sources/App/macOS/AppDelegate.swift
+@@ -796,13 +796,9 @@ class AppDelegate: NSObject,
+         DispatchQueue.main.async { self.syncAppearance(config: config) }
+ 
+         // Decide whether to hide/unhide app from dock and app switcher
+-        switch config.macosHidden {
+-        case .never:
+-            NSApp.setActivationPolicy(.regular)
+-
+-        case .always:
+-            NSApp.setActivationPolicy(.accessory)
+-        }
++        // Ghostty Dock: always in the Dock. macos-hidden in the shared config
++        // is for stock Ghostty, which Ghostty Dock replaces.
++        NSApp.setActivationPolicy(.regular)
+ 
+         // If we have configuration errors, we need to show them.
+         let c = ConfigurationErrorsController.sharedInstance
+diff --git a/macos/Sources/Features/Dock/DockHotKey.swift b/macos/Sources/Features/Dock/DockHotKey.swift
+new file mode 100644
+index 0000000..4b8472f
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockHotKey.swift
+@@ -0,0 +1,38 @@
++import Carbon
++
++/// A system-wide shortcut through Carbon's RegisterEventHotKey, which needs no
++/// permission and works whichever app is in front.
++final class DockHotKey {
++    /// Control-Option-J: jump to the next session that needs you.
++    static let jumpKeyCode = UInt32(kVK_ANSI_J)
++    static let jumpModifiers = UInt32(controlKey | optionKey)
++    static let jumpLabel = "⌃⌥J"
++
++    private static var handlers: [UInt32: () -> Void] = [:]
++    private static var installed = false
++    private var ref: EventHotKeyRef?
++
++    init(keyCode: UInt32, modifiers: UInt32, id: UInt32, handler: @escaping () -> Void) {
++        Self.handlers[id] = handler
++        Self.installHandler()
++        let hotKeyId = EventHotKeyID(signature: OSType(0x4744_4B31), id: id) // "GDK1"
++        RegisterEventHotKey(keyCode, modifiers, hotKeyId, GetApplicationEventTarget(), 0, &ref)
++    }
++
++    deinit {
++        if let ref { UnregisterEventHotKey(ref) }
++    }
++
++    private static func installHandler() {
++        guard !installed else { return }
++        installed = true
++        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
++        InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
++            var id = EventHotKeyID()
++            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
++                              nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
++            DockHotKey.handlers[id.id]?()
++            return noErr
++        }, 1, &spec, nil, nil)
++    }
++}
+diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
+new file mode 100644
+index 0000000..eddec68
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockSessions.swift
+@@ -0,0 +1,191 @@
++import AppKit
++import Combine
++
++/// Ghostty Dock: every tab of every terminal window, with the status of the
++/// Claude Code session running in it, for the vertical tab sidebar.
++///
++/// Status comes from ghostty-dock-hook, a Claude Code hook that writes one
++/// JSON file per terminal surface to ~/.local/state/ghostty-dock/sessions.
++/// It finds its surface through GHOSTTY_DOCK_SURFACE, which every surface
++/// gets in its environment (see SurfaceConfiguration.withCValue).
++final class DockSessions: ObservableObject {
++    static let shared = DockSessions()
++
++    static let surfaceEnv = "GHOSTTY_DOCK_SURFACE"
++
++    enum Status: Int, Comparable {
++        // Raw values are the sort order: needs you first.
++        case waiting = 0, running, unread, idle, shell
++
++        static func < (a: Status, b: Status) -> Bool { a.rawValue < b.rawValue }
++    }
++
++    struct Row: Identifiable, Equatable {
++        let id: ObjectIdentifier
++        var name: String
++        var detail: String
++        var status: Status
++        var since: Date?
++        var selected: Bool
++        weak var controller: TerminalController?
++
++        static func == (a: Row, b: Row) -> Bool {
++            a.id == b.id && a.name == b.name && a.detail == b.detail && a.status == b.status
++                && a.since == b.since && a.selected == b.selected
++        }
++    }
++
++    @Published private(set) var rows: [Row] = []
++
++    var waitingCount: Int { rows.filter { $0.status == .waiting }.count }
++    var unreadCount: Int { rows.filter { $0.status == .unread }.count }
++
++    private let stateDir = FileManager.default.homeDirectoryForCurrentUser
++        .appendingPathComponent(".local/state/ghostty-dock")
++    private var seen: [String: Int] = [:]
++    private var timer: Timer?
++    private var watcher: DispatchSourceFileSystemObject?
++    private var jumpKey: DockHotKey?
++    /// First-seen order of tabs, so rows keep their place within a status group.
++    private var order: [ObjectIdentifier] = []
++
++    private init() {
++        seen = (try? JSONDecoder().decode([String: Int].self,
++                                          from: Data(contentsOf: stateDir.appendingPathComponent("seen.json")))) ?? [:]
++    }
++
++    func start() {
++        guard timer == nil else { return }
++        try? FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
++        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.refresh() }
++        watchSessions()
++        jumpKey = DockHotKey(keyCode: DockHotKey.jumpKeyCode, modifiers: DockHotKey.jumpModifiers, id: 1) { [weak self] in
++            self?.jumpToNextWaiting()
++        }
++        refresh()
++    }
++
++    private var sessionsDir: URL { stateDir.appendingPathComponent("sessions") }
++
++    /// What the hook writes; only the fields the sidebar needs.
++    private struct Session: Decodable {
++        var status: String
++        var since: Int
++        var name: String
++        var claude_pid: Int32?
++    }
++
++    func refresh() {
++        var sessions: [String: Session] = [:]
++        let files = (try? FileManager.default.contentsOfDirectory(at: sessionsDir, includingPropertiesForKeys: nil)) ?? []
++        for url in files where url.lastPathComponent.hasPrefix("srf-") && url.pathExtension == "json" {
++            guard let data = try? Data(contentsOf: url),
++                  let s = try? JSONDecoder().decode(Session.self, from: data) else { continue }
++            if let pid = s.claude_pid, kill(pid, 0) != 0, errno != EPERM {
++                // claude went away without a SessionEnd (closed tab, crash).
++                try? FileManager.default.removeItem(at: url)
++                continue
++            }
++            sessions[String(url.deletingPathExtension().lastPathComponent.dropFirst(4))] = s
++        }
++
++        let now = Int(Date().timeIntervalSince1970)
++        let appActive = NSApp.isActive
++        var built: [Row] = []
++        for controller in TerminalController.all {
++            guard let window = controller.window else { continue }
++            let id = ObjectIdentifier(controller)
++            if !order.contains(id) { order.append(id) }
++            let isSelectedTab = window.tabGroup?.selectedWindow.map { $0 === window } ?? true
++            let selected = isSelectedTab && (window.isKeyWindow || window.isMainWindow)
++            let onScreen = appActive && selected
++
++            // A tab with splits is one row: its most urgent session.
++            var best: (status: Status, since: Int, name: String, key: String)?
++            for surface in controller.surfaceTree {
++                let key = surface.id.uuidString
++                guard let s = sessions[key] else { continue }
++                var status: Status
++                switch s.status {
++                case "running": status = .running
++                case "waiting": status = .waiting
++                case "done": status = (seen[key] ?? 0) >= s.since ? .idle : .unread
++                default: status = .idle
++                }
++                if status == .unread && onScreen {
++                    seen[key] = now
++                    saveSeen()
++                    status = .idle
++                }
++                if best == nil || status < best!.status { best = (status, s.since, s.name, key) }
++            }
++
++            let focused = controller.focusedSurface ?? controller.surfaceTree.first
++            let title = cleanTitle(window.title)
++            let pwd = focused?.pwd ?? ""
++            let name = best?.name.isEmpty == false ? best!.name
++                : !title.isEmpty ? title
++                : (pwd as NSString).lastPathComponent
++            built.append(Row(id: id, name: name.isEmpty ? "shell" : name, detail: pwd,
++                             status: best?.status ?? .shell,
++                             since: best.map { Date(timeIntervalSince1970: TimeInterval($0.since)) },
++                             selected: selected,
++                             controller: controller))
++        }
++        order.removeAll { id in !built.contains { $0.id == id } }
++        built.sort { a, b in
++            if a.status != b.status { return a.status < b.status }
++            return (order.firstIndex(of: a.id) ?? 0) < (order.firstIndex(of: b.id) ?? 0)
++        }
++        if built != rows { rows = built }
++        let badge = waitingCount > 0 ? "\(waitingCount)" : nil
++        if NSApp.dockTile.badgeLabel != badge { NSApp.dockTile.badgeLabel = badge }
++    }
++
++    func select(_ row: Row) {
++        guard let controller = row.controller, let window = controller.window else { return }
++        window.makeKeyAndOrderFront(nil)
++        NSApp.activate(ignoringOtherApps: true)
++        if let surface = controller.focusedSurface ?? controller.surfaceTree.first {
++            window.makeFirstResponder(surface)
++        }
++        refresh()
++    }
++
++    /// The next tab that needs you after the one on screen; with none
++    /// waiting, the next finished one.
++    func jumpToNextWaiting() {
++        var candidates = rows.filter { $0.status == .waiting }
++        if candidates.isEmpty { candidates = rows.filter { $0.status == .unread } }
++        guard !candidates.isEmpty else { NSSound.beep(); return }
++        let current = rows.first(where: \.selected)?.id
++        let next = candidates.firstIndex(where: { $0.id == current }).map { candidates[($0 + 1) % candidates.count] }
++            ?? candidates[0]
++        select(next)
++    }
++
++    private func saveSeen() {
++        guard let data = try? JSONEncoder().encode(seen) else { return }
++        try? data.write(to: stateDir.appendingPathComponent("seen.json"), options: .atomic)
++    }
++
++    private func watchSessions() {
++        let fd = open(sessionsDir.path, O_EVTONLY)
++        guard fd >= 0 else { return }
++        let src = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .rename, .delete],
++                                                            queue: .main)
++        src.setEventHandler { [weak self] in self?.refresh() }
++        src.setCancelHandler { close(fd) }
++        src.resume()
++        watcher = src
++    }
++
++    /// Drops the leading status glyph Claude Code puts in titles.
++    private func cleanTitle(_ title: String) -> String {
++        var s = Substring(title)
++        while let c = s.first, !(c.isLetter || c.isNumber || c == "/" || c == "~" || c == "." || c == "_") {
++            s = s.dropFirst()
++        }
++        return s.trimmingCharacters(in: .whitespaces)
++    }
++}
+diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
+new file mode 100644
+index 0000000..0eb08d3
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockSidebarView.swift
+@@ -0,0 +1,182 @@
++import SwiftUI
++
++/// Catppuccin Mocha. All text is DockPalette.text or a status colour, never
++/// grey: grey on mantle is hard to read. Every status has its own hue, used
++/// for both its dot and its label.
++enum DockPalette {
++    static let base = Color(red: 0.118, green: 0.118, blue: 0.180)      // #1e1e2e
++    static let mantle = Color(red: 0.094, green: 0.094, blue: 0.145)    // #181825
++    static let surface = Color(red: 0.192, green: 0.196, blue: 0.267)   // #313244
++    static let text = Color(red: 0.804, green: 0.839, blue: 0.957)      // #cdd6f4
++    static let green = Color(red: 0.651, green: 0.890, blue: 0.631)     // #a6e3a1
++    static let peach = Color(red: 0.980, green: 0.702, blue: 0.529)     // #fab387
++    static let blue = Color(red: 0.537, green: 0.706, blue: 0.980)      // #89b4fa
++    static let mauve = Color(red: 0.796, green: 0.651, blue: 0.969)     // #cba6f7
++    static let teal = Color(red: 0.580, green: 0.886, blue: 0.835)      // #94e2d5
++
++    static func color(_ s: DockSessions.Status) -> Color {
++        switch s {
++        case .running: return green
++        case .waiting: return peach
++        case .unread: return blue
++        case .idle: return mauve
++        case .shell: return teal
++        }
++    }
++
++    static func label(_ s: DockSessions.Status) -> String {
++        switch s {
++        case .running: return "Running"
++        case .waiting: return "Needs you"
++        case .unread: return "Finished"
++        case .idle: return "Idle"
++        case .shell: return "Shell"
++        }
++    }
++}
++
++/// The vertical tab strip on the left of every terminal window. Every window
++/// shows the same list: a row per tab across all windows, needs-you first.
++struct DockSidebarView: View {
++    @ObservedObject var model = DockSessions.shared
++    var onNewTab: () -> Void
++
++    static let width: CGFloat = 220
++
++    var body: some View {
++        VStack(spacing: 0) {
++            header
++            ScrollView {
++                LazyVStack(spacing: 2) {
++                    ForEach(model.rows) { row in
++                        DockRowView(row: row).onTapGesture { model.select(row) }
++                    }
++                }
++                .padding(.horizontal, 6)
++                .padding(.vertical, 4)
++            }
++        }
++        .frame(width: Self.width)
++        .frame(maxHeight: .infinity)
++        .background(DockPalette.mantle)
++        .environment(\.colorScheme, .dark)
++        .onAppear { model.start() }
++    }
++
++    private var header: some View {
++        HStack(spacing: 6) {
++            Text("Sessions").font(.system(size: 12, weight: .semibold)).foregroundStyle(DockPalette.text)
++            if model.waitingCount > 0 { DockBadge(count: model.waitingCount, color: DockPalette.peach) }
++            if model.unreadCount > 0 { DockBadge(count: model.unreadCount, color: DockPalette.blue) }
++            Spacer()
++            Button(action: onNewTab) {
++                Image(systemName: "plus").font(.system(size: 12, weight: .semibold))
++            }
++            .buttonStyle(.plain)
++            .foregroundStyle(DockPalette.text)
++            .help("New tab")
++            Button(action: model.jumpToNextWaiting) {
++                Image(systemName: "arrow.down.to.line").font(.system(size: 12, weight: .semibold))
++            }
++            .buttonStyle(.plain)
++            .foregroundStyle(DockPalette.text)
++            .help("Next session that needs you (⌃⌥J)")
++        }
++        .padding(.horizontal, 12)
++        .padding(.top, 10)
++        .padding(.bottom, 6)
++    }
++}
++
++struct DockBadge: View {
++    var count: Int
++    var color: Color
++
++    var body: some View {
++        Text("\(count)")
++            .font(.system(size: 10, weight: .bold))
++            .foregroundStyle(DockPalette.base)
++            .padding(.horizontal, 5)
++            .padding(.vertical, 1)
++            .background(Capsule().fill(color))
++    }
++}
++
++struct DockRowView: View {
++    var row: DockSessions.Row
++    @State private var hover = false
++
++    var body: some View {
++        HStack(spacing: 9) {
++            DockStatusDot(status: row.status).id(row.status)
++            VStack(alignment: .leading, spacing: 1) {
++                Text(row.name)
++                    .font(.system(size: 13, weight: row.selected ? .semibold : .regular))
++                    .foregroundStyle(DockPalette.text)
++                    .lineLimit(1)
++                    .truncationMode(.middle)
++                TimelineView(.periodic(from: .now, by: 30)) { ctx in
++                    Text(subtitle(now: ctx.date))
++                        .font(.system(size: 10.5))
++                        .foregroundStyle(DockPalette.color(row.status))
++                        .lineLimit(1)
++                }
++            }
++            Spacer(minLength: 0)
++        }
++        .padding(.horizontal, 8)
++        .padding(.vertical, 6)
++        .background(
++            RoundedRectangle(cornerRadius: 7)
++                .fill(row.selected ? DockPalette.surface : hover ? DockPalette.base : Color.clear)
++        )
++        .overlay(alignment: .leading) {
++            if row.selected {
++                RoundedRectangle(cornerRadius: 1.5).fill(DockPalette.blue).frame(width: 3, height: 18).offset(x: -3)
++            }
++        }
++        .contentShape(Rectangle())
++        .onHover { hover = $0 }
++        .help(row.detail.isEmpty ? row.name : row.detail)
++    }
++
++    private func subtitle(now: Date) -> String {
++        let label = DockPalette.label(row.status)
++        guard let since = row.since else { return label }
++        return label + " · " + elapsed(now.timeIntervalSince(since))
++    }
++
++    private func elapsed(_ t: TimeInterval) -> String {
++        let s = max(0, Int(t))
++        if s < 60 { return "now" }
++        if s < 3600 { return "\(s / 60)m" }
++        if s < 86_400 { return "\(s / 3600)h" }
++        return "\(s / 86_400)d"
++    }
++}
++
++struct DockStatusDot: View {
++    var status: DockSessions.Status
++    @State private var pulse = false
++
++    var body: some View {
++        ZStack {
++            if status == .waiting {
++                Circle()
++                    .fill(DockPalette.peach.opacity(0.35))
++                    .frame(width: 16, height: 16)
++                    .scaleEffect(pulse ? 1.0 : 0.5)
++                    .opacity(pulse ? 0 : 1)
++                    .animation(.easeOut(duration: 1.2).repeatForever(autoreverses: false), value: pulse)
++            }
++            if status == .shell {
++                Circle().strokeBorder(DockPalette.color(status), lineWidth: 1.5).frame(width: 9, height: 9)
++            } else {
++                Circle().fill(DockPalette.color(status)).frame(width: 9, height: 9)
++            }
++        }
++        .frame(width: 16, height: 16)
++        .onAppear { pulse = true }
++        .accessibilityLabel(DockPalette.label(status))
++    }
++}
+diff --git a/macos/Sources/Features/Terminal/TerminalView.swift b/macos/Sources/Features/Terminal/TerminalView.swift
+index b6e1c63..34e68ba 100644
+--- a/macos/Sources/Features/Terminal/TerminalView.swift
++++ b/macos/Sources/Features/Terminal/TerminalView.swift
+@@ -79,6 +79,10 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
+                         DebugBuildWarningView()
+                     }
+ 
++                    HStack(spacing: 0) {
++                    DockSidebarView(onNewTab: {
++                        NSApp.sendAction(#selector(TerminalController.newTab(_:)), to: nil, from: nil)
++                    })
+                     TerminalSplitTreeView(
+                         tree: viewModel.surfaceTree,
+                         action: { delegate?.performSplitAction($0) })
+@@ -103,6 +107,7 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
+                         }
+                         .frame(idealWidth: lastFocusedSurface?.value?.initialSize?.width,
+                                idealHeight: lastFocusedSurface?.value?.initialSize?.height)
++                    }
+                 }
+                 // Ignore safe area to extend up in to the titlebar region if we have the "hidden" titlebar style
+                 .ignoresSafeArea(.container, edges: ghostty.config.macosTitlebarStyle == .hidden ? .top : [])
+diff --git a/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift b/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift
+index e19d671..f3f51ad 100644
+--- a/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift	
++++ b/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift	
+@@ -255,6 +255,8 @@ class TerminalWindow: NSWindow {
+         // it. This has been verified to work on macOS 12 to 26
+         if isTabBar(childViewController) {
+             childViewController.identifier = Self.tabBarIdentifier
++            // Ghostty Dock: the session sidebar is the tab bar.
++            childViewController.isHidden = true
+             tabBarDidAppear()
+         }
+     }
+diff --git a/macos/Sources/Ghostty/Surface View/SurfaceView.swift b/macos/Sources/Ghostty/Surface View/SurfaceView.swift
+index 47503dc..31360b6 100644
+--- a/macos/Sources/Ghostty/Surface View/SurfaceView.swift	
++++ b/macos/Sources/Ghostty/Surface View/SurfaceView.swift	
+@@ -730,6 +730,13 @@ extension Ghostty {
+                     return try initialInput.withCString { cInput in
+                         config.initial_input = cInput
+ 
++                        // Ghostty Dock: lets the Claude Code hook name the surface
++                        // it runs in, so the sidebar can show its status.
++                        var environmentVariables = environmentVariables
++#if os(macOS)
++                        environmentVariables[DockSessions.surfaceEnv] = view.id.uuidString
++#endif
++
+                         // Convert dictionary to arrays for easier processing
+                         let keys = Array(environmentVariables.keys)
+                         let values = Array(environmentVariables.values)

@@ -2,8 +2,9 @@
 
 # Installs Ghostty Dock: the opener and the Claude Code hook into
 # ~/.local/bin, the hook into ~/.claude/settings.json, the "Launch ... in
-# Ghostty" Finder Quick Actions switched to open tabs, the app into
-# ~/Applications, and a LaunchAgent that starts it at login.
+# Ghostty" Finder Quick Actions switched to open tabs, and the app (Ghostty
+# with the session sidebar built in, scripts/build-terminal.sh) into
+# ~/Applications.
 
 DEPENDENCIES=(jq perl swift codesign launchctl)
 SCRIPT_NAME=$(basename "$0")
@@ -68,23 +69,20 @@ function main() {
         return
     fi
 
-    print_step 1 5 "Scripts into $BIN_DIR"
+    print_step 1 4 "Scripts into $BIN_DIR"
     install_scripts || exit 1
-    print_step 2 5 "Claude Code hooks in $SETTINGS"
+    print_step 2 4 "Claude Code hooks in $SETTINGS"
     install_hooks || exit 1
-    print_step 3 5 "Finder Quick Actions open tabs"
+    print_step 3 4 "Finder Quick Actions open tabs"
     switch_quick_actions || exit 1
     if $skip_app; then
         print_warning "skipped the app (--skip-app)"
         return
     fi
-    print_step 4 5 "Build and install the app"
-    bash "$ROOT/scripts/build-app.sh" --no-open || exit 1
-    print_step 5 5 "Start at login"
-    install_agent || exit 1
-    print_success "Ghostty Dock is installed and running"
-    echo "  - macOS asks once to let Ghostty Dock control Ghostty, and for Accessibility (to move Ghostty aside)."
-    echo "  - Sessions already open keep their own Ghostty app until closed; new ones open as tabs."
+    print_step 4 4 "Build and install the app"
+    bash "$ROOT/scripts/build-terminal.sh" --no-open || exit 1
+    print_success "Ghostty Dock is installed: open it from ~/Applications"
+    echo "  - Sessions already open keep their own Ghostty app until closed."
 }
 
 function install_scripts() {
