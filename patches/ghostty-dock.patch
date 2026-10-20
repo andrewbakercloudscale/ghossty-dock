@@ -981,10 +981,10 @@ index 0000000..ff1ea86
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..cb51af2
+index 0000000..433a5d8
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,435 @@
+@@ -0,0 +1,440 @@
 +import AppKit
 +import SwiftUI
 +
@@ -1220,11 +1220,16 @@ index 0000000..cb51af2
 +        .padding(.vertical, 6)
 +        .background(
 +            RoundedRectangle(cornerRadius: 7)
-+                .fill(row.selected ? DockPalette.surface : hover ? DockPalette.base : Color.clear)
++                .fill(row.selected ? DockPalette.blue.opacity(0.24) : hover ? DockPalette.base : Color.clear)
 +        )
++        .overlay {
++            if row.selected {
++                RoundedRectangle(cornerRadius: 7).strokeBorder(DockPalette.blue.opacity(0.8), lineWidth: 1.5)
++            }
++        }
 +        .overlay(alignment: .leading) {
 +            if row.selected {
-+                RoundedRectangle(cornerRadius: 1.5).fill(DockPalette.blue).frame(width: 3, height: 18).offset(x: -3)
++                RoundedRectangle(cornerRadius: 2).fill(DockPalette.blue).frame(width: 4, height: 28).offset(x: -4)
 +            }
 +        }
 +        .contentShape(Rectangle())
