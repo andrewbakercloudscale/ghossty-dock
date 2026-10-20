@@ -41,13 +41,22 @@ reports each session's status.
 
 ## Settings (Cmd-,)
 
-- Sort: **alphabetical** (default; rows never move), **urgency** (needs you, then idle with most recently idle first, then
-  running), **running first** (running, then needs you, then idle), or **tab order**.
-- Sidebar on/off, native tab bar, hotkey, Dock badge, open at login.
-- **Reopen Claude sessions when Ghostty Dock starts** (on by default): the app
-  records its open sessions every 10 seconds; after a quit or crash they come
-  back as tabs with `claude --resume`. Sessions already running elsewhere are
-  skipped.
+<img src="docs/settings.png" width="420" alt="Ghostty Dock Settings">
+
+| Setting | Default | What it does |
+|---|---|---|
+| Show the sessions sidebar | on | The tab list on the left. Off gives you plain Ghostty tabs. |
+| Sort | Alphabetical | **Alphabetical**: by name, rows never move. **Needs you first**: needs you, then most recently idle, running last. **Running first**: running, then needs you, then idle. **Tab order**: as the tabs are arranged. |
+| Also show Ghostty's tab bar | off | Ghostty's own tab strip along the top, as well as the sidebar. |
+| ⌃⌥J jumps to the next session that needs you | on | A global hotkey, from any app. With none waiting it goes to the next finished one. |
+| Dock icon shows how many sessions need you | on | The red badge on the Dock icon. |
+| Reopen Claude sessions when Ghostty Dock starts | on | The app records its open sessions every 10 seconds; after a quit, crash or update they come back as tabs with `claude --resume`. Sessions already running elsewhere are skipped. |
+| Open Ghostty Dock at login | off | Adds it to macOS Login Items. |
+| Version / About and Updates… | | The version, and an **Update…** button when GitHub has something newer. |
+| Edit Ghostty Config… | | Fonts, colours and keys live in Ghostty's own config file. |
+
+The sidebar width is set by dragging its edge, not here. The settings are
+ordinary macOS defaults (`defaults read consulting.cloudscale.ghosttydock`).
 
 ## About and updates
 
@@ -58,6 +67,26 @@ something new, an **Update** button appears there, in Settings and at the top
 of the sidebar. Update runs `scripts/update.sh --install` in the clone the app
 was built from: pull, rebuild, install, then restart once your sessions are
 quiet (they are resumed as tabs). Log: `~/.local/state/ghostty-dock/update.log`.
+
+## Pairs well with: Claude Code Cost Sidebar
+
+<img src="https://raw.githubusercontent.com/andrewbakercloudscale/claude-code-cost-sidebar/main/docs/sidebar-top.png" width="300" align="right" alt="Claude Code Cost Sidebar">
+
+[**Claude Code Cost Sidebar**](https://github.com/andrewbakercloudscale/claude-code-cost-sidebar)
+is a free companion: a live usage panel that Claude Code draws beside each
+session, so every Ghostty Dock tab shows what that session is costing as it
+runs.
+
+- This session's cost, $/hour, model and turns
+- Context use by part, and how many turns until auto-compact
+- A cost per turn, so an expensive turn stands out
+- Today, the last 30 days and spend by project
+
+One-line install (Claude Code sets it up and tells you what it changed):
+
+    claude "$(curl -fsSL https://raw.githubusercontent.com/andrewbakercloudscale/claude-code-cost-sidebar/main/SETUP_PROMPT.md)"
+
+<br clear="right">
 
 ## Install
 
