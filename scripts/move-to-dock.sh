@@ -124,11 +124,13 @@ function main() {
     while [ "$1" != "" ]; do
         case $1 in
         --detach)
+            # Its own session, immune to the hangup when the Ghostty this
+            # runs in closes. Not launchd: a launchd job may not read ~/Desktop.
             mkdir -p "$STATE_DIR"
             local self_pid
             self_pid=$(legacy_pids | tail -1)
-            launchctl submit -l consulting.cloudscale.ghosttydock.move -- \
-                /usr/bin/env MOVE_SELF_PID="$self_pid" /bin/bash "$ROOT/scripts/$SCRIPT_NAME" || exit 1
+            MOVE_SELF_PID="$self_pid" nohup perl -MPOSIX=setsid -e 'setsid; exec @ARGV' \
+                /bin/bash "$ROOT/scripts/$SCRIPT_NAME" >/dev/null 2>&1 </dev/null &
             echo "moving in the background; log: $LOG"
             exit 0
             ;;
@@ -168,8 +170,6 @@ function main() {
         remove_hidden_setting
         log "done: every session is in Ghostty Dock"
     fi
-    # launchd would rerun a submitted job when it exits.
-    $dry || launchctl remove consulting.cloudscale.ghosttydock.move 2>/dev/null
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
