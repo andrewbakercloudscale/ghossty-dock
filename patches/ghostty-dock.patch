@@ -90,10 +90,10 @@ index ade9bf3..dfbd82b 100644
  // rest of the app.
 diff --git a/macos/Sources/Features/Dock/DockAbout.swift b/macos/Sources/Features/Dock/DockAbout.swift
 new file mode 100644
-index 0000000..fcd8271
+index 0000000..56f1442
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAbout.swift
-@@ -0,0 +1,272 @@
+@@ -0,0 +1,321 @@
 +import AppKit
 +import SwiftUI
 +
@@ -146,29 +146,41 @@ index 0000000..fcd8271
 +
 +    private var updatesCard: some View {
 +        DockCard(title: "Updates", symbol: "arrow.down.circle", tint: DockPalette.blue) {
-+            HStack(spacing: 10) {
-+                Image(systemName: statusSymbol).font(.title2).foregroundStyle(statusColor)
-+                VStack(alignment: .leading, spacing: 2) {
-+                    Text(status).font(.callout.weight(.semibold)).foregroundStyle(statusColor)
++            HStack(spacing: 12) {
++                Image(systemName: statusSymbol).font(.title).foregroundStyle(statusColor)
++                VStack(alignment: .leading, spacing: 3) {
++                    Text(status).font(.body.weight(.semibold)).foregroundStyle(statusColor)
 +                    Text("You have \(DockUpdates.version)  ·  \(updates.checkedText)")
 +                        .font(.callout).foregroundStyle(DockPalette.text)
 +                }
 +                Spacer()
 +                if updates.available && updates.state != .installing {
-+                    Button("Update") { updates.confirmInstall() }
-+                        .buttonStyle(.borderedProminent).tint(DockPalette.green.opacity(0.85))
-+                }
-+                Button {
-+                    updates.check()
-+                } label: {
-+                    if updates.state == .checking {
-+                        HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Checking…") }
-+                    } else {
-+                        Label("Check for updates", systemImage: "arrow.clockwise")
++                    Button { updates.confirmInstall() } label: {
++                        Label("Update now", systemImage: "arrow.down.circle")
 +                    }
++                    .buttonStyle(DockFilledButton(color: DockPalette.green))
++                } else {
++                    Button { updates.check() } label: {
++                        if updates.state == .checking || updates.state == .installing {
++                            HStack(spacing: 7) {
++                                ProgressView().controlSize(.small)
++                                Text(updates.state == .installing ? "Updating…" : "Checking…")
++                            }
++                        } else {
++                            Label("Check for updates", systemImage: "arrow.clockwise")
++                        }
++                    }
++                    .buttonStyle(DockFilledButton(color: DockPalette.blue))
++                    .disabled(updates.state == .checking || updates.state == .installing)
 +                }
-+                .buttonStyle(.bordered)
-+                .disabled(updates.state == .checking || updates.state == .installing)
++            }
++            HStack(spacing: 8) {
++                pill("All changes", "shippingbox", URL(string: "https://github.com/\(DockUpdates.repo)/commits/main")!)
++                if updates.available {
++                    Button { updates.check() } label: { Label("Check again", systemImage: "arrow.clockwise") }
++                        .buttonStyle(DockPillButton(color: DockPalette.blue))
++                        .disabled(updates.state == .checking || updates.state == .installing)
++                }
 +            }
 +            if updates.state == .installing {
 +                Text(updates.progress).font(.callout.monospaced()).foregroundStyle(DockPalette.teal)
@@ -198,7 +210,7 @@ index 0000000..fcd8271
 +                Text("This clone has \(updates.ahead) commit\(updates.ahead == 1 ? "" : "s") not on GitHub yet; push them before updating.")
 +                    .font(.callout).foregroundStyle(DockPalette.peach).fixedSize(horizontal: false, vertical: true)
 +            }
-+            Text("Update pulls GitHub's latest into the clone it was built from, rebuilds, and restarts once your sessions are quiet. They come back as tabs.")
++            Text("Checks run a minute after launch and every 6 hours. Update pulls GitHub's latest into the clone it was built from, rebuilds, and restarts once your sessions are quiet. They come back as tabs.")
 +                .font(.callout).foregroundStyle(DockPalette.text).fixedSize(horizontal: false, vertical: true)
 +        }
 +    }
@@ -302,6 +314,12 @@ index 0000000..fcd8271
 +        return updates.lastCheck == nil ? DockPalette.text : DockPalette.green
 +    }
 +
++    private func pill(_ title: String, _ symbol: String, _ url: URL) -> some View {
++        Button { NSWorkspace.shared.open(url) } label: { Label(title, systemImage: symbol) }
++            .buttonStyle(DockPillButton(color: DockPalette.blue))
++            .help(url.absoluteString)
++    }
++
 +    private func linkRow(_ title: String, _ detail: String, _ symbol: String, _ color: Color, _ url: URL) -> some View {
 +        Button { NSWorkspace.shared.open(url) } label: {
 +            HStack(spacing: 10) {
@@ -319,6 +337,37 @@ index 0000000..fcd8271
 +        }
 +        .buttonStyle(.plain)
 +        .help(url.absoluteString)
++    }
++}
++
++/// The main action in a card: a solid button with dark text, like a Mac
++/// prominent button but in the sidebar's colours.
++struct DockFilledButton: ButtonStyle {
++    var color: Color
++    @Environment(\.isEnabled) private var enabled
++
++    func makeBody(configuration: Configuration) -> some View {
++        configuration.label
++            .font(.body.weight(.semibold))
++            .foregroundStyle(DockPalette.mantle)
++            .padding(.horizontal, 16).padding(.vertical, 9)
++            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
++                .fill(color.opacity(!enabled ? 0.55 : configuration.isPressed ? 0.75 : 1)))
++            .contentShape(Rectangle())
++    }
++}
++
++/// A secondary action: a tinted capsule.
++struct DockPillButton: ButtonStyle {
++    var color: Color
++
++    func makeBody(configuration: Configuration) -> some View {
++        configuration.label
++            .font(.callout.weight(.semibold))
++            .foregroundStyle(color)
++            .padding(.horizontal, 14).padding(.vertical, 6)
++            .background(Capsule().fill(color.opacity(configuration.isPressed ? 0.28 : 0.16)))
++            .contentShape(Capsule())
 +    }
 +}
 +
@@ -981,10 +1030,10 @@ index 0000000..ff1ea86
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..433a5d8
+index 0000000..e055204
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,440 @@
+@@ -0,0 +1,446 @@
 +import AppKit
 +import SwiftUI
 +
@@ -1140,6 +1189,12 @@ index 0000000..433a5d8
 +            .buttonStyle(.plain)
 +            .foregroundStyle(DockPalette.text)
 +            .help("Ghostty Dock Settings (⌘,)")
++            Button(action: { DockAboutWindow.shared.show() }) {
++                Image(systemName: "info.circle").font(.system(size: 12, weight: .semibold))
++            }
++            .buttonStyle(.plain)
++            .foregroundStyle(DockPalette.text)
++            .help("About Ghostty Dock and updates")
 +        }
 +        .padding(.horizontal, 12)
 +        .padding(.top, 10)

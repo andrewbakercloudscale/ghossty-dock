@@ -60,7 +60,8 @@ ordinary macOS defaults (`defaults read consulting.cloudscale.ghosttydock`).
 
 ## About and updates
 
-Ghostty Dock → About Ghostty Dock (or Check for Updates…) shows the version
+The ⓘ button at the top of the sidebar (or Ghostty Dock → About Ghostty Dock,
+or Check for Updates…) shows the version
 (`1.0.<commits>` and the commit it was built from), who made it, and links.
 It checks GitHub a minute after launch and every 6 hours; when there is
 something new, an **Update** button appears there, in Settings and at the top
