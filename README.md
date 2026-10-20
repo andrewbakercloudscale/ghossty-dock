@@ -7,7 +7,7 @@ next session waiting for you.
 
 ![Ghostty Dock window](docs/window.png)
 
-<img src="docs/statuses.png" width="240" alt="Session sidebar"> <img src="docs/icon.png" width="128" alt="Ghostty Dock icon">
+<img src="docs/statuses.png" width="268" alt="Session sidebar"> <img src="docs/icon.png" width="128" alt="Ghostty Dock icon">
 
 It is Ghostty 1.3.1 plus `patches/ghostty-dock.patch`, built as
 `~/Applications/Ghostty Dock.app`. A Claude Code hook (`bin/ghostty-dock-hook`)
