@@ -9,6 +9,6 @@ let package = Package(
         .target(name: "DockCore"),
         // The sidebar app. Thin: it polls Ghostty, renders DockCore's rows and forwards clicks.
         .executableTarget(name: "GhosttyDock", dependencies: ["DockCore"]),
-        .testTarget(name: "DockCoreTests", dependencies: ["DockCore"]),
+        .testTarget(name: "DockCoreTests", dependencies: ["DockCore"], path: "tests/DockCoreTests"),
     ]
 )
