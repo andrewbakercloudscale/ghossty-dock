@@ -576,7 +576,7 @@ index 0000000..a69ab05
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..3d29ed2
+index 0000000..6685740
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
 @@ -0,0 +1,318 @@
@@ -740,7 +740,7 @@ index 0000000..3d29ed2
 +                }
 +            }
 +            Spacer(minLength: 0)
-+            if row.sessionId != nil && (hover || undocking) {
++            if row.sessionId != nil {
 +                Button(action: onUndock) {
 +                    Text(undocking ? "Undocking…" : "Undock")
 +                        .font(.system(size: 10.5, weight: .semibold))
