@@ -9,9 +9,10 @@
 # (--detach) when the calling session is one of those being moved.
 
 SCRIPT_NAME=$(basename "$0")
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
+SELF="$(cd "$(dirname "$0")" && pwd)/$SCRIPT_NAME"
 STATE_DIR="$HOME/.local/state/ghostty-dock"
 LOG="$STATE_DIR/move-to-dock.log"
+LOCK="$STATE_DIR/move-to-dock.pid"
 OPENER="$HOME/.local/bin/ghostty-dock-open"
 GHOSTTY_BIN="/Applications/Ghostty.app/Contents/MacOS/ghostty"
 QUIET_SECS=60
@@ -27,6 +28,7 @@ usage: ${SCRIPT_NAME} [options]
 options:
     --detach       Run in the background under launchd and return at once
     --dry-run      Only list what would move
+    --status       Print "<sessions left to move> <1 if a move is running, else 0>"
     -h|--help      Show this help message
 
 EOM
@@ -126,6 +128,20 @@ function legacy_pids() {
     [ -n "$self" ] && echo "$self"
 }
 
+# Stock Ghostty apps with a Claude Code session in them.
+function count_movable() {
+    local n=0
+    local gpid
+    for gpid in $(pgrep -f "^$GHOSTTY_BIN"); do
+        [ -n "$(claude_under "$gpid")" ] && n=$((n + 1))
+    done
+    echo "$n"
+}
+
+function mover_running() {
+    [ -f "$LOCK" ] && kill -0 "$(cat "$LOCK")" 2>/dev/null
+}
+
 function remove_hidden_setting() {
     local cfg="$HOME/.config/ghostty/config"
     [ -f "$cfg" ] || return
@@ -146,11 +162,15 @@ function main() {
             local self_pid
             self_pid=$(legacy_pids | tail -1)
             MOVE_SELF_PID="$self_pid" nohup perl -MPOSIX=setsid -e 'setsid; exec @ARGV' \
-                /bin/bash "$ROOT/scripts/$SCRIPT_NAME" >/dev/null 2>&1 </dev/null &
+                /bin/bash "$SELF" >/dev/null 2>&1 </dev/null &
             echo "moving in the background; log: $LOG"
             exit 0
             ;;
         --dry-run) dry=true ;;
+        --status)
+            if mover_running; then echo "$(count_movable) 1"; else echo "$(count_movable) 0"; fi
+            exit 0
+            ;;
         -h | --help) usage ;;
         *)
             echo "Error: Unknown option '$1'" >&2
@@ -161,6 +181,10 @@ function main() {
     done
     mkdir -p "$STATE_DIR" || exit 1
     [ -x "$OPENER" ] || { echo "Error: $OPENER missing, run install.sh" >&2; exit 1; }
+    if ! $dry; then
+        mover_running && { echo "a move is already running; log: $LOG"; exit 0; }
+        echo $$ >"$LOCK"
+    fi
 
     local pending
     pending=$(legacy_pids)
@@ -186,6 +210,7 @@ function main() {
         remove_hidden_setting
         log "done: every session is in Ghostty Dock"
     fi
+    $dry || rm -f "$LOCK"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

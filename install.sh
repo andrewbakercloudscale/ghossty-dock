@@ -91,7 +91,9 @@ function install_scripts() {
     for f in ghostty-dock-open ghostty-dock-hook; do
         install -m 0755 "$ROOT/bin/$f" "$BIN_DIR/$f" || { print_error "could not install $f"; return 1; }
     done
-    print_success "ghostty-dock-open, ghostty-dock-hook"
+    install -m 0755 "$ROOT/scripts/move-to-dock.sh" "$BIN_DIR/ghostty-dock-move" ||
+        { print_error "could not install ghostty-dock-move"; return 1; }
+    print_success "ghostty-dock-open, ghostty-dock-hook, ghostty-dock-move"
 }
 
 function install_hooks() {
@@ -192,7 +194,7 @@ function uninstall_all() {
     rm -f "$AGENT_PLIST"
     pkill -x GhosttyDock 2>/dev/null
     rm -rf "$APP"
-    rm -f "$BIN_DIR/ghostty-dock-open" "$BIN_DIR/ghostty-dock-hook"
+    rm -f "$BIN_DIR/ghostty-dock-open" "$BIN_DIR/ghostty-dock-hook" "$BIN_DIR/ghostty-dock-move"
     if [ -f "$SETTINGS" ] && jq -e . "$SETTINGS" >/dev/null 2>&1; then
         local tmp="$SETTINGS.ghostty-dock.tmp"
         jq '
