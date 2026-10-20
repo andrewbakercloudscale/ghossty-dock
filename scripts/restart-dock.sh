@@ -39,7 +39,7 @@ function log() {
 }
 
 function app_pid() {
-    ps -axo pid=,command= | awk -v bin="$APP_BIN" '{ pid = $1; $1 = ""; sub(/^ /, "") } $0 == bin { print pid; exit }'
+    ps -axo pid=,command= | awk -v bin="$APP_BIN" '{ pid = $1; $1 = ""; sub(/^ /, "") } index($0, bin) == 1 && (length($0) == length(bin) || substr($0, length(bin) + 1, 1) == " ") { print pid; exit }'
 }
 
 # Prints the pid of every claude under the app.
