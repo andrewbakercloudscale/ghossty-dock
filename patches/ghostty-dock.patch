@@ -104,10 +104,10 @@ index 0000000..4b8472f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..3b6a30d
+index 0000000..c3c7cc4
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,331 @@
+@@ -0,0 +1,343 @@
 +import AppKit
 +import Combine
 +
@@ -172,6 +172,8 @@ index 0000000..3b6a30d
 +        .appendingPathComponent(".local/state/ghostty-dock")
 +    private var seen: [String: Int] = [:]
 +    private var timer: Timer?
++    /// Tabs whose session was undocked: closed once claude has left them.
++    private var closeWhenEmpty: [ObjectIdentifier: Date] = [:]
 +    private var moveTimer: Timer?
 +    private var watcher: DispatchSourceFileSystemObject?
 +    private var jumpKey: DockHotKey?
@@ -253,6 +255,7 @@ index 0000000..3b6a30d
 +    func undock(_ row: Row) {
 +        guard let sid = row.sessionId else { return }
 +        undocking.insert(sid)
++        closeWhenEmpty[row.id] = Date()
 +        runMover(["--now", "--undock", sid])
 +    }
 +
@@ -380,6 +383,15 @@ index 0000000..3b6a30d
 +            }
 +            return place(a) < place(b)
 +        }
++        for row in built where closeWhenEmpty[row.id] != nil {
++            if row.status == .shell {
++                closeWhenEmpty[row.id] = nil
++                row.controller?.window?.close()
++            } else if Date().timeIntervalSince(closeWhenEmpty[row.id]!) > 30 {
++                closeWhenEmpty[row.id] = nil
++            }
++        }
++        closeWhenEmpty = closeWhenEmpty.filter { id, _ in built.contains { $0.id == id } }
 +        if built != rows { rows = built }
 +        let badge = DockSettings.dockBadge && waitingCount > 0 ? "\(waitingCount)" : nil
 +        if NSApp.dockTile.badgeLabel != badge { NSApp.dockTile.badgeLabel = badge }
