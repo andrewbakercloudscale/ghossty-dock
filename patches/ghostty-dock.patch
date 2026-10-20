@@ -1,8 +1,19 @@
 diff --git a/macos/Sources/App/macOS/AppDelegate.swift b/macos/Sources/App/macOS/AppDelegate.swift
-index b02337e..6cee01b 100644
+index b02337e..b156728 100644
 --- a/macos/Sources/App/macOS/AppDelegate.swift
 +++ b/macos/Sources/App/macOS/AppDelegate.swift
-@@ -796,13 +796,9 @@ class AppDelegate: NSObject,
+@@ -210,6 +210,10 @@ class AppDelegate: NSObject,
+         // Store our start time
+         applicationLaunchTime = ProcessInfo.processInfo.systemUptime
+ 
++        // Ghostty Dock: session statuses, badge and hotkey run with or without the sidebar.
++        DockSettings.register()
++        DockSessions.shared.start()
++
+         // Check if secure input was enabled when we last quit.
+         if UserDefaults.ghostty.bool(forKey: "SecureInput") != SecureInput.shared.enabled {
+             toggleSecureInput(self)
+@@ -796,13 +800,9 @@ class AppDelegate: NSObject,
          DispatchQueue.main.async { self.syncAppearance(config: config) }
  
          // Decide whether to hide/unhide app from dock and app switcher
@@ -19,6 +30,15 @@ index b02337e..6cee01b 100644
  
          // If we have configuration errors, we need to show them.
          let c = ConfigurationErrorsController.sharedInstance
+@@ -941,7 +941,7 @@ class AppDelegate: NSObject,
+     // MARK: - IB Actions
+ 
+     @IBAction func openConfig(_ sender: Any?) {
+-        Ghostty.App.openConfig()
++        DockSettingsWindow.shared.show()
+     }
+ 
+     @IBAction func reloadConfig(_ sender: Any?) {
 diff --git a/macos/Sources/Features/Dock/DockHotKey.swift b/macos/Sources/Features/Dock/DockHotKey.swift
 new file mode 100644
 index 0000000..4b8472f
@@ -65,10 +85,10 @@ index 0000000..4b8472f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..eddec68
+index 0000000..a6c94fc
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,191 @@
+@@ -0,0 +1,225 @@
 +import AppKit
 +import Combine
 +
@@ -130,8 +150,26 @@ index 0000000..eddec68
 +        try? FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
 +        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.refresh() }
 +        watchSessions()
-+        jumpKey = DockHotKey(keyCode: DockHotKey.jumpKeyCode, modifiers: DockHotKey.jumpModifiers, id: 1) { [weak self] in
-+            self?.jumpToNextWaiting()
++        NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil,
++                                               queue: .main) { [weak self] _ in self?.applySettings() }
++        applySettings()
++    }
++
++    /// Settings take effect at once, in every window.
++    private func applySettings() {
++        if DockSettings.jumpHotKey != (jumpKey != nil) {
++            jumpKey = DockSettings.jumpHotKey
++                ? DockHotKey(keyCode: DockHotKey.jumpKeyCode, modifiers: DockHotKey.jumpModifiers, id: 1) { [weak self] in
++                    self?.jumpToNextWaiting()
++                }
++                : nil
++        }
++        let hideTabBar = !DockSettings.showTabBar
++        for window in NSApp.windows {
++            for accessory in window.titlebarAccessoryViewControllers
++            where accessory.identifier == TerminalWindow.tabBarIdentifier && accessory.isHidden != hideTabBar {
++                accessory.isHidden = hideTabBar
++            }
 +        }
 +        refresh()
 +    }
@@ -204,12 +242,21 @@ index 0000000..eddec68
 +                             controller: controller))
 +        }
 +        order.removeAll { id in !built.contains { $0.id == id } }
++        // Tab order: windows in the order first seen, tabs as in each window.
++        func place(_ r: Row) -> (Int, Int) {
++            guard let w = r.controller?.window else { return (0, 0) }
++            let tabs = w.tabGroup?.windows ?? [w]
++            let first = tabs.compactMap { ($0.windowController as? TerminalController).map(ObjectIdentifier.init) }
++                .compactMap { order.firstIndex(of: $0) }.min() ?? 0
++            return (first, tabs.firstIndex(of: w) ?? 0)
++        }
++        let needsYouFirst = DockSettings.needsYouFirst
 +        built.sort { a, b in
-+            if a.status != b.status { return a.status < b.status }
-+            return (order.firstIndex(of: a.id) ?? 0) < (order.firstIndex(of: b.id) ?? 0)
++            if needsYouFirst && a.status != b.status { return a.status < b.status }
++            return place(a) < place(b)
 +        }
 +        if built != rows { rows = built }
-+        let badge = waitingCount > 0 ? "\(waitingCount)" : nil
++        let badge = DockSettings.dockBadge && waitingCount > 0 ? "\(waitingCount)" : nil
 +        if NSApp.dockTile.badgeLabel != badge { NSApp.dockTile.badgeLabel = badge }
 +    }
 +
@@ -221,6 +268,13 @@ index 0000000..eddec68
 +            window.makeFirstResponder(surface)
 +        }
 +        refresh()
++    }
++
++    /// Closes the tab as Cmd-W would, so Ghostty still asks first when
++    /// something is running in it.
++    func closeTab(_ row: Row) {
++        row.controller?.window?.performClose(nil)
++        DispatchQueue.main.async { self.refresh() }
 +    }
 +
 +    /// The next tab that needs you after the one on screen; with none
@@ -260,12 +314,117 @@ index 0000000..eddec68
 +        return s.trimmingCharacters(in: .whitespaces)
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
+new file mode 100644
+index 0000000..ecab181
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockSettings.swift
+@@ -0,0 +1,99 @@
++import AppKit
++import ServiceManagement
++import SwiftUI
++
++/// Ghostty Dock's own settings, in UserDefaults. Cmd-, opens them; Ghostty's
++/// config file is one button away.
++enum DockSettings {
++    static let showSidebarKey = "dock.showSidebar"
++    static let needsYouFirstKey = "dock.needsYouFirst"
++    static let showTabBarKey = "dock.showTabBar"
++    static let jumpHotKeyKey = "dock.jumpHotKey"
++    static let dockBadgeKey = "dock.dockBadge"
++
++    static func register() {
++        UserDefaults.standard.register(defaults: [
++            showSidebarKey: true,
++            needsYouFirstKey: true,
++            showTabBarKey: false,
++            jumpHotKeyKey: true,
++            dockBadgeKey: true,
++        ])
++    }
++
++    static var showSidebar: Bool { UserDefaults.standard.bool(forKey: showSidebarKey) }
++    static var needsYouFirst: Bool { UserDefaults.standard.bool(forKey: needsYouFirstKey) }
++    static var showTabBar: Bool { UserDefaults.standard.bool(forKey: showTabBarKey) }
++    static var jumpHotKey: Bool { UserDefaults.standard.bool(forKey: jumpHotKeyKey) }
++    static var dockBadge: Bool { UserDefaults.standard.bool(forKey: dockBadgeKey) }
++}
++
++struct DockSettingsView: View {
++    @AppStorage(DockSettings.showSidebarKey) private var showSidebar = true
++    @AppStorage(DockSettings.needsYouFirstKey) private var needsYouFirst = true
++    @AppStorage(DockSettings.showTabBarKey) private var showTabBar = false
++    @AppStorage(DockSettings.jumpHotKeyKey) private var jumpHotKey = true
++    @AppStorage(DockSettings.dockBadgeKey) private var dockBadge = true
++    @State private var startAtLogin = SMAppService.mainApp.status == .enabled
++    @State private var loginError: String?
++
++    var body: some View {
++        Form {
++            Section("Sidebar") {
++                Toggle("Show the sessions sidebar", isOn: $showSidebar)
++                Picker("Order", selection: $needsYouFirst) {
++                    Text("Needs you, running, finished, idle").tag(true)
++                    Text("Tab order").tag(false)
++                }
++                Toggle("Also show Ghostty's tab bar", isOn: $showTabBar)
++            }
++            Section("Getting your attention") {
++                Toggle("⌃⌥J jumps to the next session that needs you", isOn: $jumpHotKey)
++                Text("Works from any app. With none waiting, it goes to the next finished one.")
++                    .font(.callout)
++                Toggle("Dock icon shows how many sessions need you", isOn: $dockBadge)
++            }
++            Section("App") {
++                Toggle("Open Ghostty Dock at login", isOn: $startAtLogin)
++                    .onChange(of: startAtLogin) { on in setLogin(on) }
++                if let loginError {
++                    Text(loginError).font(.callout).foregroundStyle(.red)
++                }
++                LabeledContent("Fonts, colours, keys") {
++                    Button("Edit Ghostty Config…") { Ghostty.App.openConfig() }
++                }
++            }
++        }
++        .formStyle(.grouped)
++        .frame(width: 480)
++        .fixedSize(horizontal: false, vertical: true)
++    }
++
++    private func setLogin(_ on: Bool) {
++        do {
++            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
++            loginError = nil
++        } catch {
++            loginError = "macOS refused: \(error.localizedDescription)"
++            startAtLogin = SMAppService.mainApp.status == .enabled
++        }
++    }
++}
++
++final class DockSettingsWindow {
++    static let shared = DockSettingsWindow()
++    private var window: NSWindow?
++
++    func show() {
++        if window == nil {
++            let w = NSWindow(contentViewController: NSHostingController(rootView: DockSettingsView()))
++            w.title = "Ghostty Dock Settings"
++            w.styleMask = [.titled, .closable]
++            w.isReleasedWhenClosed = false
++            w.center()
++            window = w
++        }
++        NSApp.activate(ignoringOtherApps: true)
++        window?.makeKeyAndOrderFront(nil)
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..0eb08d3
+index 0000000..0065754
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,207 @@
 +import SwiftUI
 +
 +/// Catppuccin Mocha. All text is DockPalette.text or a status colour, never
@@ -307,17 +466,22 @@ index 0000000..0eb08d3
 +/// shows the same list: a row per tab across all windows, needs-you first.
 +struct DockSidebarView: View {
 +    @ObservedObject var model = DockSessions.shared
++    @AppStorage(DockSettings.showSidebarKey) private var show = true
 +    var onNewTab: () -> Void
 +
 +    static let width: CGFloat = 220
 +
 +    var body: some View {
++        if show { sidebar }
++    }
++
++    private var sidebar: some View {
 +        VStack(spacing: 0) {
 +            header
 +            ScrollView {
 +                LazyVStack(spacing: 2) {
 +                    ForEach(model.rows) { row in
-+                        DockRowView(row: row).onTapGesture { model.select(row) }
++                        DockRowView(row: row, onClose: { model.closeTab(row) }).onTapGesture { model.select(row) }
 +                    }
 +                }
 +                .padding(.horizontal, 6)
@@ -328,7 +492,6 @@ index 0000000..0eb08d3
 +        .frame(maxHeight: .infinity)
 +        .background(DockPalette.mantle)
 +        .environment(\.colorScheme, .dark)
-+        .onAppear { model.start() }
 +    }
 +
 +    private var header: some View {
@@ -349,6 +512,12 @@ index 0000000..0eb08d3
 +            .buttonStyle(.plain)
 +            .foregroundStyle(DockPalette.text)
 +            .help("Next session that needs you (⌃⌥J)")
++            Button(action: { DockSettingsWindow.shared.show() }) {
++                Image(systemName: "gearshape").font(.system(size: 12, weight: .semibold))
++            }
++            .buttonStyle(.plain)
++            .foregroundStyle(DockPalette.text)
++            .help("Ghostty Dock Settings (⌘,)")
 +        }
 +        .padding(.horizontal, 12)
 +        .padding(.top, 10)
@@ -372,7 +541,9 @@ index 0000000..0eb08d3
 +
 +struct DockRowView: View {
 +    var row: DockSessions.Row
++    var onClose: () -> Void
 +    @State private var hover = false
++    @State private var hoverClose = false
 +
 +    var body: some View {
 +        HStack(spacing: 9) {
@@ -391,6 +562,19 @@ index 0000000..0eb08d3
 +                }
 +            }
 +            Spacer(minLength: 0)
++            // Like Chrome: on the tab under the pointer and the selected one.
++            if hover || row.selected {
++                Button(action: onClose) {
++                    Image(systemName: "xmark")
++                        .font(.system(size: 9, weight: .bold))
++                        .foregroundStyle(DockPalette.text)
++                        .frame(width: 18, height: 18)
++                        .background(Circle().fill(hoverClose ? DockPalette.surface.opacity(1.6) : Color.clear))
++                }
++                .buttonStyle(.plain)
++                .onHover { hoverClose = $0 }
++                .help("Close tab")
++            }
 +        }
 +        .padding(.horizontal, 8)
 +        .padding(.vertical, 6)
@@ -472,7 +656,7 @@ index b6e1c63..34e68ba 100644
                  // Ignore safe area to extend up in to the titlebar region if we have the "hidden" titlebar style
                  .ignoresSafeArea(.container, edges: ghostty.config.macosTitlebarStyle == .hidden ? .top : [])
 diff --git a/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift b/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift
-index e19d671..f3f51ad 100644
+index e19d671..ae08f36 100644
 --- a/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift	
 +++ b/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift	
 @@ -255,6 +255,8 @@ class TerminalWindow: NSWindow {
@@ -480,10 +664,27 @@ index e19d671..f3f51ad 100644
          if isTabBar(childViewController) {
              childViewController.identifier = Self.tabBarIdentifier
 +            // Ghostty Dock: the session sidebar is the tab bar.
-+            childViewController.isHidden = true
++            childViewController.isHidden = !DockSettings.showTabBar
              tabBarDidAppear()
          }
      }
+diff --git a/macos/Sources/Ghostty/Ghostty.App.swift b/macos/Sources/Ghostty/Ghostty.App.swift
+index 2f0644b..1807a0c 100644
+--- a/macos/Sources/Ghostty/Ghostty.App.swift
++++ b/macos/Sources/Ghostty/Ghostty.App.swift
+@@ -549,7 +549,12 @@ extension Ghostty {
+                 pwdChanged(app, target: target, v: action.action.pwd)
+ 
+             case GHOSTTY_ACTION_OPEN_CONFIG:
++                // Ghostty Dock: Cmd-, opens its settings, which link to the config.
++                #if os(macOS)
++                DockSettingsWindow.shared.show()
++                #else
+                 openConfig()
++                #endif
+ 
+             case GHOSTTY_ACTION_FLOAT_WINDOW:
+                 toggleFloatWindow(app, target: target, mode: action.action.float_window)
 diff --git a/macos/Sources/Ghostty/Surface View/SurfaceView.swift b/macos/Sources/Ghostty/Surface View/SurfaceView.swift
 index 47503dc..31360b6 100644
 --- a/macos/Sources/Ghostty/Surface View/SurfaceView.swift	
