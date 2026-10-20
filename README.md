@@ -5,6 +5,8 @@ every Claude Code session as a tab, coloured by status (needs you, running,
 finished, idle, shell) and sorted needs-you first. Ctrl-Opt-J jumps to the
 next session waiting for you.
 
+![Ghostty Dock window](docs/window.png)
+
 <img src="docs/statuses.png" width="240" alt="Session sidebar"> <img src="docs/icon.png" width="128" alt="Ghostty Dock icon">
 
 It is Ghostty 1.3.1 plus `patches/ghostty-dock.patch`, built as
