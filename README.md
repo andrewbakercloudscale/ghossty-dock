@@ -24,6 +24,9 @@ reports each session's status.
 | terminal | teal | plain shell, no Claude Code |
 
 - Click a row to switch to it; ✕ closes it; + opens a new tab.
+- Tray button (shown while sessions still sit in separate Ghostty apps):
+  brings them in as tabs. Busy ones move once quiet for a minute.
+  Same as `ghostty-dock-move --detach`.
 - Ctrl-Opt-J: jump to the next session that needs you (then finished ones).
 - Dock badge: how many sessions need you.
 
@@ -37,7 +40,7 @@ reports each session's status.
 
     ./install.sh                     # hooks, opener, Finder Quick Actions, app
     scripts/build-terminal.sh        # rebuild the app only
-    scripts/move-to-dock.sh --detach # move sessions from separate Ghostty apps into tabs
+    ghostty-dock-move --detach       # move sessions from separate Ghostty apps into tabs
 
 ## If it goes wrong: undo
 

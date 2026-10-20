@@ -104,10 +104,10 @@ index 0000000..4b8472f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..0139af0
+index 0000000..63009f0
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,240 @@
+@@ -0,0 +1,289 @@
 +import AppKit
 +import Combine
 +
@@ -147,6 +147,11 @@ index 0000000..0139af0
 +
 +    @Published private(set) var rows: [Row] = []
 +
++    /// Claude Code sessions still in their own stock Ghostty app, and whether
++    /// ghostty-dock-move is bringing them in.
++    @Published private(set) var movable = 0
++    @Published private(set) var moving = false
++
 +    var waitingCount: Int { rows.filter { $0.status == .waiting }.count }
 +    var unreadCount: Int { rows.filter { $0.status == .unread }.count }
 +
@@ -154,6 +159,7 @@ index 0000000..0139af0
 +        .appendingPathComponent(".local/state/ghostty-dock")
 +    private var seen: [String: Int] = [:]
 +    private var timer: Timer?
++    private var moveTimer: Timer?
 +    private var watcher: DispatchSourceFileSystemObject?
 +    private var jumpKey: DockHotKey?
 +    /// First-seen order of tabs, so rows keep their place within a status group.
@@ -168,10 +174,53 @@ index 0000000..0139af0
 +        guard timer == nil else { return }
 +        try? FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
 +        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.refresh() }
++        moveTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refreshMovable() }
++        refreshMovable()
 +        watchSessions()
 +        NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil,
 +                                               queue: .main) { [weak self] _ in self?.applySettings() }
 +        applySettings()
++    }
++
++    private var mover: String {
++        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/ghostty-dock-move").path
++    }
++
++    private func refreshMovable() {
++        let mover = mover
++        guard FileManager.default.isExecutableFile(atPath: mover) else { return }
++        DispatchQueue.global(qos: .utility).async { [weak self] in
++            let out = Pipe()
++            let p = Process()
++            p.executableURL = URL(fileURLWithPath: "/bin/bash")
++            p.arguments = [mover, "--status"]
++            p.standardOutput = out
++            p.standardError = FileHandle.nullDevice
++            guard (try? p.run()) != nil else { return }
++            let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
++            p.waitUntilExit()
++            let parts = text.split(separator: " ").map { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0 }
++            guard parts.count == 2 else { return }
++            DispatchQueue.main.async {
++                guard let self else { return }
++                if self.movable != parts[0] { self.movable = parts[0] }
++                if self.moving != (parts[1] == 1) { self.moving = parts[1] == 1 }
++            }
++        }
++    }
++
++    /// Moves sessions from separate Ghostty apps into tabs here. Busy ones
++    /// are waited for, never interrupted.
++    func bringInOthers() {
++        guard !moving, FileManager.default.isExecutableFile(atPath: mover) else { return }
++        let p = Process()
++        p.executableURL = URL(fileURLWithPath: "/bin/bash")
++        p.arguments = [mover, "--detach"]
++        p.standardOutput = FileHandle.nullDevice
++        p.standardError = FileHandle.nullDevice
++        try? p.run()
++        moving = true
++        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.refreshMovable() }
 +    }
 +
 +    /// Settings take effect at once, in every window.
@@ -473,10 +522,10 @@ index 0000000..a69ab05
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..b97b1bd
+index 0000000..f770ae0
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,222 @@
+@@ -0,0 +1,236 @@
 +import SwiftUI
 +
 +/// Catppuccin Mocha. All text is DockPalette.text or a status colour, never
@@ -558,6 +607,20 @@ index 0000000..b97b1bd
 +            .buttonStyle(.plain)
 +            .foregroundStyle(DockPalette.text)
 +            .help("New tab")
++            if model.movable > 0 || model.moving {
++                Button(action: model.bringInOthers) {
++                    HStack(spacing: 2) {
++                        Image(systemName: model.moving ? "hourglass" : "tray.and.arrow.down.fill")
++                            .font(.system(size: 12, weight: .semibold))
++                        if model.movable > 0 { Text("\(model.movable)").font(.system(size: 10, weight: .bold)) }
++                    }
++                }
++                .buttonStyle(.plain)
++                .foregroundStyle(DockPalette.text)
++                .help(model.moving
++                      ? "Bringing sessions in: busy ones move once quiet for a minute"
++                      : "Bring in \(model.movable) session(s) from other Ghostty windows")
++            }
 +            Button(action: model.jumpToNextWaiting) {
 +                Image(systemName: "arrow.down.to.line").font(.system(size: 12, weight: .semibold))
 +            }
