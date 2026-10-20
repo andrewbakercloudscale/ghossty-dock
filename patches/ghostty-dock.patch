@@ -39,23 +39,6 @@ index b02337e..b156728 100644
      }
  
      @IBAction func reloadConfig(_ sender: Any?) {
-diff --git a/macos/Sources/Features/Dock/.omc/state/sessions/658a6aff-5a3e-4642-96fd-48580b1307f8/pre-tool-advisory-throttle.json b/macos/Sources/Features/Dock/.omc/state/sessions/658a6aff-5a3e-4642-96fd-48580b1307f8/pre-tool-advisory-throttle.json
-new file mode 100644
-index 0000000..c7fabc9
---- /dev/null
-+++ b/macos/Sources/Features/Dock/.omc/state/sessions/658a6aff-5a3e-4642-96fd-48580b1307f8/pre-tool-advisory-throttle.json
-@@ -0,0 +1,10 @@
-+{
-+  "version": 1,
-+  "entries": {
-+    "79a93d4a2f8f50b95f852280616242fee1855dc99a3c75211917f55e72e95fae": {
-+      "last_emitted_at_ms": 1792490071880,
-+      "message": "Use parallel execution for independent tasks. Use run_in_background for long operations (npm install, builds, tests)."
-+    }
-+  },
-+  "updated_at": "2026-10-20T09:54:31.880Z"
-+}
-\ No newline at end of file
 diff --git a/macos/Sources/Features/Dock/DockHotKey.swift b/macos/Sources/Features/Dock/DockHotKey.swift
 new file mode 100644
 index 0000000..4b8472f
@@ -102,10 +85,10 @@ index 0000000..4b8472f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..a6c94fc
+index 0000000..f875c15
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,225 @@
+@@ -0,0 +1,238 @@
 +import AppKit
 +import Combine
 +
@@ -267,9 +250,22 @@ index 0000000..a6c94fc
 +                .compactMap { order.firstIndex(of: $0) }.min() ?? 0
 +            return (first, tabs.firstIndex(of: w) ?? 0)
 +        }
-+        let needsYouFirst = DockSettings.needsYouFirst
++        let sortOrder = DockSettings.order
++        // Finished and idle are one group, most recently stopped first.
++        func group(_ s: Status) -> Int {
++            switch (s, sortOrder) {
++            case (.running, .runningFirst): return 0
++            case (.waiting, _): return 1
++            case (.unread, _), (.idle, _): return 2
++            case (.running, _): return 3
++            case (.shell, _): return 4
++            }
++        }
 +        built.sort { a, b in
-+            if needsYouFirst && a.status != b.status { return a.status < b.status }
++            if sortOrder != .tabs {
++                if group(a.status) != group(b.status) { return group(a.status) < group(b.status) }
++                if group(a.status) == 2, let x = a.since, let y = b.since, x != y { return x > y }
++            }
 +            return place(a) < place(b)
 +        }
 +        if built != rows { rows = built }
@@ -333,10 +329,10 @@ index 0000000..a6c94fc
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..ecab181
+index 0000000..a69ab05
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,117 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -345,7 +341,7 @@ index 0000000..ecab181
 +/// config file is one button away.
 +enum DockSettings {
 +    static let showSidebarKey = "dock.showSidebar"
-+    static let needsYouFirstKey = "dock.needsYouFirst"
++    static let orderKey = "dock.order"
 +    static let showTabBarKey = "dock.showTabBar"
 +    static let jumpHotKeyKey = "dock.jumpHotKey"
 +    static let dockBadgeKey = "dock.dockBadge"
@@ -353,7 +349,7 @@ index 0000000..ecab181
 +    static func register() {
 +        UserDefaults.standard.register(defaults: [
 +            showSidebarKey: true,
-+            needsYouFirstKey: true,
++            orderKey: Order.urgency.rawValue,
 +            showTabBarKey: false,
 +            jumpHotKeyKey: true,
 +            dockBadgeKey: true,
@@ -361,7 +357,26 @@ index 0000000..ecab181
 +    }
 +
 +    static var showSidebar: Bool { UserDefaults.standard.bool(forKey: showSidebarKey) }
-+    static var needsYouFirst: Bool { UserDefaults.standard.bool(forKey: needsYouFirstKey) }
++    static var order: Order { Order(rawValue: UserDefaults.standard.string(forKey: orderKey) ?? "") ?? .urgency }
++
++    /// How the sidebar lists sessions.
++    enum Order: String, CaseIterable {
++        /// Needs you, then finished or idle (most recently stopped first),
++        /// then running, as those are busy without you.
++        case urgency
++        /// The same, with running sessions at the top instead.
++        case runningFirst
++        /// As the tabs are arranged.
++        case tabs
++
++        var label: String {
++            switch self {
++            case .urgency: return "Needs you, then recently idle, running last"
++            case .runningFirst: return "Running first, then needs you, then recently idle"
++            case .tabs: return "Tab order"
++            }
++        }
++    }
 +    static var showTabBar: Bool { UserDefaults.standard.bool(forKey: showTabBarKey) }
 +    static var jumpHotKey: Bool { UserDefaults.standard.bool(forKey: jumpHotKeyKey) }
 +    static var dockBadge: Bool { UserDefaults.standard.bool(forKey: dockBadgeKey) }
@@ -369,7 +384,7 @@ index 0000000..ecab181
 +
 +struct DockSettingsView: View {
 +    @AppStorage(DockSettings.showSidebarKey) private var showSidebar = true
-+    @AppStorage(DockSettings.needsYouFirstKey) private var needsYouFirst = true
++    @AppStorage(DockSettings.orderKey) private var order = DockSettings.Order.urgency
 +    @AppStorage(DockSettings.showTabBarKey) private var showTabBar = false
 +    @AppStorage(DockSettings.jumpHotKeyKey) private var jumpHotKey = true
 +    @AppStorage(DockSettings.dockBadgeKey) private var dockBadge = true
@@ -380,9 +395,8 @@ index 0000000..ecab181
 +        Form {
 +            Section("Sidebar") {
 +                Toggle("Show the sessions sidebar", isOn: $showSidebar)
-+                Picker("Order", selection: $needsYouFirst) {
-+                    Text("Needs you, running, finished, idle").tag(true)
-+                    Text("Tab order").tag(false)
++                Picker("Sort", selection: $order) {
++                    ForEach(DockSettings.Order.allCases, id: \.self) { Text($0.label).tag($0) }
 +                }
 +                Toggle("Also show Ghostty's tab bar", isOn: $showTabBar)
 +            }
