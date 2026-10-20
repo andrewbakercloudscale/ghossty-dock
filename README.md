@@ -25,10 +25,11 @@ reports each session's status.
 
 - Click a row to switch to it; ✕ closes it; + opens a new tab.
 - Hover a row and click ⇥ (or right-click → Undock) to move that session out
-  to its own Ghostty window. It waits until the session is quiet for a minute.
+  to its own Ghostty window: claude is stopped and resumed there at once.
 - **Undocked**: Claude Code sessions in their own Ghostty windows are listed
   under the tabs, grey with a dashed outline. Click one to show its window, or
-  **Dock** to move it into a tab. The tray button in the header docks them all.
+  **Dock** to restart it in a tab here at once. The tray button in the header
+  docks them all, waiting for busy ones to go quiet.
   Same as `ghostty-dock-move --pid <pid>`, `--undock <session id>`, `--detach`.
 - Ctrl-Opt-J: jump to the next session that needs you (then finished ones).
 - Dock badge: how many sessions need you.

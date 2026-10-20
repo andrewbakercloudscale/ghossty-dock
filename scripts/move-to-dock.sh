@@ -20,6 +20,8 @@ GHOSTTY_APP="/Applications/Ghostty.app"
 GHOSTTY_BIN="$GHOSTTY_APP/Contents/MacOS/ghostty"
 DOCK_BIN="$HOME/Applications/Ghostty Dock.app/Contents/MacOS/ghostty"
 QUIET_SECS=60
+# --now: move at once, interrupting a busy session.
+NOW=false
 GIVE_UP_SECS=$((12 * 3600))
 
 function usage() {
@@ -32,6 +34,7 @@ usage: ${SCRIPT_NAME} [options]
 options:
     --pid <pid>        Dock only the session in this Ghostty app (default: all)
     --undock <id>      Move this session out of Ghostty Dock into its own Ghostty
+    --now              Do not wait for a busy session to go quiet (interrupts it)
     --detach           Run in the background and return at once
     --dry-run          Only list what would move
     --status           Print "<sessions left to dock> <1 if docking all, else 0>"
@@ -114,7 +117,7 @@ function move_one() {
     fi
     local quiet
     quiet=$(quiet_for "$(transcript_for "$cwd" "$sid")")
-    if [ "$quiet" -lt "$QUIET_SECS" ]; then
+    if ! $NOW && [ "$quiet" -lt "$QUIET_SECS" ]; then
         log "$(basename "$cwd"): busy (active ${quiet}s ago), waiting"
         return 1
     fi
@@ -203,7 +206,7 @@ function undock() {
     local cwd flags started
     IFS=$'\t' read -r _ cwd flags <<<"$(session_of "$cpid")"
     started=$(date +%s)
-    while [ "$(quiet_for "$(transcript_for "$cwd" "$sid")")" -lt "$QUIET_SECS" ]; do
+    while ! $NOW && [ "$(quiet_for "$(transcript_for "$cwd" "$sid")")" -lt "$QUIET_SECS" ]; do
         log "$(basename "$cwd"): busy, undocking once quiet"
         $dry && return 0
         [ $(($(date +%s) - started)) -gt "$GIVE_UP_SECS" ] && { log "$(basename "$cwd"): gave up"; return 1; }
@@ -250,6 +253,10 @@ function main() {
             shift
             undock_id="$1"
             args+=(--undock "$1")
+            ;;
+        --now)
+            NOW=true
+            args+=(--now)
             ;;
         --dry-run)
             dry=true
