@@ -39,6 +39,25 @@ index b02337e..b156728 100644
      }
  
      @IBAction func reloadConfig(_ sender: Any?) {
+diff --git a/macos/Sources/App/macOS/main.swift b/macos/Sources/App/macOS/main.swift
+index ade9bf3..dfbd82b 100644
+--- a/macos/Sources/App/macOS/main.swift
++++ b/macos/Sources/App/macOS/main.swift
+@@ -2,6 +2,14 @@ import AppKit
+ import Cocoa
+ import GhosttyKit
+ 
++// Ghostty Dock: if we were launched from inside a Claude Code session, drop
++// its markers so the Claude sessions in our tabs don't think they are child
++// sessions (which turns off transcript saving and breaks --resume).
++for key in ProcessInfo.processInfo.environment.keys
++where key == "CLAUDECODE" || key == "CLAUDE_PID" || key.hasPrefix("CLAUDE_CODE_") {
++    unsetenv(key)
++}
++
+ // Initialize Ghostty global state. We do this once right away because the
+ // CLI APIs require it and it lets us ensure it is done immediately for the
+ // rest of the app.
 diff --git a/macos/Sources/Features/Dock/DockHotKey.swift b/macos/Sources/Features/Dock/DockHotKey.swift
 new file mode 100644
 index 0000000..4b8472f
