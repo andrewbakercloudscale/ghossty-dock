@@ -133,6 +133,9 @@ function remove_hidden_setting() {
 }
 
 function main() {
+    # Sessions we start must not inherit a Claude Code parent marker
+    # (CLAUDE_CODE_CHILD_SESSION turns off their transcript saving).
+    unset CLAUDECODE CLAUDE_PID $(compgen -e | grep "^CLAUDE_CODE_")
     local dry=false
     while [ "$1" != "" ]; do
         case $1 in
