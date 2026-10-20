@@ -24,6 +24,11 @@ reports each session's status.
 | terminal | teal | plain shell, no Claude Code |
 
 - Click a row to switch to it; ✕ closes it; + opens a new tab.
+- Each row shows its status, how long it has been in it, and **Age**: how long
+  the session has existed (since its transcript was created, across restarts).
+- **Restart** (↻, beside Undock; or right-click → Restart Session) stops claude
+  and resumes the same session in a fresh tab at once. Same as
+  `ghostty-dock-move --restart <session id>`.
 - Drag the sidebar's right edge to make it wider or narrower (double-click the edge to reset).
 - Click a row's **Undock** icon (↗, beside ✕; or right-click → Undock) to move that session out
   to its own Ghostty window: claude is stopped and resumed there at once.
@@ -39,6 +44,20 @@ reports each session's status.
 - Sort: **alphabetical** (default; rows never move), **urgency** (needs you, then idle with most recently idle first, then
   running), **running first** (running, then needs you, then idle), or **tab order**.
 - Sidebar on/off, native tab bar, hotkey, Dock badge, open at login.
+- **Reopen Claude sessions when Ghostty Dock starts** (on by default): the app
+  records its open sessions every 10 seconds; after a quit or crash they come
+  back as tabs with `claude --resume`. Sessions already running elsewhere are
+  skipped.
+
+## About and updates
+
+Ghostty Dock → About Ghostty Dock (or Check for Updates…) shows the version
+(`1.0.<commits>` and the commit it was built from), who made it, and links.
+It checks GitHub a minute after launch and every 6 hours; when there is
+something new, an **Update** button appears there, in Settings and at the top
+of the sidebar. Update runs `scripts/update.sh --install` in the clone the app
+was built from: pull, rebuild, install, then restart once your sessions are
+quiet (they are resumed as tabs). Log: `~/.local/state/ghostty-dock/update.log`.
 
 ## Install
 

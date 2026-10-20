@@ -83,6 +83,29 @@ function build_app() {
     }
 }
 
+# Ghostty Dock's own version, beside Ghostty's: 1.0.<commits>, the commit it
+# was built from ("+" when the working tree had changes) and the clone it
+# came from, which the app's Update button pulls and rebuilds.
+function stamp_version() {
+    local plist="$1"
+    local count sha
+    count=$(git -C "$ROOT" rev-list --count HEAD) || exit 1
+    sha=$(git -C "$ROOT" rev-parse --short HEAD) || exit 1
+    [ -n "$(git -C "$ROOT" status --porcelain -- . ':!vendor')" ] && sha="$sha+"
+    local key value
+    for key in GhosttyDockVersion GhosttyDockCommit GhosttyDockSource GhosttyDockBuilt; do
+        case $key in
+        GhosttyDockVersion) value="1.0.$count" ;;
+        GhosttyDockCommit) value="$sha" ;;
+        GhosttyDockSource) value="$ROOT" ;;
+        GhosttyDockBuilt) value=$(date -u '+%Y-%m-%dT%H:%M:%SZ') ;;
+        esac
+        /usr/libexec/PlistBuddy -c "Delete :$key" "$plist" 2>/dev/null
+        /usr/libexec/PlistBuddy -c "Add :$key string $value" "$plist" || exit 1
+    done
+    echo "== version 1.0.$count ($sha)"
+}
+
 function package_app() {
     local app="$ROOT/build/$APP_NAME.app"
     rm -rf "$app"
@@ -96,6 +119,7 @@ function package_app() {
         -c "Set :CFBundleIconFile AppIcon" \
         -c "Delete :CFBundleIconName" "$plist" || exit 1
     cp "$ROOT/Resources/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns" || exit 1
+    stamp_version "$plist"
 
     source "$ROOT/scripts/sign-id.sh"
     echo "== sign: $DOCK_SIGN_ID"

@@ -1,19 +1,20 @@
 diff --git a/macos/Sources/App/macOS/AppDelegate.swift b/macos/Sources/App/macOS/AppDelegate.swift
-index b02337e..b156728 100644
+index b02337e..7f8bbbb 100644
 --- a/macos/Sources/App/macOS/AppDelegate.swift
 +++ b/macos/Sources/App/macOS/AppDelegate.swift
-@@ -210,6 +210,10 @@ class AppDelegate: NSObject,
+@@ -210,6 +210,11 @@ class AppDelegate: NSObject,
          // Store our start time
          applicationLaunchTime = ProcessInfo.processInfo.systemUptime
  
 +        // Ghostty Dock: session statuses, badge and hotkey run with or without the sidebar.
 +        DockSettings.register()
 +        DockSessions.shared.start()
++        DockUpdates.shared.start()
 +
          // Check if secure input was enabled when we last quit.
          if UserDefaults.ghostty.bool(forKey: "SecureInput") != SecureInput.shared.enabled {
              toggleSecureInput(self)
-@@ -796,13 +800,9 @@ class AppDelegate: NSObject,
+@@ -796,13 +801,9 @@ class AppDelegate: NSObject,
          DispatchQueue.main.async { self.syncAppearance(config: config) }
  
          // Decide whether to hide/unhide app from dock and app switcher
@@ -30,7 +31,7 @@ index b02337e..b156728 100644
  
          // If we have configuration errors, we need to show them.
          let c = ConfigurationErrorsController.sharedInstance
-@@ -941,7 +941,7 @@ class AppDelegate: NSObject,
+@@ -941,7 +942,7 @@ class AppDelegate: NSObject,
      // MARK: - IB Actions
  
      @IBAction func openConfig(_ sender: Any?) {
@@ -39,6 +40,35 @@ index b02337e..b156728 100644
      }
  
      @IBAction func reloadConfig(_ sender: Any?) {
+@@ -949,7 +950,10 @@ class AppDelegate: NSObject,
+     }
+ 
+     @IBAction func checkForUpdates(_ sender: Any?) {
+-        updateController.checkForUpdates()
++        // Ghostty's own updater would install stock Ghostty over this app.
++        DockAboutWindow.shared.show()
++        DockUpdates.shared.check()
++        return
+         // UpdateSimulator.happyPath.simulate(with: updateViewModel)
+     }
+ 
+@@ -970,7 +974,7 @@ class AppDelegate: NSObject,
+     }
+ 
+     @IBAction func showAbout(_ sender: Any?) {
+-        AboutController.shared.show()
++        DockAboutWindow.shared.show()
+     }
+ 
+     @IBAction func showHelp(_ sender: Any) {
+@@ -1104,6 +1108,7 @@ extension AppDelegate {
+         // Note: This COULD Be done all in the xib file, but I find it easier to
+         // modify this stuff as code.
+         self.menuAbout?.setImageIfDesired(systemSymbolName: "info.circle")
++        self.menuAbout?.title = "About Ghostty Dock"
+         self.menuCheckForUpdates?.setImageIfDesired(systemSymbolName: "square.and.arrow.down")
+         self.menuOpenConfig?.setImageIfDesired(systemSymbolName: "gear")
+         self.menuReloadConfig?.setImageIfDesired(systemSymbolName: "arrow.trianglehead.2.clockwise.rotate.90")
 diff --git a/macos/Sources/App/macOS/main.swift b/macos/Sources/App/macOS/main.swift
 index ade9bf3..dfbd82b 100644
 --- a/macos/Sources/App/macOS/main.swift
@@ -58,6 +88,284 @@ index ade9bf3..dfbd82b 100644
  // Initialize Ghostty global state. We do this once right away because the
  // CLI APIs require it and it lets us ensure it is done immediately for the
  // rest of the app.
+diff --git a/macos/Sources/Features/Dock/DockAbout.swift b/macos/Sources/Features/Dock/DockAbout.swift
+new file mode 100644
+index 0000000..fcd8271
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockAbout.swift
+@@ -0,0 +1,272 @@
++import AppKit
++import SwiftUI
++
++/// Who made it, which version this is, and an Update button when GitHub has
++/// a newer one. In the sidebar's colours.
++struct DockAboutView: View {
++    @ObservedObject var updates = DockUpdates.shared
++    @State private var copied = false
++
++    static let linkedIn = URL(string: "https://www.linkedin.com/in/andrew-baker-ninja/")!
++    static let blog = URL(string: "https://andrewbaker.ninja/")!
++    static let cloudScale = URL(string: "https://cloudscale.consulting/")!
++    static let gitHubProfile = URL(string: "https://github.com/andrewbakercloudscale")!
++    static let issues = URL(string: "https://github.com/\(DockUpdates.repo)/issues")!
++    static let ghostty = URL(string: "https://ghostty.org/")!
++
++    var body: some View {
++        ScrollView {
++            VStack(alignment: .leading, spacing: 14) {
++                hero
++                updatesCard
++                author
++                project
++                details
++                Text("Copyright © 2026 Andrew Baker. Built on Ghostty by Mitchell Hashimoto and its contributors (MIT licence).")
++                    .font(.callout).foregroundStyle(DockPalette.text)
++                    .fixedSize(horizontal: false, vertical: true)
++            }
++            .padding(20)
++        }
++        .frame(width: 540)
++        .frame(minHeight: 480, idealHeight: 720)
++        .background(DockPalette.base)
++        .environment(\.colorScheme, .dark)
++    }
++
++    private var hero: some View {
++        HStack(spacing: 16) {
++            Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 84, height: 84)
++            VStack(alignment: .leading, spacing: 4) {
++                Text("Ghostty Dock").font(.largeTitle.weight(.bold)).foregroundStyle(DockPalette.text)
++                Text("Version \(DockUpdates.version) (\(DockUpdates.commit))")
++                    .font(.title3.weight(.medium)).monospacedDigit().foregroundStyle(DockPalette.blue)
++                Text("Every Claude Code session as a tab in one Ghostty window, coloured by whether it needs you, is running or has finished.")
++                    .font(.callout).foregroundStyle(DockPalette.text)
++                    .fixedSize(horizontal: false, vertical: true)
++            }
++        }
++    }
++
++    private var updatesCard: some View {
++        DockCard(title: "Updates", symbol: "arrow.down.circle", tint: DockPalette.blue) {
++            HStack(spacing: 10) {
++                Image(systemName: statusSymbol).font(.title2).foregroundStyle(statusColor)
++                VStack(alignment: .leading, spacing: 2) {
++                    Text(status).font(.callout.weight(.semibold)).foregroundStyle(statusColor)
++                    Text("You have \(DockUpdates.version)  ·  \(updates.checkedText)")
++                        .font(.callout).foregroundStyle(DockPalette.text)
++                }
++                Spacer()
++                if updates.available && updates.state != .installing {
++                    Button("Update") { updates.confirmInstall() }
++                        .buttonStyle(.borderedProminent).tint(DockPalette.green.opacity(0.85))
++                }
++                Button {
++                    updates.check()
++                } label: {
++                    if updates.state == .checking {
++                        HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Checking…") }
++                    } else {
++                        Label("Check for updates", systemImage: "arrow.clockwise")
++                    }
++                }
++                .buttonStyle(.bordered)
++                .disabled(updates.state == .checking || updates.state == .installing)
++            }
++            if updates.state == .installing {
++                Text(updates.progress).font(.callout.monospaced()).foregroundStyle(DockPalette.teal)
++            }
++            if case .failed(let why) = updates.state {
++                Text(why).font(.callout).foregroundStyle(DockPalette.peach).fixedSize(horizontal: false, vertical: true)
++            }
++            if !updates.changes.isEmpty {
++                VStack(alignment: .leading, spacing: 4) {
++                    Text("New since yours").font(.callout.weight(.semibold)).foregroundStyle(DockPalette.text)
++                    ForEach(updates.changes) { c in
++                        HStack(spacing: 8) {
++                            Text(c.sha).font(.caption.monospaced()).foregroundStyle(DockPalette.mauve)
++                            Text(c.title).font(.caption).foregroundStyle(DockPalette.text).lineLimit(1)
++                            Spacer(minLength: 4)
++                            if let d = c.date {
++                                Text(RelativeDateTimeFormatter().localizedString(for: d, relativeTo: Date()))
++                                    .font(.caption).foregroundStyle(DockPalette.text)
++                            }
++                        }
++                    }
++                }
++                .padding(10)
++                .background(RoundedRectangle(cornerRadius: 8).fill(DockPalette.blue.opacity(0.08)))
++            }
++            if updates.ahead > 0 {
++                Text("This clone has \(updates.ahead) commit\(updates.ahead == 1 ? "" : "s") not on GitHub yet; push them before updating.")
++                    .font(.callout).foregroundStyle(DockPalette.peach).fixedSize(horizontal: false, vertical: true)
++            }
++            Text("Update pulls GitHub's latest into the clone it was built from, rebuilds, and restarts once your sessions are quiet. They come back as tabs.")
++                .font(.callout).foregroundStyle(DockPalette.text).fixedSize(horizontal: false, vertical: true)
++        }
++    }
++
++    private var author: some View {
++        DockCard(title: "Made by", symbol: "person.crop.circle", tint: DockPalette.mauve) {
++            VStack(alignment: .leading, spacing: 4) {
++                Text("Andrew Baker").font(.title3.weight(.semibold)).foregroundStyle(DockPalette.text)
++                Text("Group Chief Information Officer at Capitec Bank, and the person behind CloudScale Consulting. He writes about technology, leadership and the tools he builds at andrewbaker.ninja.")
++                    .font(.callout).foregroundStyle(DockPalette.text).fixedSize(horizontal: false, vertical: true)
++            }
++            VStack(spacing: 6) {
++                linkRow("LinkedIn", "linkedin.com/in/andrew-baker-ninja", "person.2.fill", DockPalette.blue, Self.linkedIn)
++                linkRow("Blog", "andrewbaker.ninja", "text.book.closed.fill", DockPalette.green, Self.blog)
++                linkRow("CloudScale Consulting", "cloudscale.consulting", "cloud.fill", DockPalette.teal, Self.cloudScale)
++                linkRow("GitHub", "github.com/andrewbakercloudscale", "chevron.left.forwardslash.chevron.right", DockPalette.mauve, Self.gitHubProfile)
++            }
++        }
++    }
++
++    private var project: some View {
++        DockCard(title: "The project", symbol: "shippingbox", tint: DockPalette.peach) {
++            VStack(spacing: 6) {
++                linkRow("Source code", "github.com/\(DockUpdates.repo)", "curlybraces", DockPalette.blue, DockUpdates.repoPage)
++                linkRow("Report a problem or ask for a feature", "GitHub issues", "exclamationmark.bubble.fill", DockPalette.peach, Self.issues)
++                linkRow("Ghostty", "The terminal it is built on", "terminal.fill", DockPalette.teal, Self.ghostty)
++            }
++        }
++    }
++
++    private var details: some View {
++        DockCard(title: "Details", symbol: "info.circle", tint: DockPalette.teal,
++                 trailing: AnyView(Button {
++                     NSPasteboard.general.clearContents()
++                     NSPasteboard.general.setString(detailText, forType: .string)
++                     copied = true
++                     DispatchQueue.main.asyncAfter(deadline: .now() + 2) { copied = false }
++                 } label: {
++                     Label(copied ? "Copied" : "Copy details", systemImage: copied ? "checkmark" : "doc.on.doc")
++                 }
++                 .buttonStyle(.bordered))) {
++            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 6) {
++                ForEach(rows, id: \.0) { row in
++                    GridRow {
++                        Text(row.0).font(.callout.weight(.semibold)).foregroundStyle(DockPalette.blue)
++                        Text(row.1).font(.callout).foregroundStyle(DockPalette.text)
++                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
++                    }
++                }
++            }
++            HStack(spacing: 8) {
++                Button { NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL]) } label: {
++                    Label("Show the app in Finder", systemImage: "folder")
++                }
++                .buttonStyle(.bordered)
++                Button { AboutController.shared.show() } label: {
++                    Label("About Ghostty", systemImage: "info.circle")
++                }
++                .buttonStyle(.bordered)
++            }
++        }
++    }
++
++    private var rows: [(String, String)] {
++        let v = ProcessInfo.processInfo.operatingSystemVersion
++        return [
++            ("Version", "\(DockUpdates.version) (\(DockUpdates.commit))"),
++            ("Built", DockUpdates.built?.formatted(date: .abbreviated, time: .shortened) ?? "?"),
++            ("Ghostty", DockUpdates.ghosttyVersion),
++            ("Installed at", Bundle.main.bundlePath),
++            ("Built from", DockUpdates.source ?? "?"),
++            ("macOS", "\(v.majorVersion).\(v.minorVersion).\(v.patchVersion)"),
++        ]
++    }
++
++    private var detailText: String {
++        (["Ghostty Dock"] + rows.map { "\($0.0): \($0.1)" } + ["Source: \(DockUpdates.repoPage.absoluteString)"])
++            .joined(separator: "\n")
++    }
++
++    private var status: String {
++        if updates.state == .installing { return "Updating…" }
++        if let latest = updates.latest, updates.available { return "Version \(latest) is available" }
++        switch updates.state {
++        case .checking: return "Checking…"
++        case .failed: return "Could not check"
++        case .upToDate: return "Up to date"
++        default: return updates.lastCheck == nil ? "Not checked yet" : "Up to date"
++        }
++    }
++
++    private var statusSymbol: String {
++        if updates.available { return "arrow.down.circle.fill" }
++        if case .failed = updates.state { return "exclamationmark.triangle.fill" }
++        return updates.lastCheck == nil ? "questionmark.circle" : "checkmark.circle.fill"
++    }
++
++    private var statusColor: Color {
++        if updates.available { return DockPalette.blue }
++        if case .failed = updates.state { return DockPalette.peach }
++        return updates.lastCheck == nil ? DockPalette.text : DockPalette.green
++    }
++
++    private func linkRow(_ title: String, _ detail: String, _ symbol: String, _ color: Color, _ url: URL) -> some View {
++        Button { NSWorkspace.shared.open(url) } label: {
++            HStack(spacing: 10) {
++                Image(systemName: symbol).font(.body.weight(.semibold)).foregroundStyle(color).frame(width: 22)
++                VStack(alignment: .leading, spacing: 1) {
++                    Text(title).font(.callout.weight(.semibold)).foregroundStyle(DockPalette.text)
++                    Text(detail).font(.callout).foregroundStyle(color)
++                }
++                Spacer()
++                Image(systemName: "arrow.up.right").font(.callout.weight(.semibold)).foregroundStyle(color)
++            }
++            .padding(.horizontal, 10).padding(.vertical, 7)
++            .background(RoundedRectangle(cornerRadius: 8).fill(color.opacity(0.10)))
++            .contentShape(Rectangle())
++        }
++        .buttonStyle(.plain)
++        .help(url.absoluteString)
++    }
++}
++
++struct DockCard<Content: View>: View {
++    var title: String
++    var symbol: String
++    var tint: Color
++    var trailing: AnyView?
++    @ViewBuilder var content: Content
++
++    var body: some View {
++        VStack(alignment: .leading, spacing: 10) {
++            HStack(spacing: 6) {
++                Image(systemName: symbol).font(.caption.weight(.bold)).foregroundStyle(tint)
++                Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(DockPalette.text)
++                Spacer()
++                trailing
++            }
++            content
++        }
++        .padding(12)
++        .frame(maxWidth: .infinity, alignment: .topLeading)
++        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(DockPalette.mantle))
++        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(DockPalette.surface, lineWidth: 1.25))
++    }
++}
++
++/// About in its own window, like a normal Mac app's About box.
++final class DockAboutWindow {
++    static let shared = DockAboutWindow()
++    private var window: NSWindow?
++
++    func show() {
++        if window == nil {
++            let w = NSWindow(contentViewController: NSHostingController(rootView: DockAboutView()))
++            w.title = "About Ghostty Dock"
++            w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
++            w.isReleasedWhenClosed = false
++            w.setContentSize(NSSize(width: 540, height: 720))
++            w.center()
++            window = w
++        }
++        NSApp.activate(ignoringOtherApps: true)
++        window?.makeKeyAndOrderFront(nil)
++        if DockUpdates.shared.lastCheck == nil { DockUpdates.shared.check() }
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockHotKey.swift b/macos/Sources/Features/Dock/DockHotKey.swift
 new file mode 100644
 index 0000000..4b8472f
@@ -104,10 +412,10 @@ index 0000000..4b8472f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..34b8fd4
+index 0000000..fa00ead
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,348 @@
+@@ -0,0 +1,416 @@
 +import AppKit
 +import Combine
 +
@@ -140,11 +448,14 @@ index 0000000..34b8fd4
 +        var selected: Bool
 +        /// The Claude Code session in it, if any: what Undock moves.
 +        var sessionId: String?
++        /// When its session was first started: its transcript's creation.
++        var started: Date?
 +        weak var controller: TerminalController?
 +
 +        static func == (a: Row, b: Row) -> Bool {
 +            a.id == b.id && a.name == b.name && a.detail == b.detail && a.status == b.status
 +                && a.since == b.since && a.selected == b.selected && a.sessionId == b.sessionId
++                && a.started == b.started
 +        }
 +    }
 +
@@ -164,6 +475,7 @@ index 0000000..34b8fd4
 +    /// `ghostty-dock-move --list`, and the sessions it is moving out of here.
 +    @Published private(set) var undocked: [Undocked] = []
 +    @Published private(set) var undocking: Set<String> = []
++    @Published private(set) var restarting: Set<String> = []
 +
 +    var waitingCount: Int { rows.filter { $0.status == .waiting }.count }
 +    var unreadCount: Int { rows.filter { $0.status == .unread }.count }
@@ -171,6 +483,10 @@ index 0000000..34b8fd4
 +    private let stateDir = FileManager.default.homeDirectoryForCurrentUser
 +        .appendingPathComponent(".local/state/ghostty-dock")
 +    private var seen: [String: Int] = [:]
++    /// Session id to its transcript's creation date; nil while not found.
++    private var startedCache: [String: Date] = [:]
++    /// When a session's transcript was last looked for and not found.
++    private var startedMissed: [String: Date] = [:]
 +    private var timer: Timer?
 +    /// Tabs whose session was undocked: closed once claude has left them.
 +    private var closeWhenEmpty: [ObjectIdentifier: Date] = [:]
@@ -191,10 +507,39 @@ index 0000000..34b8fd4
 +        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.refresh() }
 +        moveTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refreshMovable() }
 +        refreshMovable()
++        startSessionRestore()
 +        watchSessions()
 +        NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil,
 +                                               queue: .main) { [weak self] _ in self?.applySettings() }
 +        applySettings()
++    }
++
++    private var restarter: String {
++        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/ghostty-dock-restart").path
++    }
++    private var saveTimer: Timer?
++
++    /// Records the open sessions every few seconds, and reopens the ones
++    /// recorded before a quit or crash when the app starts.
++    private func startSessionRestore() {
++        let restarter = restarter
++        guard FileManager.default.isExecutableFile(atPath: restarter) else { return }
++        let run: ([String]) -> Void = { args in
++            DispatchQueue.global(qos: .utility).async {
++                let p = Process()
++                p.executableURL = URL(fileURLWithPath: "/bin/bash")
++                p.arguments = [restarter] + args
++                p.standardOutput = FileHandle.nullDevice
++                p.standardError = FileHandle.nullDevice
++                guard (try? p.run()) != nil else { return }
++                p.waitUntilExit()
++            }
++        }
++        // After the first window is up, so the sessions open as its tabs.
++        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
++            if DockSettings.restoreSessions { run(["--restore"]) }
++            self.saveTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { _ in run(["--save"]) }
++        }
 +    }
 +
 +    private var mover: String {
@@ -216,12 +561,15 @@ index 0000000..34b8fd4
 +            p.waitUntilExit()
 +            var windows: [Undocked] = []
 +            var leaving: Set<String> = []
++            var restarts: Set<String> = []
 +            for line in text.split(separator: "\n") {
 +                let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
 +                if f.count == 6, f[0] == "window", let pid = Int32(f[1]) {
 +                    windows.append(Undocked(pid: pid, name: f[4], cwd: f[5], busy: f[2] == "1", moving: f[3] == "1"))
 +                } else if f.count == 2, f[0] == "undocking" {
 +                    leaving.insert(f[1])
++                } else if f.count == 2, f[0] == "restarting" {
++                    restarts.insert(f[1])
 +                }
 +            }
 +            windows.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -229,6 +577,7 @@ index 0000000..34b8fd4
 +                guard let self else { return }
 +                if self.undocked != windows { self.undocked = windows }
 +                if self.undocking != leaving { self.undocking = leaving }
++                if self.restarting != restarts { self.restarting = restarts }
 +            }
 +        }
 +    }
@@ -257,6 +606,15 @@ index 0000000..34b8fd4
 +        undocking.insert(sid)
 +        closeWhenEmpty[row.id] = Date()
 +        runMover(["--now", "--undock", sid])
++    }
++
++    /// Stops a tab's session and resumes it in a new tab, at once; the old
++    /// tab closes when claude has left it.
++    func restart(_ row: Row) {
++        guard let sid = row.sessionId else { return }
++        restarting.insert(sid)
++        closeWhenEmpty[row.id] = Date()
++        runMover(["--now", "--restart", sid])
 +    }
 +
 +    /// Brings an undocked session's own Ghostty window to the front.
@@ -294,6 +652,23 @@ index 0000000..34b8fd4
 +        var name: String
 +        var claude_pid: Int32?
 +        var session_id: String?
++    }
++
++    /// The creation date of session <id>'s transcript, in any project folder.
++    private func started(_ sid: String) -> Date? {
++        if let d = startedCache[sid] { return d }
++        if let missed = startedMissed[sid], Date().timeIntervalSince(missed) < 30 { return nil }
++        startedMissed[sid] = Date()
++        let projects = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
++        let dirs = (try? FileManager.default.contentsOfDirectory(at: projects, includingPropertiesForKeys: nil)) ?? []
++        for dir in dirs {
++            let file = dir.appendingPathComponent(sid + ".jsonl")
++            if let d = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.creationDate] as? Date {
++                startedCache[sid] = d
++                return d
++            }
++        }
++        return nil
 +    }
 +
 +    func refresh() {
@@ -354,6 +729,7 @@ index 0000000..34b8fd4
 +                             since: best.map { Date(timeIntervalSince1970: TimeInterval($0.since)) },
 +                             selected: selected,
 +                             sessionId: best?.sid,
++                             started: best?.sid.flatMap(started),
 +                             controller: controller))
 +        }
 +        order.removeAll { id in !built.contains { $0.id == id } }
@@ -458,10 +834,10 @@ index 0000000..34b8fd4
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..3062eb8
+index 0000000..ff1ea86
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,141 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -475,6 +851,7 @@ index 0000000..3062eb8
 +    static let jumpHotKeyKey = "dock.jumpHotKey"
 +    static let dockBadgeKey = "dock.dockBadge"
 +    static let sidebarWidthKey = "dock.sidebarWidth"
++    static let restoreSessionsKey = "dock.restoreSessions"
 +
 +    static func register() {
 +        UserDefaults.standard.register(defaults: [
@@ -483,6 +860,7 @@ index 0000000..3062eb8
 +            showTabBarKey: false,
 +            jumpHotKeyKey: true,
 +            dockBadgeKey: true,
++            restoreSessionsKey: true,
 +        ])
 +    }
 +
@@ -513,6 +891,7 @@ index 0000000..3062eb8
 +    static var showTabBar: Bool { UserDefaults.standard.bool(forKey: showTabBarKey) }
 +    static var jumpHotKey: Bool { UserDefaults.standard.bool(forKey: jumpHotKeyKey) }
 +    static var dockBadge: Bool { UserDefaults.standard.bool(forKey: dockBadgeKey) }
++    static var restoreSessions: Bool { UserDefaults.standard.bool(forKey: restoreSessionsKey) }
 +}
 +
 +struct DockSettingsView: View {
@@ -521,6 +900,8 @@ index 0000000..3062eb8
 +    @AppStorage(DockSettings.showTabBarKey) private var showTabBar = false
 +    @AppStorage(DockSettings.jumpHotKeyKey) private var jumpHotKey = true
 +    @AppStorage(DockSettings.dockBadgeKey) private var dockBadge = true
++    @AppStorage(DockSettings.restoreSessionsKey) private var restoreSessions = true
++    @ObservedObject private var updates = DockUpdates.shared
 +    @State private var startAtLogin = SMAppService.mainApp.status == .enabled
 +    @State private var loginError: String?
 +
@@ -540,10 +921,25 @@ index 0000000..3062eb8
 +                Toggle("Dock icon shows how many sessions need you", isOn: $dockBadge)
 +            }
 +            Section("App") {
++                Toggle("Reopen Claude sessions when Ghostty Dock starts", isOn: $restoreSessions)
++                Text("After a quit or crash, every session that was open comes back as a tab with claude --resume.")
++                    .font(.callout)
 +                Toggle("Open Ghostty Dock at login", isOn: $startAtLogin)
 +                    .onChange(of: startAtLogin) { on in setLogin(on) }
 +                if let loginError {
 +                    Text(loginError).font(.callout).foregroundStyle(.red)
++                }
++                LabeledContent("Version \(DockUpdates.version)") {
++                    HStack {
++                        if updates.available {
++                            Button("Update…") { updates.confirmInstall() }
++                                .disabled(updates.state == .installing)
++                        }
++                        Button("About and Updates…") { DockAboutWindow.shared.show() }
++                    }
++                }
++                if updates.available, let latest = updates.latest {
++                    Text("Version \(latest) is available on GitHub.").font(.callout)
 +                }
 +                LabeledContent("Fonts, colours, keys") {
 +                    Button("Edit Ghostty Config…") { Ghostty.App.openConfig() }
@@ -585,10 +981,10 @@ index 0000000..3062eb8
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..62ccbf7
+index 0000000..cb51af2
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,398 @@
+@@ -0,0 +1,435 @@
 +import AppKit
 +import SwiftUI
 +
@@ -634,6 +1030,7 @@ index 0000000..62ccbf7
 +/// shows the same list: a row per tab across all windows, needs-you first.
 +struct DockSidebarView: View {
 +    @ObservedObject var model = DockSessions.shared
++    @ObservedObject var updates = DockUpdates.shared
 +    @AppStorage(DockSettings.showSidebarKey) private var show = true
 +    @AppStorage(DockSettings.sidebarWidthKey) private var width = Double(Self.width)
 +    @State private var dragStart: Double?
@@ -654,8 +1051,10 @@ index 0000000..62ccbf7
 +                    ForEach(model.rows) { row in
 +                        DockRowView(row: row,
 +                                    undocking: row.sessionId.map(model.undocking.contains) ?? false,
++                                    restarting: row.sessionId.map(model.restarting.contains) ?? false,
 +                                    onClose: { model.closeTab(row) },
-+                                    onUndock: { model.undock(row) })
++                                    onUndock: { model.undock(row) },
++                                    onRestart: { model.restart(row) })
 +                            .onTapGesture { model.select(row) }
 +                    }
 +                    if !model.undocked.isEmpty {
@@ -710,6 +1109,19 @@ index 0000000..62ccbf7
 +            if model.waitingCount > 0 { DockBadge(count: model.waitingCount, color: DockPalette.peach) }
 +            if model.unreadCount > 0 { DockBadge(count: model.unreadCount, color: DockPalette.blue) }
 +            Spacer()
++            if updates.available || updates.state == .installing {
++                Button(action: updates.confirmInstall) {
++                    Text(updates.state == .installing ? "Updating…" : "Update")
++                        .font(.system(size: 10.5, weight: .semibold))
++                        .foregroundStyle(DockPalette.base)
++                        .padding(.horizontal, 7)
++                        .padding(.vertical, 2)
++                        .background(Capsule().fill(DockPalette.green))
++                }
++                .buttonStyle(.plain)
++                .disabled(updates.state == .installing)
++                .dockTip(updates.latest.map { "Install \($0) from GitHub" } ?? "Install the latest version")
++            }
 +            Button(action: onNewTab) {
 +                Image(systemName: "plus").font(.system(size: 12, weight: .semibold))
 +            }
@@ -752,8 +1164,10 @@ index 0000000..62ccbf7
 +struct DockRowView: View {
 +    var row: DockSessions.Row
 +    var undocking: Bool
++    var restarting: Bool
 +    var onClose: () -> Void
 +    var onUndock: () -> Void
++    var onRestart: () -> Void
 +    @State private var hover = false
 +    @State private var hoverClose = false
 +
@@ -774,7 +1188,14 @@ index 0000000..62ccbf7
 +                }
 +            }
 +            Spacer(minLength: 0)
-+            // Stacked, close over Undock, so the name keeps the row's width.
++            // Close over Undock, Restart beside Undock, so the name keeps the
++            // row's width.
++            HStack(alignment: .bottom, spacing: 2) {
++                if row.sessionId != nil {
++                    DockIconButton(symbol: "arrow.clockwise", busy: restarting,
++                                   help: restarting ? "Restarting…" : "Restart: resume it in a fresh tab",
++                                   action: onRestart)
++                }
 +            VStack(spacing: 0) {
 +                // On every row, so any tab can be closed without hunting for it.
 +                Button(action: onClose) {
@@ -793,6 +1214,7 @@ index 0000000..62ccbf7
 +                                   action: onUndock)
 +                }
 +            }
++            }
 +        }
 +        .padding(.horizontal, 8)
 +        .padding(.vertical, 6)
@@ -810,6 +1232,7 @@ index 0000000..62ccbf7
 +        .help(row.detail.isEmpty ? row.name : row.detail)
 +        .contextMenu {
 +            if row.sessionId != nil {
++                Button("Restart Session", action: onRestart).disabled(restarting)
 +                Button("Undock to Its Own Window", action: onUndock).disabled(undocking)
 +            }
 +            Button("Close Tab", action: onClose)
@@ -818,8 +1241,11 @@ index 0000000..62ccbf7
 +
 +    private func subtitle(now: Date) -> String {
 +        let label = DockPalette.label(row.status)
-+        guard let since = row.since else { return label }
-+        return label + " · " + elapsed(now.timeIntervalSince(since))
++        var parts = [label]
++        if let since = row.since { parts.append(elapsed(now.timeIntervalSince(since))) }
++        // How long the session has existed, across restarts.
++        if let started = row.started { parts.append("Age " + age(now.timeIntervalSince(started))) }
++        return parts.joined(separator: " · ")
 +    }
 +
 +    private func elapsed(_ t: TimeInterval) -> String {
@@ -828,6 +1254,13 @@ index 0000000..62ccbf7
 +        if s < 3600 { return "\(s / 60)m" }
 +        if s < 86_400 { return "\(s / 3600)h" }
 +        return "\(s / 86_400)d"
++    }
++
++    private func age(_ t: TimeInterval) -> String {
++        let s = max(0, Int(t))
++        if s < 3600 { return "\(max(1, s / 60))m" }
++        if s < 86_400 { return "\(s / 3600)h \(s % 3600 / 60)m" }
++        return "\(s / 86_400)d \(s % 86_400 / 3600)h"
 +    }
 +}
 +
@@ -985,6 +1418,174 @@ index 0000000..62ccbf7
 +            spin = true
 +        }
 +        .accessibilityLabel(DockPalette.label(status))
++    }
++}
+diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
+new file mode 100644
+index 0000000..57f65f1
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockUpdates.swift
+@@ -0,0 +1,162 @@
++import AppKit
++import Combine
++
++/// Ghostty Dock's version, and updates from GitHub through the clone it was
++/// built from (scripts/update.sh there): check, then pull, rebuild, install
++/// and restart once sessions are quiet.
++final class DockUpdates: ObservableObject {
++    static let shared = DockUpdates()
++
++    enum State: Equatable {
++        case idle, checking, upToDate, installing
++        case failed(String)
++    }
++
++    struct Change: Identifiable, Equatable {
++        var id: String { sha }
++        let sha: String
++        let date: Date?
++        let title: String
++    }
++
++    static let repo = "andrewbakercloudscale/ghossty-dock"
++    static let repoPage = URL(string: "https://github.com/\(repo)")!
++
++    @Published private(set) var state: State = .idle
++    /// Changes on GitHub not in this build, newest first.
++    @Published private(set) var changes: [Change] = []
++    @Published private(set) var latest: String?
++    /// Commits in the clone that are not on GitHub (unpushed work).
++    @Published private(set) var ahead = 0
++    @Published private(set) var lastCheck: Date?
++    /// The last line of the update log, while installing.
++    @Published private(set) var progress = ""
++
++    var available: Bool { !changes.isEmpty }
++
++    private var timer: Timer?
++    private var logTimer: Timer?
++
++    private static func info(_ key: String) -> String? {
++        Bundle.main.object(forInfoDictionaryKey: key) as? String
++    }
++    static var version: String { info("GhosttyDockVersion") ?? "dev" }
++    static var commit: String { info("GhosttyDockCommit") ?? "?" }
++    static var source: String? { info("GhosttyDockSource") }
++    static var built: Date? { info("GhosttyDockBuilt").flatMap { ISO8601DateFormatter().date(from: $0) } }
++    static var ghosttyVersion: String { info("CFBundleShortVersionString") ?? "?" }
++
++    private var script: String? {
++        guard let source = Self.source else { return nil }
++        let path = (source as NSString).appendingPathComponent("scripts/update.sh")
++        return FileManager.default.isExecutableFile(atPath: path) ? path : nil
++    }
++
++    private let logURL = FileManager.default.homeDirectoryForCurrentUser
++        .appendingPathComponent(".local/state/ghostty-dock/update.log")
++
++    /// Checks a minute after launch and every 6 hours.
++    func start() {
++        guard timer == nil else { return }
++        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in self?.check() }
++        timer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in self?.check() }
++    }
++
++    func check() {
++        guard state != .checking, state != .installing else { return }
++        guard let script else {
++            state = .failed("The clone this was built from is gone, so there is nothing to update from.")
++            return
++        }
++        state = .checking
++        DispatchQueue.global(qos: .utility).async { [weak self] in
++            let (status, text) = Self.run(script, ["--check"])
++            var changes: [Change] = []
++            var latest: String?
++            var ahead = 0
++            var error: String?
++            let iso = ISO8601DateFormatter()
++            for line in text.split(separator: "\n") {
++                let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
++                switch f.first {
++                case "commit" where f.count >= 4:
++                    changes.append(Change(sha: f[1], date: iso.date(from: f[2]), title: f[3...].joined(separator: "\t")))
++                case "latest" where f.count >= 2: latest = f[1]
++                case "ahead" where f.count >= 2: ahead = Int(f[1]) ?? 0
++                case "error" where f.count >= 2: error = f[1]
++                default: break
++                }
++            }
++            DispatchQueue.main.async {
++                guard let self else { return }
++                self.lastCheck = Date()
++                if status != 0 || error != nil {
++                    self.state = .failed(error ?? "The check failed.")
++                    return
++                }
++                self.changes = changes
++                self.latest = latest
++                self.ahead = ahead
++                self.state = changes.isEmpty ? .upToDate : .idle
++            }
++        }
++    }
++
++    /// Asks first: the app restarts when sessions are quiet, and they come
++    /// back as tabs.
++    func confirmInstall() {
++        let alert = NSAlert()
++        alert.messageText = latest.map { "Update Ghostty Dock to \($0)?" } ?? "Update Ghostty Dock?"
++        alert.informativeText = """
++            Pulls the latest version from GitHub and builds it (a minute or two). \
++            Ghostty Dock then restarts once your sessions are quiet, and reopens each one as a tab.
++            """
++        alert.addButton(withTitle: "Update")
++        alert.addButton(withTitle: "Cancel")
++        guard alert.runModal() == .alertFirstButtonReturn else { return }
++        install()
++    }
++
++    private func install() {
++        guard let script, state != .installing else { return }
++        state = .installing
++        progress = "Starting…"
++        let start = (try? FileManager.default.attributesOfItem(atPath: logURL.path)[.size] as? Int) ?? 0
++        DispatchQueue.global(qos: .utility).async { _ = Self.run(script, ["--install", "--detach"]) }
++        logTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
++            self?.followLog(from: start)
++        }
++    }
++
++    /// Shows the update's progress; it ends with the restart, or a failure.
++    private func followLog(from offset: Int) {
++        guard let data = try? Data(contentsOf: logURL), data.count > offset else { return }
++        let lines = String(decoding: data[offset...], as: UTF8.self)
++            .split(separator: "\n").map { String($0.dropFirst(9)) }
++        guard let last = lines.last else { return }
++        progress = last
++        if last.hasPrefix("failed: ") {
++            logTimer?.invalidate()
++            logTimer = nil
++            state = .failed(String(last.dropFirst(8)))
++        }
++    }
++
++    var checkedText: String {
++        guard let lastCheck else { return "Not checked yet" }
++        return "Checked " + RelativeDateTimeFormatter().localizedString(for: lastCheck, relativeTo: Date())
++    }
++
++    private static func run(_ script: String, _ args: [String]) -> (Int32, String) {
++        let out = Pipe()
++        let p = Process()
++        p.executableURL = URL(fileURLWithPath: "/bin/bash")
++        p.arguments = [script] + args
++        p.standardOutput = out
++        p.standardError = FileHandle.nullDevice
++        guard (try? p.run()) != nil else { return (1, "") }
++        let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
++        p.waitUntilExit()
++        return (p.terminationStatus, text)
 +    }
 +}
 diff --git a/macos/Sources/Features/Terminal/TerminalView.swift b/macos/Sources/Features/Terminal/TerminalView.swift

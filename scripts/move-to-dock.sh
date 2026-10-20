@@ -4,7 +4,8 @@
 # Ghostty Dock. Docking stops claude once its transcript has been quiet for a
 # while, closes that Ghostty, and reopens `claude --resume <id>` with the same
 # flags (so --remote-control keeps its name) as a Ghostty Dock tab. Undocking
-# does the same the other way, into a Ghostty of its own.
+# does the same the other way, into a Ghostty of its own. Restarting resumes
+# a docked session in a fresh Ghostty Dock tab.
 #
 # A session that is busy is waited for, never interrupted. Run it detached
 # (--detach) when the calling session is one of those being moved.
@@ -13,7 +14,8 @@ SCRIPT_NAME=$(basename "$0")
 SELF="$(cd "$(dirname "$0")" && pwd)/$SCRIPT_NAME"
 STATE_DIR="$HOME/.local/state/ghostty-dock"
 LOG="$STATE_DIR/move-to-dock.log"
-# One "<job>.pid" per move running: all, g<ghostty pid> or u<session id>.
+# One "<job>.pid" per move running: all, g<ghostty pid>, u<session id> or
+# r<session id>.
 LOCK_DIR="$STATE_DIR/moving"
 OPENER="$HOME/.local/bin/ghostty-dock-open"
 GHOSTTY_APP="/Applications/Ghostty.app"
@@ -34,13 +36,15 @@ usage: ${SCRIPT_NAME} [options]
 options:
     --pid <pid>        Dock only the session in this Ghostty app (default: all)
     --undock <id>      Move this session out of Ghostty Dock into its own Ghostty
+    --restart <id>     Stop this Ghostty Dock session and resume it in a new tab
     --now              Do not wait for a busy session to go quiet (interrupts it)
     --detach           Run in the background and return at once
     --dry-run          Only list what would move
     --status           Print "<sessions left to dock> <1 if docking all, else 0>"
     --list             Print a line per session outside Ghostty Dock:
                        "window<TAB>pid<TAB>busy<TAB>moving<TAB>name<TAB>cwd",
-                       and "undocking<TAB>id" per session being undocked
+                       "undocking<TAB>id" per session being undocked and
+                       "restarting<TAB>id" per session being restarted
     -h|--help          Show this help message
 
 EOM
@@ -180,6 +184,12 @@ function list_sessions() {
         job=$(basename "$f" .pid)
         job_running "$job" && printf 'undocking\t%s\n' "${job#u}"
     done
+    for f in "$LOCK_DIR"/r*.pid; do
+        [ -f "$f" ] || continue
+        local job
+        job=$(basename "$f" .pid)
+        job_running "$job" && printf 'restarting\t%s\n' "${job#r}"
+    done
 }
 
 # The claude in a Ghostty Dock tab running session <id>.
@@ -196,10 +206,12 @@ function docked_claude() {
     done
 }
 
-# Moves session <id> out of Ghostty Dock into a stock Ghostty of its own.
+# Moves session <id> out of Ghostty Dock into a stock Ghostty of its own, or
+# with "restart" resumes it in a new Ghostty Dock tab.
 function undock() {
     local sid="$1"
     local dry="$2"
+    local mode="${3:-undock}"
     local cpid
     cpid=$(docked_claude "$sid")
     [ -n "$cpid" ] || { log "$sid: not running in Ghostty Dock"; return 1; }
@@ -207,13 +219,13 @@ function undock() {
     IFS=$'\t' read -r _ cwd flags <<<"$(session_of "$cpid")"
     started=$(date +%s)
     while ! $NOW && [ "$(quiet_for "$(transcript_for "$cwd" "$sid")")" -lt "$QUIET_SECS" ]; do
-        log "$(basename "$cwd"): busy, undocking once quiet"
+        log "$(basename "$cwd"): busy, ${mode}ing once quiet"
         $dry && return 0
         [ $(($(date +%s) - started)) -gt "$GIVE_UP_SECS" ] && { log "$(basename "$cwd"): gave up"; return 1; }
         sleep 20
     done
     local cmd="caffeinate -i claude --resume $sid $flags"
-    log "$(basename "$cwd"): undocking ($cmd)"
+    log "$(basename "$cwd"): ${mode}ing ($cmd)"
     $dry && return 0
     printf '%s\t%s\t%s\n' "$sid" "$cwd" "$flags" >>"$STATE_DIR/sessions-snapshot.tsv"
     # Its tab closes when claude exits.
@@ -221,6 +233,10 @@ function undock() {
     local i
     for ((i = 0; i < 40; i++)); do kill -0 "$cpid" 2>/dev/null || break; sleep 0.25; done
     kill -KILL "$cpid" 2>/dev/null
+    if [ "$mode" = restart ]; then
+        "$OPENER" --command "$cmd" "$cwd" >>"$LOG" 2>&1 || log "$(basename "$cwd"): opening the tab failed"
+        return
+    fi
     # One --command argument: with -e, Ghostty also opens "/bin/zsh" as a tab.
     open -na "$GHOSTTY_APP" --args --window-save-state=never --quit-after-last-window-closed=true \
         --working-directory="$cwd" --command="$cmd" || log "$(basename "$cwd"): Ghostty did not start"
@@ -241,6 +257,7 @@ function main() {
     local detach=false
     local only=""
     local undock_id=""
+    local restart_id=""
     local args=()
     while [ "$1" != "" ]; do
         case $1 in
@@ -254,6 +271,11 @@ function main() {
             shift
             undock_id="$1"
             args+=(--undock "$1")
+            ;;
+        --restart)
+            shift
+            restart_id="$1"
+            args+=(--restart "$1")
             ;;
         --now)
             NOW=true
@@ -296,6 +318,7 @@ function main() {
     local job=all
     [ -n "$only" ] && job="g$only"
     [ -n "$undock_id" ] && job="u$undock_id"
+    [ -n "$restart_id" ] && job="r$restart_id"
     if ! $dry; then
         { job_running "$job" || { [ "$job" != "${job#g}" ] && job_running all; }; } &&
             { echo "already moving; log: $LOG"; exit 0; }
@@ -304,6 +327,8 @@ function main() {
 
     if [ -n "$undock_id" ]; then
         undock "$undock_id" "$dry"
+    elif [ -n "$restart_id" ]; then
+        undock "$restart_id" "$dry" restart
     else
         dock_all "$dry" "$only"
     fi
