@@ -7,11 +7,16 @@
 #
 # Plain shell tabs are not reopened. Runs detached, because the session that
 # starts it is one of those restarted.
+#
+# The app also calls it (installed as ghostty-dock-restart): --save every few
+# seconds records the open sessions, and --restore reopens them when the app
+# starts after a quit or crash.
 
 SCRIPT_NAME=$(basename "$0")
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 STATE_DIR="$HOME/.local/state/ghostty-dock"
 LOG="$STATE_DIR/restart-dock.log"
+SAVED="$STATE_DIR/open-sessions.tsv"
 OPENER="$HOME/.local/bin/ghostty-dock-open"
 APP_BIN="$HOME/Applications/Ghostty Dock.app/Contents/MacOS/ghostty"
 QUIET_SECS=45
@@ -28,6 +33,9 @@ options:
     --now          Do not wait for busy sessions (interrupts them)
     --dry-run      Only list the sessions that would be resumed
     --foreground   Run here instead of detached
+    --save         Record the open sessions (for --restore) and stop
+    --restore      Reopen the sessions recorded by --save that are not
+                   running anywhere, then stop
     -h|--help      Show this help message
 
 EOM
@@ -105,6 +113,42 @@ function wait_until_quiet() {
     done
 }
 
+# Prints "<cwd>\t<session id>\t<flags>" for every claude in the app.
+function open_sessions() {
+    local pid="$1"
+    local cpid
+    for cpid in $(claudes_under "$pid"); do
+        describe "$cpid"
+    done
+}
+
+function save() {
+    local pid
+    pid=$(app_pid)
+    [ -z "$pid" ] && return 0
+    open_sessions "$pid" >"$SAVED.tmp" && mv "$SAVED.tmp" "$SAVED"
+}
+
+function running_anywhere() {
+    local sid="$1"
+    ps -axo command= | grep -qE "^(caffeinate -i )?claude .*--(session-id|resume) $sid( |$)"
+}
+
+function restore() {
+    [ -s "$SAVED" ] || return 0
+    local sessions
+    sessions=$(cat "$SAVED")
+    rm -f "$SAVED"
+    local cwd sid flags
+    while IFS=$'\t' read -r cwd sid flags; do
+        [ -z "$sid" ] && continue
+        running_anywhere "$sid" && continue
+        log "reopening $(basename "$cwd")"
+        "$OPENER" --command "caffeinate -i claude --resume $sid $flags" "$cwd" >>"$LOG" 2>&1 \
+            || log "$(basename "$cwd"): opening the tab failed"
+    done <<<"$sessions"
+}
+
 function restart() {
     local now="$1"
     local dry="$2"
@@ -112,10 +156,8 @@ function restart() {
     pid=$(app_pid)
     [ -z "$pid" ] && { log "Ghostty Dock is not running"; return 1; }
 
-    local sessions="" cpid
-    for cpid in $(claudes_under "$pid"); do
-        sessions+="$(describe "$cpid")"$'\n'
-    done
+    local sessions cpid
+    sessions=$(open_sessions "$pid")
     log "$(grep -c . <<<"$sessions") session(s) to resume"
     $dry && { printf '%s' "$sessions"; return 0; }
     $now || wait_until_quiet "$sessions" || return 1
@@ -132,6 +174,8 @@ function restart() {
     local i
     for ((i = 0; i < 40; i++)); do kill -0 "$pid" 2>/dev/null || break; sleep 0.25; done
     kill -KILL "$pid" 2>/dev/null
+    # These are resumed below; the new app must not reopen them too.
+    rm -f "$SAVED"
     sleep 1
 
     # The opener starts the app with window-save-state=never, so it comes up
@@ -160,6 +204,17 @@ function main() {
         --now) now=true ;;
         --dry-run) dry=true; foreground=true ;;
         --foreground) foreground=true ;;
+        --save)
+            mkdir -p "$STATE_DIR" || exit 1
+            save
+            exit 0
+            ;;
+        --restore)
+            mkdir -p "$STATE_DIR" || exit 1
+            [ -x "$OPENER" ] || { echo "Error: $OPENER missing, run install.sh" >&2; exit 1; }
+            restore
+            exit 0
+            ;;
         -h | --help) usage ;;
         *)
             echo "Error: Unknown option '$1'" >&2
@@ -174,8 +229,12 @@ function main() {
     if ! $foreground; then
         # Its own session, immune to the hangup when its tab closes.
         nohup perl -MPOSIX=setsid -e 'setsid; exec @ARGV' \
-            /bin/bash "$ROOT/scripts/$SCRIPT_NAME" --foreground "${args[@]}" >/dev/null 2>&1 </dev/null &
-        echo "restarting in the background once sessions are quiet; log: $LOG"
+            /bin/bash "$SCRIPT_DIR/$SCRIPT_NAME" --foreground "${args[@]}" >/dev/null 2>&1 </dev/null &
+        if $now; then
+            echo "restarting in the background now; log: $LOG"
+        else
+            echo "restarting in the background once sessions are quiet; log: $LOG"
+        fi
         exit 0
     fi
     restart "$now" "$dry"
