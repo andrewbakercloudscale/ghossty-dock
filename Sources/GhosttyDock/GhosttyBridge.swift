@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import DockCore
 
 /// Everything that talks to Ghostty: AppleScript for the shared instance's
@@ -76,7 +77,18 @@ enum GhosttyBridge {
         """, timeout: 4)
     }
 
+    /// Brings another Ghostty app forward. NSRunningApplication.activate is
+    /// refused when the sidebar (which never takes focus) asks, so this goes
+    /// through Accessibility: make the app frontmost and raise its window.
     static func activate(pid: Int32) {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+        var value: CFTypeRef?
+        if AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value) == .success,
+           let window = (value as? [AXUIElement])?.first {
+            AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+            AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+        }
         NSRunningApplication(processIdentifier: pid)?.activate()
     }
 

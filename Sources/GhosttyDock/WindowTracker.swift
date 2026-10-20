@@ -64,6 +64,27 @@ enum WindowTracker {
         return false
     }
 
+    /// Moves a window by (dx, dy) in screen points, y up as AppKit has it.
+    static func move(_ window: GhosttyWindow, dx: CGFloat, dy: CGFloat) {
+        guard trusted, let w = axWindow(window) else { return }
+        var origin = CGPoint(x: window.cgFrame.minX + dx, y: window.cgFrame.minY - dy)
+        if let p = AXValueCreate(.cgPoint, &origin) {
+            AXUIElementSetAttributeValue(w, kAXPositionAttribute as CFString, p)
+        }
+    }
+
+    private static func axWindow(_ window: GhosttyWindow) -> AXUIElement? {
+        let app = AXUIElementCreateApplication(window.pid)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value) == .success,
+              let windows = value as? [AXUIElement] else { return nil }
+        return windows.first { w in
+            guard let f = axFrame(w) else { return false }
+            return abs(f.minX - window.cgFrame.minX) < 3 && abs(f.minY - window.cgFrame.minY) < 3
+                && abs(f.width - window.cgFrame.width) < 3
+        }
+    }
+
     /// Titles of a process's windows, via Accessibility (empty without it).
     static func windowTitles(pid: Int32) -> [String] {
         guard trusted else { return [] }

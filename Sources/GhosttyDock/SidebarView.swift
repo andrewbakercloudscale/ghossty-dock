@@ -44,6 +44,7 @@ struct SidebarView: View {
     var trusted: Bool
     var onTrust: () -> Void
     var onSettings: () -> Void
+    var onDrag: (CGFloat, CGFloat) -> Void
     var onQuit: () -> Void
 
     var body: some View {
@@ -58,6 +59,7 @@ struct SidebarView: View {
                 .padding(.horizontal, 6)
                 .padding(.vertical, 4)
             }
+            if let report = model.lastMoveReport ?? pendingText { moveReport(report) }
             if !trusted { trustHint }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -77,7 +79,16 @@ struct SidebarView: View {
             .buttonStyle(.plain)
             .foregroundStyle(Palette.text)
             .help("Start Claude Code in a folder, as a new tab")
+            Button(action: model.jumpToNextWaiting) {
+                Image(systemName: "arrow.down.to.line").font(.system(size: 12, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Palette.text)
+            .help("Next session that needs you (\(HotKey.jumpLabel))")
             Menu {
+                Button("Move All Sessions into One Window", action: model.gatherAll)
+                Button("Next Session That Needs You  \(HotKey.jumpLabel)", action: model.jumpToNextWaiting)
+                Divider()
                 Button("Settings…", action: onSettings)
                 Button("Quit Ghostty Dock", action: onQuit)
             } label: {
@@ -91,6 +102,34 @@ struct SidebarView: View {
         .padding(.horizontal, 12)
         .padding(.top, 10)
         .padding(.bottom, 6)
+        .contentShape(Rectangle())
+        .gesture(headerDrag)
+    }
+
+    @State private var dragFrom: NSPoint?
+
+    /// Screen coordinates, not the view's: the panel moves under the pointer.
+    private var headerDrag: some Gesture {
+        DragGesture(minimumDistance: 2)
+            .onChanged { _ in
+                let now = NSEvent.mouseLocation
+                if let from = dragFrom { onDrag(now.x - from.x, now.y - from.y) }
+                dragFrom = now
+            }
+            .onEnded { _ in dragFrom = nil }
+    }
+
+    private var pendingText: String? {
+        let n = model.pendingMoves.count
+        return n == 0 ? nil : "\(n) session\(n == 1 ? "" : "s") will move into this window when idle"
+    }
+
+    private func moveReport(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 10.5))
+            .foregroundStyle(Palette.text)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
     }
 
     private var trustHint: some View {

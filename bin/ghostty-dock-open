@@ -21,9 +21,11 @@ Opens a folder as a new tab in the shared Ghostty window.
 
 usage: ${SCRIPT_NAME} [options] <launcher> <folder>
        ${SCRIPT_NAME} [options] --shell <folder>
+       ${SCRIPT_NAME} [options] --command <command> <folder>
 
 options:
     --shell                      Open the user's shell, no launcher
+    --command        <command>   Run this shell command line instead of a launcher
     --window                     Open a new window instead of a tab
     -h|--help                    Show this help message
 
@@ -41,12 +43,17 @@ function main() {
     local launcher=""
     local folder=""
     local shell=false
+    local command=""
     local window=false
     local positional=()
 
     while [ "$1" != "" ]; do
         case $1 in
         --shell) shell=true ;;
+        --command)
+            shift
+            command="$1"
+            ;;
         --window) window=true ;;
         -h | --help) usage ;;
         -*)
@@ -58,7 +65,7 @@ function main() {
         shift
     done
 
-    if $shell; then
+    if $shell || [ -n "$command" ]; then
         folder="${positional[0]:-}"
     else
         launcher="${positional[0]:-}"
@@ -76,6 +83,10 @@ function main() {
 
     exit_on_missing_tools "${DEPENDENCIES[@]}"
 
+    if [ -z "$command" ] && [ -n "$launcher" ]; then
+        command="$(shell_quote "$launcher") $(shell_quote "$folder")"
+    fi
+
     if ! ensure_ghostty_running; then
         fallback_new_app "$launcher" "$folder"
         exit 0
@@ -84,12 +95,12 @@ function main() {
     local dock_id
     dock_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
     local result
-    if ! result=$(open_tab "$dock_id" "$launcher" "$folder" "$window"); then
+    if ! result=$(open_tab "$dock_id" "$command" "$folder" "$window"); then
         echo "Error: Ghostty did not open the tab ($result); opening a separate Ghostty instead" >&2
         fallback_new_app "$launcher" "$folder"
         exit 0
     fi
-    record_tab "$dock_id" "$result" "$launcher" "$folder"
+    record_tab "$dock_id" "$result" "${launcher:-$command}" "$folder"
 }
 
 # Starts Ghostty without a window when it is not running, and waits until it
@@ -114,17 +125,13 @@ function ghostty_running() {
     [ "$(osascript -e 'application "Ghostty" is running' 2>/dev/null)" = "true" ]
 }
 
-# Prints "<tab id> <terminal id>" of the new tab.
+# Prints "<tab id> <terminal id>" of the new tab. An empty command opens
+# the user's shell.
 function open_tab() {
     local dock_id="$1"
-    local launcher="$2"
+    local command="$2"
     local folder="$3"
     local window="$4"
-
-    local command=""
-    if [ -n "$launcher" ]; then
-        command="$(shell_quote "$launcher") $(shell_quote "$folder")"
-    fi
     osascript - "$dock_id" "$command" "$folder" "$window" 2>&1 <<'APPLESCRIPT'
 on run argv
     set dockId to item 1 of argv

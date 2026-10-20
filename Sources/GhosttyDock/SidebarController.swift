@@ -39,12 +39,23 @@ final class SidebarController {
         let view = SidebarView(model: model, trusted: trusted,
                                onTrust: { WindowTracker.askForTrust() },
                                onSettings: onSettings,
+                               onDrag: { [weak self] dx, dy in self?.drag(dx: dx, dy: dy) },
                                onQuit: { NSApp.terminate(nil) })
         let host = NSHostingView(rootView: view)
         host.wantsLayer = true
         host.layer?.cornerRadius = 10
         host.layer?.masksToBounds = true
         panel.contentView = host
+    }
+
+    /// Dragging the sidebar's header drags the Ghostty window with it, so
+    /// the two move as one window.
+    private func drag(dx: CGFloat, dy: CGFloat) {
+        let pids = Set(GhosttyBridge.runningInstances().map(\.processIdentifier))
+        guard let win = WindowTracker.frontGhosttyWindow(pids: pids) else { return }
+        WindowTracker.move(win, dx: dx, dy: dy)
+        lastNudged = nil
+        track()
     }
 
     private func track() {
