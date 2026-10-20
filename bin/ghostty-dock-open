@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+
+# Opens a folder as a new tab in the one shared Ghostty, running a launcher
+# (ghostty-claude-launcher and friends) in it. Replaces `open -na Ghostty.app`,
+# which started a separate Ghostty app - and a separate Dock icon - for every
+# session, so sessions could never share a window's tabs.
+#
+# The tab gets DOCK_TAB_ID in its environment. Claude Code's hooks inherit it,
+# and the tab's Ghostty terminal id is recorded under that id, so Ghostty Dock
+# knows exactly which tab each session is in.
+
+DEPENDENCIES=(osascript uuidgen open)
+SCRIPT_NAME=$(basename "$0")
+STATE_DIR="${GHOSTTY_DOCK_STATE:-$HOME/.local/state/ghostty-dock}"
+GHOSTTY_APP="${GHOSTTY_APP:-/Applications/Ghostty.app}"
+
+function usage() {
+    cat <<EOM
+
+Opens a folder as a new tab in the shared Ghostty window.
+
+usage: ${SCRIPT_NAME} [options] <launcher> <folder>
+       ${SCRIPT_NAME} [options] --shell <folder>
+
+options:
+    --shell                      Open the user's shell, no launcher
+    --window                     Open a new window instead of a tab
+    -h|--help                    Show this help message
+
+dependencies: ${DEPENDENCIES[@]}
+
+examples:
+    ${SCRIPT_NAME} ~/.local/bin/ghostty-claude-launcher ~/Desktop/github/my-repo
+    ${SCRIPT_NAME} --shell ~/Desktop
+
+EOM
+    exit 1
+}
+
+function main() {
+    local launcher=""
+    local folder=""
+    local shell=false
+    local window=false
+    local positional=()
+
+    while [ "$1" != "" ]; do
+        case $1 in
+        --shell) shell=true ;;
+        --window) window=true ;;
+        -h | --help) usage ;;
+        -*)
+            echo "Error: Unknown option '$1'" >&2
+            usage
+            ;;
+        *) positional+=("$1") ;;
+        esac
+        shift
+    done
+
+    if $shell; then
+        folder="${positional[0]:-}"
+    else
+        launcher="${positional[0]:-}"
+        folder="${positional[1]:-}"
+        if [ -z "$launcher" ] || [ ! -x "$launcher" ]; then
+            echo "Error: launcher '$launcher' is not an executable file" >&2
+            usage
+        fi
+    fi
+    if [ -z "$folder" ] || [ ! -d "$folder" ]; then
+        echo "Error: folder '$folder' is not a directory" >&2
+        usage
+    fi
+    folder=$(cd "$folder" && pwd)
+
+    exit_on_missing_tools "${DEPENDENCIES[@]}"
+
+    if ! ensure_ghostty_running; then
+        fallback_new_app "$launcher" "$folder"
+        exit 0
+    fi
+
+    local dock_id
+    dock_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+    local result
+    if ! result=$(open_tab "$dock_id" "$launcher" "$folder" "$window"); then
+        echo "Error: Ghostty did not open the tab ($result); opening a separate Ghostty instead" >&2
+        fallback_new_app "$launcher" "$folder"
+        exit 0
+    fi
+    record_tab "$dock_id" "$result" "$launcher" "$folder"
+}
+
+# Starts Ghostty without a window when it is not running, and waits until it
+# answers AppleScript. window-save-state=never stops it restoring yesterday's
+# windows alongside the new tab.
+function ensure_ghostty_running() {
+    if ghostty_running; then
+        return 0
+    fi
+    open -a "$GHOSTTY_APP" --args --window-save-state=never --initial-window=false --quit-after-last-window-closed=true || return 1
+    local i
+    for ((i = 0; i < 40; i++)); do
+        if ghostty_running && osascript -e 'tell application "Ghostty" to count windows' >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.25
+    done
+    return 1
+}
+
+function ghostty_running() {
+    [ "$(osascript -e 'application "Ghostty" is running' 2>/dev/null)" = "true" ]
+}
+
+# Prints "<tab id> <terminal id>" of the new tab.
+function open_tab() {
+    local dock_id="$1"
+    local launcher="$2"
+    local folder="$3"
+    local window="$4"
+
+    local command=""
+    if [ -n "$launcher" ]; then
+        command="$(shell_quote "$launcher") $(shell_quote "$folder")"
+    fi
+    osascript - "$dock_id" "$command" "$folder" "$window" 2>&1 <<'APPLESCRIPT'
+on run argv
+    set dockId to item 1 of argv
+    set cmd to item 2 of argv
+    set dir to item 3 of argv
+    set wantWindow to item 4 of argv
+    tell application "Ghostty"
+        set cfg to new surface configuration
+        set initial working directory of cfg to dir
+        set environment variables of cfg to {"DOCK_TAB_ID=" & dockId}
+        if cmd is not "" then
+            set command of cfg to cmd
+            set wait after command of cfg to false
+        end if
+        if wantWindow is "true" or (count windows) is 0 then
+            set w to new window with configuration cfg
+            set t to selected tab of w
+        else
+            set t to new tab in front window with configuration cfg
+        end if
+        activate
+        return (id of t) & " " & (id of focused terminal of t)
+    end tell
+end run
+APPLESCRIPT
+}
+
+function record_tab() {
+    local dock_id="$1"
+    local result="$2"
+    local launcher="$3"
+    local folder="$4"
+    local tab_id terminal_id
+    read -r tab_id terminal_id <<<"$result"
+
+    mkdir -p "$STATE_DIR/tabs" || return 1
+    local tmp="$STATE_DIR/tabs/$dock_id.json.tmp"
+    printf '{"dock_tab_id":"%s","tab_id":"%s","terminal_id":"%s","folder":"%s","launcher":"%s","created":%s}\n' \
+        "$dock_id" "$(json_escape "$tab_id")" "$(json_escape "$terminal_id")" \
+        "$(json_escape "$folder")" "$(json_escape "$launcher")" "$(date +%s)" >"$tmp" &&
+        mv -f "$tmp" "$STATE_DIR/tabs/$dock_id.json"
+}
+
+# The old behaviour, so a session still opens when the shared Ghostty cannot
+# be reached (Automation permission refused, Ghostty too old for AppleScript).
+function fallback_new_app() {
+    local launcher="$1"
+    local folder="$2"
+    if [ -n "$launcher" ]; then
+        open -na "$GHOSTTY_APP" --args --window-save-state=never --quit-after-last-window-closed=true -e "$launcher" "$folder"
+    else
+        open -na "$GHOSTTY_APP" --args --window-save-state=never --quit-after-last-window-closed=true --working-directory="$folder"
+    fi
+}
+
+function shell_quote() {
+    printf "'%s'" "${1//\'/\'\\\'\'}"
+}
+
+function json_escape() {
+    local s="${1//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    printf '%s' "$s"
+}
+
+function exit_on_missing_tools() {
+    for cmd in "$@"; do
+        if command -v "$cmd" &>/dev/null; then
+            continue
+        fi
+        printf "Error: Required tool '%s' is not installed or not in PATH\n" "$cmd" >&2
+        exit 1
+    done
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+    exit 0
+fi
