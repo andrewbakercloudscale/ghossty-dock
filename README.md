@@ -2,7 +2,7 @@
 
 Ghostty with a Chrome-style vertical tab sidebar: one window, one Dock icon,
 every Claude Code session as a tab, coloured by status (needs you, running,
-finished, idle, shell) and sorted needs-you first. Ctrl-Opt-J jumps to the
+finished, idle, shell) and sorted by name so rows stay put. Ctrl-Opt-J jumps to the
 next session waiting for you.
 
 ![Ghostty Dock window](docs/window.png)
@@ -36,7 +36,7 @@ reports each session's status.
 
 ## Settings (Cmd-,)
 
-- Sort: **urgency** (needs you, then idle with most recently idle first, then
+- Sort: **alphabetical** (default; rows never move), **urgency** (needs you, then idle with most recently idle first, then
   running), **running first** (running, then needs you, then idle), or **tab order**.
 - Sidebar on/off, native tab bar, hotkey, Dock badge, open at login.
 
