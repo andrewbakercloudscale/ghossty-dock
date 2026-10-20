@@ -31,7 +31,7 @@ function main() {
     trap 'rm -rf "$state"' EXIT
     export GHOSTTY_DOCK_STATE="$state"
     export GHOSTTY_DOCK_TEST_LINEAGE="111 222 ttys009"
-    unset DOCK_TAB_ID
+    unset DOCK_TAB_ID GHOSTTY_DOCK_SURFACE
 
     local f="$state/sessions/tty-ttys009.json"
 
@@ -78,6 +78,9 @@ function main() {
 
     DOCK_TAB_ID="abc-123" fire '{"hook_event_name":"UserPromptSubmit","session_id":"s3","cwd":"/y/other"}'
     check "dock tab id is the key" "$state/sessions/tab-abc-123.json" '.dock_tab_id' "abc-123"
+
+    GHOSTTY_DOCK_SURFACE="0A1B-2C3D" DOCK_TAB_ID="abc-123" fire '{"hook_event_name":"UserPromptSubmit","session_id":"s5","cwd":"/y/other"}'
+    check "surface id beats dock tab id" "$state/sessions/srf-0A1B-2C3D.json" '.status' "running"
 
     GHOSTTY_DOCK_TEST_LINEAGE="- - -" fire '{"hook_event_name":"Stop","session_id":"s4","cwd":"/z"}'
     check "no terminal falls back to session id" "$state/sessions/sid-s4.json" '.status' "done"
