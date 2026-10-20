@@ -193,7 +193,7 @@ function fallback_new_app() {
     # Always stock Ghostty: the fallback must not depend on what just failed.
     if [ -n "$command" ] && [ -z "$launcher" ]; then
         open -na /Applications/Ghostty.app --args --window-save-state=never --quit-after-last-window-closed=true \
-            --working-directory="$folder" -e /bin/zsh -lc "$command"
+            --working-directory="$folder" --command="$command"
     elif [ -n "$launcher" ]; then
         open -na "$GHOSTTY_APP" --args --window-save-state=never --quit-after-last-window-closed=true -e "$launcher" "$folder"
     else

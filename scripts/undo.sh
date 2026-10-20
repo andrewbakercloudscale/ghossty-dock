@@ -98,9 +98,9 @@ function reopen() {
         echo "  $name: $cmd"
         return
     fi
-    # A login shell, so claude gets the PATH and environment a Terminal has.
+    # One --command argument: with -e, Ghostty also opened "/bin/zsh" as a tab.
     open -na "$GHOSTTY_APP" --args --window-save-state=never --quit-after-last-window-closed=true \
-        --working-directory="$cwd" -e /bin/zsh -lc "$cmd" || {
+        --working-directory="$cwd" --command="$cmd" || {
         print_error "$name: Ghostty did not start"
         return
     }
