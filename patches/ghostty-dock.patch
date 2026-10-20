@@ -453,10 +453,10 @@ index 0000000..c3c7cc4
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..a69ab05
+index 0000000..aa1c511
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,118 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -469,6 +469,7 @@ index 0000000..a69ab05
 +    static let showTabBarKey = "dock.showTabBar"
 +    static let jumpHotKeyKey = "dock.jumpHotKey"
 +    static let dockBadgeKey = "dock.dockBadge"
++    static let sidebarWidthKey = "dock.sidebarWidth"
 +
 +    static func register() {
 +        UserDefaults.standard.register(defaults: [
@@ -576,10 +577,11 @@ index 0000000..a69ab05
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..4bf79d1
+index 0000000..0373ecf
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,330 @@
+@@ -0,0 +1,356 @@
++import AppKit
 +import SwiftUI
 +
 +/// Catppuccin Mocha. All text is DockPalette.text or a status colour; grey
@@ -625,9 +627,12 @@ index 0000000..4bf79d1
 +struct DockSidebarView: View {
 +    @ObservedObject var model = DockSessions.shared
 +    @AppStorage(DockSettings.showSidebarKey) private var show = true
++    @AppStorage(DockSettings.sidebarWidthKey) private var width = Double(Self.width)
++    @State private var dragStart: Double?
 +    var onNewTab: () -> Void
 +
 +    static let width: CGFloat = 220
++    static let widthRange: ClosedRange<Double> = 160...520
 +
 +    var body: some View {
 +        if show { sidebar }
@@ -663,10 +668,32 @@ index 0000000..4bf79d1
 +                .padding(.vertical, 4)
 +            }
 +        }
-+        .frame(width: Self.width)
++        .frame(width: CGFloat(width.clamped(to: Self.widthRange)))
 +        .frame(maxHeight: .infinity)
 +        .background(DockPalette.mantle)
++        .overlay(alignment: .trailing) { resizeHandle }
 +        .environment(\.colorScheme, .dark)
++    }
++
++    /// Drag the sidebar's right edge to resize it; double-click resets it.
++    /// The width is shared by every window.
++    private var resizeHandle: some View {
++        Color.clear
++            .frame(width: 6)
++            .contentShape(Rectangle())
++            .onHover { inside in
++                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
++            }
++            .gesture(
++                DragGesture(minimumDistance: 1, coordinateSpace: .global)
++                    .onChanged { drag in
++                        let start = dragStart ?? width.clamped(to: Self.widthRange)
++                        dragStart = start
++                        width = (start + drag.translation.width).clamped(to: Self.widthRange)
++                    }
++                    .onEnded { _ in dragStart = nil }
++            )
++            .onTapGesture(count: 2) { width = Double(Self.width) }
 +    }
 +
 +    private var header: some View {

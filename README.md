@@ -24,6 +24,7 @@ reports each session's status.
 | terminal | teal | plain shell, no Claude Code |
 
 - Click a row to switch to it; ✕ closes it; + opens a new tab.
+- Drag the sidebar's right edge to make it wider or narrower (double-click the edge to reset).
 - Click a row's **Undock** icon (↗, beside ✕; or right-click → Undock) to move that session out
   to its own Ghostty window: claude is stopped and resumed there at once.
 - **Undocked**: Claude Code sessions in their own Ghostty windows are listed
