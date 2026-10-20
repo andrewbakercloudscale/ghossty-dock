@@ -104,10 +104,10 @@ index 0000000..4b8472f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..63009f0
+index 0000000..4b0ddf2
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,289 @@
+@@ -0,0 +1,336 @@
 +import AppKit
 +import Combine
 +
@@ -137,20 +137,34 @@ index 0000000..63009f0
 +        var status: Status
 +        var since: Date?
 +        var selected: Bool
++        /// The Claude Code session in it, if any: what Undock moves.
++        var sessionId: String?
 +        weak var controller: TerminalController?
 +
 +        static func == (a: Row, b: Row) -> Bool {
 +            a.id == b.id && a.name == b.name && a.detail == b.detail && a.status == b.status
-+                && a.since == b.since && a.selected == b.selected
++                && a.since == b.since && a.selected == b.selected && a.sessionId == b.sessionId
 +        }
++    }
++
++    /// A Claude Code session running in a stock Ghostty app of its own.
++    struct Undocked: Identifiable, Equatable {
++        var id: Int32 { pid }
++        let pid: Int32
++        var name: String
++        var cwd: String
++        var busy: Bool
++        var moving: Bool
 +    }
 +
 +    @Published private(set) var rows: [Row] = []
 +
-+    /// Claude Code sessions still in their own stock Ghostty app, and whether
-+    /// ghostty-dock-move is bringing them in.
-+    @Published private(set) var movable = 0
-+    @Published private(set) var moving = false
++    /// Claude Code sessions in their own stock Ghostty app, from
++    /// `ghostty-dock-move --list`, and the sessions it is moving out of here.
++    @Published private(set) var undocked: [Undocked] = []
++    @Published private(set) var undocking: Set<String> = []
++
++    var movable: Int { undocked.filter { !$0.moving }.count }
 +
 +    var waitingCount: Int { rows.filter { $0.status == .waiting }.count }
 +    var unreadCount: Int { rows.filter { $0.status == .unread }.count }
@@ -193,34 +207,65 @@ index 0000000..63009f0
 +            let out = Pipe()
 +            let p = Process()
 +            p.executableURL = URL(fileURLWithPath: "/bin/bash")
-+            p.arguments = [mover, "--status"]
++            p.arguments = [mover, "--list"]
 +            p.standardOutput = out
 +            p.standardError = FileHandle.nullDevice
 +            guard (try? p.run()) != nil else { return }
 +            let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
 +            p.waitUntilExit()
-+            let parts = text.split(separator: " ").map { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0 }
-+            guard parts.count == 2 else { return }
++            var windows: [Undocked] = []
++            var leaving: Set<String> = []
++            for line in text.split(separator: "\n") {
++                let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
++                if f.count == 6, f[0] == "window", let pid = Int32(f[1]) {
++                    windows.append(Undocked(pid: pid, name: f[4], cwd: f[5], busy: f[2] == "1", moving: f[3] == "1"))
++                } else if f.count == 2, f[0] == "undocking" {
++                    leaving.insert(f[1])
++                }
++            }
++            windows.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 +            DispatchQueue.main.async {
 +                guard let self else { return }
-+                if self.movable != parts[0] { self.movable = parts[0] }
-+                if self.moving != (parts[1] == 1) { self.moving = parts[1] == 1 }
++                if self.undocked != windows { self.undocked = windows }
++                if self.undocking != leaving { self.undocking = leaving }
 +            }
 +        }
 +    }
 +
-+    /// Moves sessions from separate Ghostty apps into tabs here. Busy ones
-+    /// are waited for, never interrupted.
-+    func bringInOthers() {
-+        guard !moving, FileManager.default.isExecutableFile(atPath: mover) else { return }
++    private func runMover(_ args: [String]) {
++        guard FileManager.default.isExecutableFile(atPath: mover) else { NSSound.beep(); return }
 +        let p = Process()
 +        p.executableURL = URL(fileURLWithPath: "/bin/bash")
-+        p.arguments = [mover, "--detach"]
++        p.arguments = [mover, "--detach"] + args
 +        p.standardOutput = FileHandle.nullDevice
 +        p.standardError = FileHandle.nullDevice
 +        try? p.run()
-+        moving = true
-+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.refreshMovable() }
++        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.refreshMovable() }
++    }
++
++    /// Moves every session from separate Ghostty apps into tabs here. Busy
++    /// ones are waited for, never interrupted.
++    func bringInOthers() {
++        undocked = undocked.map { var u = $0; u.moving = true; return u }
++        runMover([])
++    }
++
++    /// Moves one session from its own Ghostty app into a tab here.
++    func dock(_ u: Undocked) {
++        if let i = undocked.firstIndex(of: u) { undocked[i].moving = true }
++        runMover(["--pid", String(u.pid)])
++    }
++
++    /// Moves a tab's session out into a Ghostty app of its own, once quiet.
++    func undock(_ row: Row) {
++        guard let sid = row.sessionId else { return }
++        undocking.insert(sid)
++        runMover(["--undock", sid])
++    }
++
++    /// Brings an undocked session's own Ghostty window to the front.
++    func show(_ u: Undocked) {
++        NSRunningApplication(processIdentifier: u.pid)?.activate()
 +    }
 +
 +    /// Settings take effect at once, in every window.
@@ -252,6 +297,7 @@ index 0000000..63009f0
 +        var since: Int
 +        var name: String
 +        var claude_pid: Int32?
++        var session_id: String?
 +    }
 +
 +    func refresh() {
@@ -280,7 +326,7 @@ index 0000000..63009f0
 +            let onScreen = appActive && selected
 +
 +            // A tab with splits is one row: its most urgent session.
-+            var best: (status: Status, since: Int, name: String, key: String)?
++            var best: (status: Status, since: Int, name: String, key: String, sid: String?)?
 +            for surface in controller.surfaceTree {
 +                let key = surface.id.uuidString
 +                guard let s = sessions[key] else { continue }
@@ -296,7 +342,7 @@ index 0000000..63009f0
 +                    saveSeen()
 +                    status = .idle
 +                }
-+                if best == nil || status < best!.status { best = (status, s.since, s.name, key) }
++                if best == nil || status < best!.status { best = (status, s.since, s.name, key, s.session_id) }
 +            }
 +
 +            let focused = controller.focusedSurface ?? controller.surfaceTree.first
@@ -309,6 +355,7 @@ index 0000000..63009f0
 +                             status: best?.status ?? .shell,
 +                             since: best.map { Date(timeIntervalSince1970: TimeInterval($0.since)) },
 +                             selected: selected,
++                             sessionId: best?.sid,
 +                             controller: controller))
 +        }
 +        order.removeAll { id in !built.contains { $0.id == id } }
@@ -522,14 +569,14 @@ index 0000000..a69ab05
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..f770ae0
+index 0000000..735848b
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,236 @@
+@@ -0,0 +1,331 @@
 +import SwiftUI
 +
-+/// Catppuccin Mocha. All text is DockPalette.text or a status colour, never
-+/// grey: grey on mantle is hard to read. Every status has its own hue, used
++/// Catppuccin Mocha. All text is DockPalette.text or a status colour; grey
++/// marks only sessions outside the Dock. Every status has its own hue, used
 +/// for both its dot and its label.
 +enum DockPalette {
 +    static let base = Color(red: 0.118, green: 0.118, blue: 0.180)      // #1e1e2e
@@ -541,6 +588,9 @@ index 0000000..f770ae0
 +    static let blue = Color(red: 0.537, green: 0.706, blue: 0.980)      // #89b4fa
 +    static let mauve = Color(red: 0.796, green: 0.651, blue: 0.969)     // #cba6f7
 +    static let teal = Color(red: 0.580, green: 0.886, blue: 0.835)      // #94e2d5
++    /// Only for sessions outside the Dock, so they read as not part of it.
++    static let grey = Color(red: 0.651, green: 0.678, blue: 0.784)      // #a6adc8
++    static let greyLine = Color(red: 0.424, green: 0.439, blue: 0.525)  // #6c7086
 +
 +    static func color(_ s: DockSessions.Status) -> Color {
 +        switch s {
@@ -582,7 +632,24 @@ index 0000000..f770ae0
 +            ScrollView {
 +                LazyVStack(spacing: 2) {
 +                    ForEach(model.rows) { row in
-+                        DockRowView(row: row, onClose: { model.closeTab(row) }).onTapGesture { model.select(row) }
++                        DockRowView(row: row,
++                                    undocking: row.sessionId.map(model.undocking.contains) ?? false,
++                                    onClose: { model.closeTab(row) },
++                                    onUndock: { model.undock(row) })
++                            .onTapGesture { model.select(row) }
++                    }
++                    if !model.undocked.isEmpty {
++                        HStack {
++                            Text("Undocked").font(.system(size: 11, weight: .semibold)).foregroundStyle(DockPalette.grey)
++                            Spacer()
++                        }
++                        .padding(.horizontal, 8)
++                        .padding(.top, 12)
++                        .padding(.bottom, 2)
++                        ForEach(model.undocked) { u in
++                            DockUndockedRowView(session: u, onDock: { model.dock(u) })
++                                .onTapGesture { model.show(u) }
++                        }
 +                    }
 +                }
 +                .padding(.horizontal, 6)
@@ -607,19 +674,16 @@ index 0000000..f770ae0
 +            .buttonStyle(.plain)
 +            .foregroundStyle(DockPalette.text)
 +            .help("New tab")
-+            if model.movable > 0 || model.moving {
++            if model.movable > 0 {
 +                Button(action: model.bringInOthers) {
 +                    HStack(spacing: 2) {
-+                        Image(systemName: model.moving ? "hourglass" : "tray.and.arrow.down.fill")
-+                            .font(.system(size: 12, weight: .semibold))
-+                        if model.movable > 0 { Text("\(model.movable)").font(.system(size: 10, weight: .bold)) }
++                        Image(systemName: "tray.and.arrow.down.fill").font(.system(size: 12, weight: .semibold))
++                        Text("\(model.movable)").font(.system(size: 10, weight: .bold))
 +                    }
 +                }
 +                .buttonStyle(.plain)
 +                .foregroundStyle(DockPalette.text)
-+                .help(model.moving
-+                      ? "Bringing sessions in: busy ones move once quiet for a minute"
-+                      : "Bring in \(model.movable) session(s) from other Ghostty windows")
++                .help("Dock all \(model.movable) undocked session(s)")
 +            }
 +            Button(action: model.jumpToNextWaiting) {
 +                Image(systemName: "arrow.down.to.line").font(.system(size: 12, weight: .semibold))
@@ -656,9 +720,12 @@ index 0000000..f770ae0
 +
 +struct DockRowView: View {
 +    var row: DockSessions.Row
++    var undocking: Bool
 +    var onClose: () -> Void
++    var onUndock: () -> Void
 +    @State private var hover = false
 +    @State private var hoverClose = false
++    @State private var hoverUndock = false
 +
 +    var body: some View {
 +        HStack(spacing: 9) {
@@ -677,6 +744,19 @@ index 0000000..f770ae0
 +                }
 +            }
 +            Spacer(minLength: 0)
++            if row.sessionId != nil && (hover || undocking) {
++                Button(action: onUndock) {
++                    Image(systemName: undocking ? "hourglass" : "rectangle.portrait.and.arrow.right")
++                        .font(.system(size: 10, weight: .bold))
++                        .foregroundStyle(DockPalette.text)
++                        .frame(width: 18, height: 18)
++                        .background(Circle().fill(hoverUndock ? DockPalette.surface.opacity(1.6) : Color.clear))
++                }
++                .buttonStyle(.plain)
++                .disabled(undocking)
++                .onHover { hoverUndock = $0 }
++                .help(undocking ? "Undocking once quiet for a minute" : "Undock: move to its own Ghostty window")
++            }
 +            // On every row, so any tab can be closed without hunting for it.
 +            Button(action: onClose) {
 +                Image(systemName: "xmark")
@@ -703,6 +783,12 @@ index 0000000..f770ae0
 +        .contentShape(Rectangle())
 +        .onHover { hover = $0 }
 +        .help(row.detail.isEmpty ? row.name : row.detail)
++        .contextMenu {
++            if row.sessionId != nil {
++                Button("Undock to Its Own Window", action: onUndock).disabled(undocking)
++            }
++            Button("Close Tab", action: onClose)
++        }
 +    }
 +
 +    private func subtitle(now: Date) -> String {
@@ -717,6 +803,62 @@ index 0000000..f770ae0
 +        if s < 3600 { return "\(s / 60)m" }
 +        if s < 86_400 { return "\(s / 3600)h" }
 +        return "\(s / 86_400)d"
++    }
++}
++
++/// A session in a Ghostty app of its own: grey, in a dashed outline, with a
++/// button to dock it. Clicking the row shows its window.
++struct DockUndockedRowView: View {
++    var session: DockSessions.Undocked
++    var onDock: () -> Void
++    @State private var hover = false
++    @State private var hoverDock = false
++
++    var body: some View {
++        HStack(spacing: 9) {
++            Image(systemName: "macwindow")
++                .font(.system(size: 12, weight: .semibold))
++                .foregroundStyle(DockPalette.grey)
++                .frame(width: 18, height: 18)
++            VStack(alignment: .leading, spacing: 1) {
++                Text(session.name)
++                    .font(.system(size: 13))
++                    .foregroundStyle(DockPalette.grey)
++                    .lineLimit(1)
++                    .truncationMode(.middle)
++                Text(session.moving ? (session.busy ? "Docking once quiet" : "Docking…")
++                     : session.busy ? "Own window · busy" : "Own window")
++                    .font(.system(size: 10.5))
++                    .foregroundStyle(DockPalette.grey)
++                    .lineLimit(1)
++            }
++            Spacer(minLength: 0)
++            Button(action: onDock) {
++                HStack(spacing: 3) {
++                    Image(systemName: session.moving ? "hourglass" : "tray.and.arrow.down.fill")
++                        .font(.system(size: 10, weight: .bold))
++                    if !session.moving { Text("Dock").font(.system(size: 10.5, weight: .semibold)) }
++                }
++                .foregroundStyle(DockPalette.text)
++                .padding(.horizontal, 6)
++                .padding(.vertical, 3)
++                .background(Capsule().fill(hoverDock ? DockPalette.surface.opacity(1.6) : DockPalette.surface))
++            }
++            .buttonStyle(.plain)
++            .disabled(session.moving)
++            .onHover { hoverDock = $0 }
++            .help(session.moving ? "Moves in once quiet for a minute" : "Move into a tab here")
++        }
++        .padding(.horizontal, 8)
++        .padding(.vertical, 6)
++        .background(RoundedRectangle(cornerRadius: 7).fill(hover ? DockPalette.base : Color.clear))
++        .overlay(
++            RoundedRectangle(cornerRadius: 7)
++                .strokeBorder(DockPalette.greyLine, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
++        )
++        .contentShape(Rectangle())
++        .onHover { hover = $0 }
++        .help(session.cwd)
 +    }
 +}
 +

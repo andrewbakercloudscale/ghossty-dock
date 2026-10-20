@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 
-# Moves every Claude Code session still running in its own stock Ghostty app
-# into a tab of Ghostty Dock: stops claude once its transcript has been quiet
-# for a while, closes that Ghostty, and reopens `claude --resume <id>` with the
-# same flags (so --remote-control keeps its name) as a Ghostty Dock tab.
+# Moves Claude Code sessions between their own stock Ghostty apps and tabs of
+# Ghostty Dock. Docking stops claude once its transcript has been quiet for a
+# while, closes that Ghostty, and reopens `claude --resume <id>` with the same
+# flags (so --remote-control keeps its name) as a Ghostty Dock tab. Undocking
+# does the same the other way, into a Ghostty of its own.
 #
 # A session that is busy is waited for, never interrupted. Run it detached
 # (--detach) when the calling session is one of those being moved.
@@ -12,24 +13,32 @@ SCRIPT_NAME=$(basename "$0")
 SELF="$(cd "$(dirname "$0")" && pwd)/$SCRIPT_NAME"
 STATE_DIR="$HOME/.local/state/ghostty-dock"
 LOG="$STATE_DIR/move-to-dock.log"
-LOCK="$STATE_DIR/move-to-dock.pid"
+# One "<job>.pid" per move running: all, g<ghostty pid> or u<session id>.
+LOCK_DIR="$STATE_DIR/moving"
 OPENER="$HOME/.local/bin/ghostty-dock-open"
-GHOSTTY_BIN="/Applications/Ghostty.app/Contents/MacOS/ghostty"
+GHOSTTY_APP="/Applications/Ghostty.app"
+GHOSTTY_BIN="$GHOSTTY_APP/Contents/MacOS/ghostty"
+DOCK_BIN="$HOME/Applications/Ghostty Dock.app/Contents/MacOS/ghostty"
 QUIET_SECS=60
 GIVE_UP_SECS=$((12 * 3600))
 
 function usage() {
     cat <<EOM
 
-Moves Claude Code sessions from separate Ghostty apps into Ghostty Dock tabs.
+Moves Claude Code sessions between separate Ghostty apps and Ghostty Dock tabs.
 
 usage: ${SCRIPT_NAME} [options]
 
 options:
-    --detach       Run in the background under launchd and return at once
-    --dry-run      Only list what would move
-    --status       Print "<sessions left to move> <1 if a move is running, else 0>"
-    -h|--help      Show this help message
+    --pid <pid>        Dock only the session in this Ghostty app (default: all)
+    --undock <id>      Move this session out of Ghostty Dock into its own Ghostty
+    --detach           Run in the background and return at once
+    --dry-run          Only list what would move
+    --status           Print "<sessions left to dock> <1 if docking all, else 0>"
+    --list             Print a line per session outside Ghostty Dock:
+                       "window<TAB>pid<TAB>busy<TAB>moving<TAB>name<TAB>cwd",
+                       and "undocking<TAB>id" per session being undocked
+    -h|--help          Show this help message
 
 EOM
     exit 1
@@ -39,16 +48,19 @@ function log() {
     echo "$(date '+%H:%M:%S') $*" | tee -a "$LOG"
 }
 
-# Prints "<claude pid>" for the claude running under a Ghostty pid.
+# Prints "<claude pid>" for the claude running under a Ghostty pid; with
+# "all", every one (Ghostty Dock has many).
 function claude_under() {
     local root="$1"
-    ps -axo pid=,ppid=,command= | awk -v root="$root" '
+    local all=0
+    [ "$2" = "all" ] && all=1
+    ps -axo pid=,ppid=,command= | awk -v root="$root" -v all="$all" '
         { parent[$1] = $2; cmd[$1] = $0 }
         END {
             for (p in cmd) {
                 if (cmd[p] !~ /^ *[0-9]+ +[0-9]+ +[^ ]*claude .*--(session-id|resume|continue)( |$)/) continue
                 q = p
-                while (q > 1) { q = parent[q]; if (q == root) { print p; exit } }
+                while (q > 1) { q = parent[q]; if (q == root) { print p; if (!all) exit; break } }
             }
         }'
 }
@@ -65,6 +77,23 @@ function quiet_for() {
     echo $(($(date +%s) - $(stat -f %m "$file")))
 }
 
+# Prints "<session id>\t<cwd>\t<flags>" for a claude pid.
+function session_of() {
+    local cpid="$1"
+    local args sid flags cwd
+    args=$(ps -o command= -p "$cpid")
+    cwd=$(lsof -a -p "$cpid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+    if [[ "$args" =~ --continue ]]; then
+        # The session --continue picked: the newest transcript for the folder.
+        sid=$(basename "$(ls -t "$(dirname "$(transcript_for "$cwd" x)")"/*.jsonl 2>/dev/null | head -1)" .jsonl)
+        flags=$(sed -E 's/^[^ ]*claude ?//; s/--continue ?//' <<<"$args")
+    else
+        sid=$(sed -E 's/.*--(session-id|resume) ([^ ]+).*/\2/' <<<"$args")
+        flags=$(sed -E 's/^[^ ]*claude ?//; s/--(session-id|resume) [^ ]+ ?//' <<<"$args")
+    fi
+    printf '%s\t%s\t%s\n' "$sid" "$cwd" "$flags"
+}
+
 # Moves one session; returns 1 while it is still busy.
 function move_one() {
     local gpid="$1"
@@ -77,17 +106,8 @@ function move_one() {
         log "$gpid: no Claude Code session with an id in it, left alone"
         return 0
     fi
-    local args sid flags cwd
-    args=$(ps -o command= -p "$cpid")
-    cwd=$(lsof -a -p "$cpid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
-    if [[ "$args" =~ --continue ]]; then
-        # The session --continue picked: the newest transcript for the folder.
-        sid=$(basename "$(ls -t "$(dirname "$(transcript_for "$cwd" x)")"/*.jsonl 2>/dev/null | head -1)" .jsonl)
-        flags=$(sed -E 's/^[^ ]*claude ?//; s/--continue ?//' <<<"$args")
-    else
-        sid=$(sed -E 's/.*--(session-id|resume) ([^ ]+).*/\2/' <<<"$args")
-        flags=$(sed -E 's/^[^ ]*claude ?//; s/--(session-id|resume) [^ ]+ ?//' <<<"$args")
-    fi
+    local sid cwd flags
+    IFS=$'\t' read -r sid cwd flags <<<"$(session_of "$cpid")"
     if [ -z "$sid" ]; then
         log "$(basename "$cwd"): no session id found, left alone"
         return 0
@@ -129,17 +149,78 @@ function legacy_pids() {
 }
 
 # Stock Ghostty apps with a Claude Code session in them.
-function count_movable() {
-    local n=0
+function movable_pids() {
     local gpid
     for gpid in $(pgrep -f "^$GHOSTTY_BIN"); do
-        [ -n "$(claude_under "$gpid")" ] && n=$((n + 1))
+        [ -n "$(claude_under "$gpid")" ] && echo "$gpid"
     done
-    echo "$n"
 }
 
-function mover_running() {
-    [ -f "$LOCK" ] && kill -0 "$(cat "$LOCK")" 2>/dev/null
+function job_running() {
+    local f="$LOCK_DIR/$1.pid"
+    [ -f "$f" ] && kill -0 "$(cat "$f")" 2>/dev/null
+}
+
+function list_sessions() {
+    local gpid
+    for gpid in $(movable_pids); do
+        local sid cwd flags busy=0 moving=0
+        IFS=$'\t' read -r sid cwd flags <<<"$(session_of "$(claude_under "$gpid")")"
+        [ "$(quiet_for "$(transcript_for "$cwd" "$sid")")" -lt "$QUIET_SECS" ] && busy=1
+        { job_running all || job_running "g$gpid"; } && moving=1
+        printf 'window\t%s\t%s\t%s\t%s\t%s\n' "$gpid" "$busy" "$moving" "$(basename "$cwd")" "$cwd"
+    done
+    local f
+    for f in "$LOCK_DIR"/u*.pid; do
+        [ -f "$f" ] || continue
+        local job
+        job=$(basename "$f" .pid)
+        job_running "$job" && printf 'undocking\t%s\n' "${job#u}"
+    done
+}
+
+# The claude in a Ghostty Dock tab running session <id>.
+function docked_claude() {
+    local sid="$1"
+    local dock
+    # Not pgrep -f: it does not match this path, which has a space in it.
+    dock=$(ps -axo pid=,command= | awk -v bin="$DOCK_BIN" '{ pid = $1; $1 = ""; sub(/^ /, "") }
+        index($0, bin " ") == 1 || $0 == bin { print pid; exit }')
+    [ -n "$dock" ] || return
+    local cpid
+    for cpid in $(claude_under "$dock" all); do
+        [ "$(cut -f1 <<<"$(session_of "$cpid")")" = "$sid" ] && { echo "$cpid"; return; }
+    done
+}
+
+# Moves session <id> out of Ghostty Dock into a stock Ghostty of its own.
+function undock() {
+    local sid="$1"
+    local dry="$2"
+    local cpid
+    cpid=$(docked_claude "$sid")
+    [ -n "$cpid" ] || { log "$sid: not running in Ghostty Dock"; return 1; }
+    local cwd flags started
+    IFS=$'\t' read -r _ cwd flags <<<"$(session_of "$cpid")"
+    started=$(date +%s)
+    while [ "$(quiet_for "$(transcript_for "$cwd" "$sid")")" -lt "$QUIET_SECS" ]; do
+        log "$(basename "$cwd"): busy, undocking once quiet"
+        $dry && return 0
+        [ $(($(date +%s) - started)) -gt "$GIVE_UP_SECS" ] && { log "$(basename "$cwd"): gave up"; return 1; }
+        sleep 20
+    done
+    local cmd="caffeinate -i claude --resume $sid $flags"
+    log "$(basename "$cwd"): undocking ($cmd)"
+    $dry && return 0
+    printf '%s\t%s\t%s\n' "$sid" "$cwd" "$flags" >>"$STATE_DIR/sessions-snapshot.tsv"
+    # Its tab closes when claude exits.
+    kill -TERM "$cpid" 2>/dev/null
+    local i
+    for ((i = 0; i < 40; i++)); do kill -0 "$cpid" 2>/dev/null || break; sleep 0.25; done
+    kill -KILL "$cpid" 2>/dev/null
+    # One --command argument: with -e, Ghostty also opens "/bin/zsh" as a tab.
+    open -na "$GHOSTTY_APP" --args --window-save-state=never --quit-after-last-window-closed=true \
+        --working-directory="$cwd" --command="$cmd" || log "$(basename "$cwd"): Ghostty did not start"
 }
 
 function remove_hidden_setting() {
@@ -153,22 +234,33 @@ function main() {
     # (CLAUDE_CODE_CHILD_SESSION turns off their transcript saving).
     unset CLAUDECODE CLAUDE_PID $(compgen -e | grep "^CLAUDE_CODE_")
     local dry=false
+    local detach=false
+    local only=""
+    local undock_id=""
+    local args=()
     while [ "$1" != "" ]; do
         case $1 in
-        --detach)
-            # Its own session, immune to the hangup when the Ghostty this
-            # runs in closes. Not launchd: a launchd job may not read ~/Desktop.
-            mkdir -p "$STATE_DIR"
-            local self_pid
-            self_pid=$(legacy_pids | tail -1)
-            MOVE_SELF_PID="$self_pid" nohup perl -MPOSIX=setsid -e 'setsid; exec @ARGV' \
-                /bin/bash "$SELF" >/dev/null 2>&1 </dev/null &
-            echo "moving in the background; log: $LOG"
+        --detach) detach=true ;;
+        --pid)
+            shift
+            only="$1"
+            args+=(--pid "$1")
+            ;;
+        --undock)
+            shift
+            undock_id="$1"
+            args+=(--undock "$1")
+            ;;
+        --dry-run)
+            dry=true
+            args+=(--dry-run)
+            ;;
+        --status)
+            if job_running all; then echo "$(movable_pids | grep -c .) 1"; else echo "$(movable_pids | grep -c .) 0"; fi
             exit 0
             ;;
-        --dry-run) dry=true ;;
-        --status)
-            if mover_running; then echo "$(count_movable) 1"; else echo "$(count_movable) 0"; fi
+        --list)
+            list_sessions
             exit 0
             ;;
         -h | --help) usage ;;
@@ -179,15 +271,47 @@ function main() {
         esac
         shift
     done
-    mkdir -p "$STATE_DIR" || exit 1
+    mkdir -p "$STATE_DIR" "$LOCK_DIR" || exit 1
     [ -x "$OPENER" ] || { echo "Error: $OPENER missing, run install.sh" >&2; exit 1; }
-    if ! $dry; then
-        mover_running && { echo "a move is already running; log: $LOG"; exit 0; }
-        echo $$ >"$LOCK"
+
+    if $detach; then
+        # Its own session, immune to the hangup when the Ghostty this runs
+        # in closes. Not launchd: a launchd job may not read ~/Desktop.
+        local self_pid
+        self_pid=$(legacy_pids | tail -1)
+        MOVE_SELF_PID="$self_pid" nohup perl -MPOSIX=setsid -e 'setsid; exec @ARGV' \
+            /bin/bash "$SELF" "${args[@]}" >/dev/null 2>&1 </dev/null &
+        echo "moving in the background; log: $LOG"
+        exit 0
     fi
 
+    local job=all
+    [ -n "$only" ] && job="g$only"
+    [ -n "$undock_id" ] && job="u$undock_id"
+    if ! $dry; then
+        { job_running "$job" || { [ "$job" != "${job#g}" ] && job_running all; }; } &&
+            { echo "already moving; log: $LOG"; exit 0; }
+        echo $$ >"$LOCK_DIR/$job.pid"
+    fi
+
+    if [ -n "$undock_id" ]; then
+        undock "$undock_id" "$dry"
+    else
+        dock_all "$dry" "$only"
+    fi
+    $dry || rm -f "$LOCK_DIR/$job.pid"
+}
+
+function dock_all() {
+    local dry="$1"
+    local only="$2"
     local pending
-    pending=$(legacy_pids)
+    if [ -n "$only" ]; then
+        pending=$(movable_pids | grep -x "$only")
+        [ -n "$pending" ] || { log "$only: no Claude Code session to dock"; return; }
+    else
+        pending=$(legacy_pids)
+    fi
     local started
     started=$(date +%s)
     while [ -n "$pending" ]; do
@@ -206,11 +330,10 @@ function main() {
             sleep 20
         fi
     done
-    if ! $dry && [ -z "$pending" ]; then
+    if ! $dry && [ -z "$only" ] && [ -z "$pending" ]; then
         remove_hidden_setting
         log "done: every session is in Ghostty Dock"
     fi
-    $dry || rm -f "$LOCK"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
