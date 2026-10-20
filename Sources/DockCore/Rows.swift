@@ -60,7 +60,9 @@ public struct RowResult: Equatable {
 }
 
 /// Turns state files, the shared Ghostty's tabs and the running Ghostty
-/// processes into the sidebar's rows, in Ghostty's own tab order, then the
+/// processes into the sidebar's rows: sessions that need you first, then busy
+/// ones, then idle ones (finished-unread before seen), then shells and
+/// sessions not heard from. Within a group, Ghostty's own tab order, then the
 /// old separate-Ghostty sessions oldest first.
 public func buildRows(_ input: RowInputs) -> RowResult {
     let snapshot = input.snapshot
@@ -147,8 +149,19 @@ public func buildRows(_ input: RowInputs) -> RowResult {
         rows.append(([1, inst.started], row))
     }
 
-    rows.sort { $0.order.lexicographicallyPrecedes($1.order) }
+    rows.sort { ([statusRank($0.row.status)] + $0.order).lexicographicallyPrecedes([statusRank($1.row.status)] + $1.order) }
     return RowResult(rows: rows.map(\.row), viewedId: viewed, homePid: homePid)
+}
+
+func statusRank(_ s: DisplayStatus) -> Int {
+    switch s {
+    case .waiting: return 0
+    case .running: return 1
+    case .unread: return 2
+    case .inactive: return 3
+    case .unknown: return 4
+    case .shell: return 5
+    }
 }
 
 func sessionRow(_ s: SessionRecord, target: Target, detail: String, seen: [String: Int], selected: Bool) -> Row {

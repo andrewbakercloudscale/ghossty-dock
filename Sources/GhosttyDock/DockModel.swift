@@ -64,6 +64,8 @@ final class DockModel: ObservableObject {
             homePid = p
         }
 
+        if homePid == nil { homePid = findHomePid(instances.map(\.pid)) }
+
         let liveTerminals = snapshotOK ? Set(snapshot.terminals.map(\.terminalId)) : nil
         let sessions = files.prune(sessions: files.sessions(), liveTerminals: liveTerminals, isAlive: isAlive)
 
@@ -101,7 +103,13 @@ final class DockModel: ObservableObject {
         rebuild()
     }
 
+    /// True while the folder picker is up, so the app does not hand
+    /// activation straight back to Ghostty from under it.
+    private(set) var choosingFolder = false
+
     func newSession() {
+        choosingFolder = true
+        defer { choosingFolder = false }
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -110,6 +118,17 @@ final class DockModel: ObservableObject {
         NSApp.activate()
         guard panel.runModal() == .OK, let url = panel.url else { return }
         GhosttyBridge.openSession(folder: url.path)
+    }
+
+    /// Which Ghostty process answers AppleScript: the one whose window titles
+    /// (via Accessibility) are the titles of the snapshot's selected tabs.
+    /// Titles are compared without Claude Code's spinner glyph, which changes
+    /// between the two reads. Nil unless exactly one process matches.
+    private func findHomePid(_ pids: [Int32]) -> Int32? {
+        let want = Set(snapshot.terminals.filter(\.tabSelected).map { cleanTitle($0.tabName) })
+        guard !want.isEmpty else { return nil }
+        let matches = pids.filter { Set(WindowTracker.windowTitles(pid: $0).map(cleanTitle)) == want }
+        return matches.count == 1 ? matches[0] : nil
     }
 
     private func markSeen(_ id: String) {

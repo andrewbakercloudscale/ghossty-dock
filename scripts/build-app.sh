@@ -54,6 +54,7 @@ function main() {
     mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" || exit 1
     cp "$bin" "$app/Contents/MacOS/GhosttyDock" || exit 1
     cp Resources/Info.plist "$app/Contents/Info.plist" || exit 1
+    cp Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns" || exit 1
 
     source "$ROOT/scripts/sign-id.sh"
     echo "== sign: $DOCK_SIGN_ID"

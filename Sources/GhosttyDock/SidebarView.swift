@@ -3,23 +3,27 @@ import DockCore
 
 /// Catppuccin Mocha, to sit next to the Ghostty theme in use. All text is
 /// Palette.text or a status colour, never grey: grey on mantle is hard to read.
+/// Every status has its own hue, used for both its dot and its label.
 enum Palette {
     static let base = Color(red: 0.118, green: 0.118, blue: 0.180)      // #1e1e2e
     static let mantle = Color(red: 0.094, green: 0.094, blue: 0.145)    // #181825
     static let surface = Color(red: 0.192, green: 0.196, blue: 0.267)   // #313244
-    static let overlay = Color(red: 0.424, green: 0.439, blue: 0.525)   // #6c7086
     static let text = Color(red: 0.804, green: 0.839, blue: 0.957)      // #cdd6f4
     static let green = Color(red: 0.651, green: 0.890, blue: 0.631)     // #a6e3a1
     static let peach = Color(red: 0.980, green: 0.702, blue: 0.529)     // #fab387
     static let blue = Color(red: 0.537, green: 0.706, blue: 0.980)      // #89b4fa
+    static let mauve = Color(red: 0.796, green: 0.651, blue: 0.969)     // #cba6f7
+    static let teal = Color(red: 0.580, green: 0.886, blue: 0.835)      // #94e2d5
+    static let pink = Color(red: 0.961, green: 0.761, blue: 0.906)      // #f5c2e7
 
     static func color(_ s: DisplayStatus) -> Color {
         switch s {
         case .running: return green
         case .waiting: return peach
         case .unread: return blue
-        case .inactive: return overlay
-        case .shell, .unknown: return surface
+        case .inactive: return mauve
+        case .shell: return teal
+        case .unknown: return pink
         }
     }
 
@@ -39,6 +43,7 @@ struct SidebarView: View {
     @ObservedObject var model: DockModel
     var trusted: Bool
     var onTrust: () -> Void
+    var onSettings: () -> Void
     var onQuit: () -> Void
 
     var body: some View {
@@ -73,6 +78,7 @@ struct SidebarView: View {
             .foregroundStyle(Palette.text)
             .help("Start Claude Code in a folder, as a new tab")
             Menu {
+                Button("Settings…", action: onSettings)
                 Button("Quit Ghostty Dock", action: onQuit)
             } label: {
                 Image(systemName: "ellipsis")
@@ -129,8 +135,7 @@ struct RowView: View {
                 TimelineView(.periodic(from: .now, by: 30)) { ctx in
                     Text(subtitle(now: ctx.date))
                         .font(.system(size: 10.5))
-                        .foregroundStyle(row.status == .waiting ? Palette.peach
-                            : row.status == .unread ? Palette.blue : Palette.text)
+                        .foregroundStyle(Palette.color(row.status))
                         .lineLimit(1)
                 }
             }
@@ -182,7 +187,7 @@ struct StatusDot: View {
                     .animation(.easeOut(duration: 1.2).repeatForever(autoreverses: false), value: pulse)
             }
             if status == .shell || status == .unknown {
-                Circle().strokeBorder(Palette.overlay, lineWidth: 1.5).frame(width: 9, height: 9)
+                Circle().strokeBorder(Palette.color(status), lineWidth: 1.5).frame(width: 9, height: 9)
             } else {
                 Circle().fill(Palette.color(status)).frame(width: 9, height: 9)
             }
