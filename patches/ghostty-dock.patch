@@ -576,10 +576,10 @@ index 0000000..a69ab05
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..b62708f
+index 0000000..3d29ed2
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,317 @@
+@@ -0,0 +1,318 @@
 +import SwiftUI
 +
 +/// Catppuccin Mocha. All text is DockPalette.text or a status colour; grey
@@ -742,11 +742,12 @@ index 0000000..b62708f
 +            Spacer(minLength: 0)
 +            if row.sessionId != nil && (hover || undocking) {
 +                Button(action: onUndock) {
-+                    Image(systemName: undocking ? "hourglass" : "rectangle.portrait.and.arrow.right")
-+                        .font(.system(size: 10, weight: .bold))
++                    Text(undocking ? "Undocking…" : "Undock")
++                        .font(.system(size: 10.5, weight: .semibold))
 +                        .foregroundStyle(DockPalette.text)
-+                        .frame(width: 18, height: 18)
-+                        .background(Circle().fill(hoverUndock ? DockPalette.surface.opacity(1.6) : Color.clear))
++                        .padding(.horizontal, 6)
++                        .padding(.vertical, 3)
++                        .background(Capsule().fill(hoverUndock ? DockPalette.surface.opacity(1.6) : DockPalette.surface))
 +                }
 +                .buttonStyle(.plain)
 +                .disabled(undocking)
