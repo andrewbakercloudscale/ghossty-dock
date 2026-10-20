@@ -85,10 +85,10 @@ index 0000000..4b8472f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..f875c15
+index 0000000..0139af0
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,238 @@
+@@ -0,0 +1,240 @@
 +import AppKit
 +import Combine
 +
@@ -165,7 +165,9 @@ index 0000000..f875c15
 +                : nil
 +        }
 +        let hideTabBar = !DockSettings.showTabBar
-+        for window in NSApp.windows {
++        // Only titled terminal windows: AppKit throws (and the app dies) when
++        // asked for the accessories of any other window style.
++        for window in NSApp.windows where window is TerminalWindow && window.styleMask.contains(.titled) {
 +            for accessory in window.titlebarAccessoryViewControllers
 +            where accessory.identifier == TerminalWindow.tabBarIdentifier && accessory.isHidden != hideTabBar {
 +                accessory.isHidden = hideTabBar
