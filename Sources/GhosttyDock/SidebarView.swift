@@ -1,14 +1,14 @@
 import SwiftUI
 import DockCore
 
-/// Catppuccin Mocha, to sit next to the Ghostty theme in use.
+/// Catppuccin Mocha, to sit next to the Ghostty theme in use. All text is
+/// Palette.text or a status colour, never grey: grey on mantle is hard to read.
 enum Palette {
     static let base = Color(red: 0.118, green: 0.118, blue: 0.180)      // #1e1e2e
     static let mantle = Color(red: 0.094, green: 0.094, blue: 0.145)    // #181825
     static let surface = Color(red: 0.192, green: 0.196, blue: 0.267)   // #313244
     static let overlay = Color(red: 0.424, green: 0.439, blue: 0.525)   // #6c7086
     static let text = Color(red: 0.804, green: 0.839, blue: 0.957)      // #cdd6f4
-    static let subtext = Color(red: 0.651, green: 0.678, blue: 0.784)   // #a6adc8
     static let green = Color(red: 0.651, green: 0.890, blue: 0.631)     // #a6e3a1
     static let peach = Color(red: 0.980, green: 0.702, blue: 0.529)     // #fab387
     static let blue = Color(red: 0.537, green: 0.706, blue: 0.980)      // #89b4fa
@@ -62,7 +62,7 @@ struct SidebarView: View {
 
     private var header: some View {
         HStack(spacing: 6) {
-            Text("Sessions").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.subtext)
+            Text("Sessions").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.text)
             if model.waitingCount > 0 { Badge(count: model.waitingCount, color: Palette.peach) }
             if model.unreadCount > 0 { Badge(count: model.unreadCount, color: Palette.blue) }
             Spacer()
@@ -70,7 +70,7 @@ struct SidebarView: View {
                 Image(systemName: "plus").font(.system(size: 12, weight: .semibold))
             }
             .buttonStyle(.plain)
-            .foregroundStyle(Palette.subtext)
+            .foregroundStyle(Palette.text)
             .help("Start Claude Code in a folder, as a new tab")
             Menu {
                 Button("Quit Ghostty Dock", action: onQuit)
@@ -80,7 +80,7 @@ struct SidebarView: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .foregroundStyle(Palette.subtext)
+            .foregroundStyle(Palette.text)
         }
         .padding(.horizontal, 12)
         .padding(.top, 10)
@@ -91,7 +91,7 @@ struct SidebarView: View {
         Button(action: onTrust) {
             Text("Allow Accessibility so the sidebar can move Ghostty aside instead of covering it")
                 .font(.system(size: 10))
-                .foregroundStyle(Palette.subtext)
+                .foregroundStyle(Palette.text)
                 .multilineTextAlignment(.leading)
         }
         .buttonStyle(.plain)
@@ -123,14 +123,14 @@ struct RowView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(row.name)
                     .font(.system(size: 13, weight: row.selected ? .semibold : .regular))
-                    .foregroundStyle(row.status == .shell || row.status == .unknown ? Palette.subtext : Palette.text)
+                    .foregroundStyle(Palette.text)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 TimelineView(.periodic(from: .now, by: 30)) { ctx in
                     Text(subtitle(now: ctx.date))
                         .font(.system(size: 10.5))
                         .foregroundStyle(row.status == .waiting ? Palette.peach
-                            : row.status == .unread ? Palette.blue : Palette.overlay)
+                            : row.status == .unread ? Palette.blue : Palette.text)
                         .lineLimit(1)
                 }
             }
