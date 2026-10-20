@@ -204,6 +204,12 @@ function uninstall_all() {
             else . end
         ' "$SETTINGS" >"$tmp" && mv -f "$tmp" "$SETTINGS"
     fi
+    # Settings > "One Dock icon" hid Ghostty from the Dock; put it back.
+    local cfg="$HOME/.config/ghostty/config"
+    if grep -q '^# ghostty-dock: one Dock icon' "$cfg" 2>/dev/null; then
+        perl -0pi -e 's/\n?# ghostty-dock: one Dock icon[^\n]*\nmacos-hidden = always\n//' "$cfg"
+        pgrep -ax ghostty | xargs kill -USR2 2>/dev/null
+    fi
     print_success "removed; Quick Actions now open a separate Ghostty per session again"
 }
 

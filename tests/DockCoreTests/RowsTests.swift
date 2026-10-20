@@ -29,12 +29,12 @@ final class RowsTests: XCTestCase {
             tabs: [TabRecord(dockTabId: "a", terminalId: "T2", folder: "/x/proj", created: 1)],
             terminals: [term("T1", tab: "t1", index: 1, name: "zsh"), term("T2", tab: "t2", index: 2, name: "✳ proj")],
             instances: [GhosttyInstance(pid: 77, folder: nil, started: 0)]))
-        XCTAssertEqual(r.rows.map(\.id), ["term-T1", "tab-a"])
-        XCTAssertEqual(r.rows[1].target, .terminal("T2"))
-        XCTAssertEqual(r.rows[1].status, .running)
+        XCTAssertEqual(r.rows.map(\.id), ["tab-a", "term-T1"])
+        XCTAssertEqual(r.rows[0].target, .terminal("T2"))
+        XCTAssertEqual(r.rows[0].status, .running)
         XCTAssertEqual(r.homePid, 77)
-        XCTAssertEqual(r.rows[0].status, .shell)
-        XCTAssertEqual(r.rows[0].name, "zsh")
+        XCTAssertEqual(r.rows[1].status, .shell)
+        XCTAssertEqual(r.rows[1].name, "zsh")
     }
 
     func testSplitsInOneTabAreOneRow() {
@@ -86,8 +86,8 @@ final class RowsTests: XCTestCase {
                         term("T2", tab: "t2", index: 2, name: "◐ ghossty-dock")],
             instances: [GhosttyInstance(pid: 12, folder: "/x/ghossty-dock", started: 0)],
             home: 12))
-        XCTAssertEqual(r.rows.map(\.id), ["term-T1", "tty-3"])
-        XCTAssertEqual(r.rows[1].target, .terminal("T2"))
+        XCTAssertEqual(r.rows.map(\.id), ["tty-3", "term-T1"])
+        XCTAssertEqual(r.rows[0].target, .terminal("T2"))
     }
 
     func testHomeInstanceIsNotListedTwice() {
@@ -96,6 +96,19 @@ final class RowsTests: XCTestCase {
             instances: [GhosttyInstance(pid: 12, folder: nil, started: 0)],
             home: 12))
         XCTAssertEqual(r.rows.map(\.id), ["term-T1"])
+    }
+
+    func testSortsNeedsYouThenBusyThenIdleKeepingTabOrderWithinEach() {
+        let r = buildRows(inputs(
+            sessions: [session("s1", "done", since: 10, name: "a", dock: "1"),
+                       session("s2", "running", name: "b", dock: "2"),
+                       session("s3", "idle", name: "c", dock: "3"),
+                       session("s4", "waiting", name: "d", dock: "4"),
+                       session("s5", "running", name: "e", dock: "5")],
+            tabs: (1...5).map { TabRecord(dockTabId: "\($0)", terminalId: "T\($0)", folder: "", created: 1) },
+            terminals: (1...5).map { term("T\($0)", tab: "t\($0)", index: $0) } + [term("T6", tab: "t6", index: 6)],
+            seen: ["s3": 999]))
+        XCTAssertEqual(r.rows.map(\.id), ["s4", "s2", "s5", "s1", "s3", "term-T6"])
     }
 
     func testParseSnapshot() {

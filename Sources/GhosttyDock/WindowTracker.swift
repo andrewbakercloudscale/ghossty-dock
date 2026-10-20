@@ -64,6 +64,20 @@ enum WindowTracker {
         return false
     }
 
+    /// Titles of a process's windows, via Accessibility (empty without it).
+    static func windowTitles(pid: Int32) -> [String] {
+        guard trusted else { return [] }
+        let app = AXUIElementCreateApplication(pid)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value) == .success,
+              let windows = value as? [AXUIElement] else { return [] }
+        return windows.compactMap { w in
+            var title: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(w, kAXTitleAttribute as CFString, &title) == .success else { return nil }
+            return title as? String
+        }
+    }
+
     private static func axFrame(_ w: AXUIElement) -> CGRect? {
         var pos: CFTypeRef?, size: CFTypeRef?
         guard AXUIElementCopyAttributeValue(w, kAXPositionAttribute as CFString, &pos) == .success,

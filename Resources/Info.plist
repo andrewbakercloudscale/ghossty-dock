@@ -6,6 +6,8 @@
 	<string>Ghostty Dock</string>
 	<key>CFBundleExecutable</key>
 	<string>GhosttyDock</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>consulting.cloudscale.ghosttydock</string>
 	<key>CFBundleName</key>
@@ -18,8 +20,6 @@
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
-	<key>LSUIElement</key>
-	<true/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Ghostty Dock reads Ghostty's tabs to list your sessions, and selects a tab when you click it.</string>
 	<key>NSHumanReadableCopyright</key>

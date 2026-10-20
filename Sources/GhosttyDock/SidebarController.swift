@@ -7,6 +7,7 @@ final class SidebarController {
     static let width: CGFloat = 230
 
     private let model: DockModel
+    private let onSettings: () -> Void
     private let panel: NSPanel
     private var timer: Timer?
     /// The last window frame we moved, so a window is moved once per change
@@ -14,8 +15,9 @@ final class SidebarController {
     private var lastNudged: CGRect?
     private var trusted = WindowTracker.trusted
 
-    init(model: DockModel) {
+    init(model: DockModel, onSettings: @escaping () -> Void) {
         self.model = model
+        self.onSettings = onSettings
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 400),
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isFloatingPanel = true
@@ -36,6 +38,7 @@ final class SidebarController {
     private func setContent() {
         let view = SidebarView(model: model, trusted: trusted,
                                onTrust: { WindowTracker.askForTrust() },
+                               onSettings: onSettings,
                                onQuit: { NSApp.terminate(nil) })
         let host = NSHostingView(rootView: view)
         host.wantsLayer = true
@@ -62,7 +65,7 @@ final class SidebarController {
         let screen = NSScreen.screens.first { $0.frame.intersects(win.frame) } ?? NSScreen.main
         let visible = screen?.visibleFrame ?? win.frame
         let gap: CGFloat = 4
-        if win.frame.minX - Self.width - gap < visible.minX, lastNudged != win.cgFrame {
+        if win.frame.minX - Self.width - gap < visible.minX, SettingsStore.makeRoom, lastNudged != win.cgFrame {
             lastNudged = win.cgFrame
             if WindowTracker.makeRoom(win, minX: visible.minX + Self.width + gap) { return }
         }
