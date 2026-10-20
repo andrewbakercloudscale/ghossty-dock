@@ -56,7 +56,8 @@ function fetch_sources() {
 function save_patch() {
     mkdir -p "$(dirname "$PATCH")" || exit 1
     git -C "$SRC" add -N macos/Sources || exit 1
-    git -C "$SRC" diff -- macos/Sources >"$PATCH" || exit 1
+    # Against the release tag, not HEAD: the fork's own commits are part of the patch.
+    git -C "$SRC" diff "$GHOSTTY_TAG" -- macos/Sources >"$PATCH" || exit 1
     echo "== saved $(grep -c '^diff --git' "$PATCH") file(s) to ${PATCH#"$ROOT"/}"
 }
 
@@ -116,15 +117,18 @@ function retire_overlay() {
 }
 
 function install_app() {
-    if pgrep -f "$DEST/Contents/MacOS/ghostty" >/dev/null; then
-        echo "== $APP_NAME is running; quit it (Cmd-Q) and rerun to install" >&2
-        exit 1
-    fi
+    # Replacing the bundle under a running copy is safe; it keeps running the
+    # old build until restarted.
+    local running=false
+    ps -axo command= | grep -qxF "$DEST/Contents/MacOS/ghostty" && running=true
     retire_overlay
     mkdir -p "$HOME/Applications" || exit 1
     rm -rf "$DEST"
     cp -R "$ROOT/build/$APP_NAME.app" "$DEST" || exit 1
     echo "== installed: $DEST"
+    if $running; then
+        echo "== it is running the old build: scripts/restart-dock.sh restarts it and resumes its sessions"
+    fi
 }
 
 function main() {
