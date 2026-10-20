@@ -234,8 +234,9 @@ function remove_hidden_setting() {
 
 function main() {
     # Sessions we start must not inherit a Claude Code parent marker
-    # (CLAUDE_CODE_CHILD_SESSION turns off their transcript saving).
-    unset CLAUDECODE CLAUDE_PID $(compgen -e | grep "^CLAUDE_CODE_")
+    # (CLAUDE_CODE_CHILD_SESSION turns off their transcript saving), nor the
+    # Ghostty Dock ids of the tab this runs in (its row would be overwritten).
+    unset CLAUDECODE CLAUDE_PID GHOSTTY_DOCK_SURFACE DOCK_TAB_ID $(compgen -e | grep "^CLAUDE_CODE_")
     local dry=false
     local detach=false
     local only=""

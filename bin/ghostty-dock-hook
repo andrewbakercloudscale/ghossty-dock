@@ -49,7 +49,7 @@ function main() {
     read -r claude_pid ghostty_pid tty <<<"$lineage"
 
     local key
-    key=$(session_key "$tty" "$input")
+    key=$(session_key "$tty" "$input" "$ghostty_pid")
     [ -n "$key" ] || exit 0
 
     mkdir -p "$STATE_DIR/sessions" 2>/dev/null || exit 0
@@ -102,6 +102,14 @@ function find_lineage() {
 function session_key() {
     local tty="$1"
     local input="$2"
+    local ghostty_pid="$3"
+    # A stock Ghostty started from inside a Ghostty Dock tab inherits that
+    # tab's ids; trusting them would overwrite the tab's row.
+    local exe
+    exe=$(ps -o comm= -p "$ghostty_pid" 2>/dev/null)
+    if [ -n "$exe" ] && [[ "$exe" != *"Ghostty Dock.app"* ]]; then
+        unset GHOSTTY_DOCK_SURFACE DOCK_TAB_ID
+    fi
     if [ -n "${GHOSTTY_DOCK_SURFACE:-}" ]; then
         echo "srf-${GHOSTTY_DOCK_SURFACE//[^A-Za-z0-9-]/}"
     elif [ -n "${DOCK_TAB_ID:-}" ]; then

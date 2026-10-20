@@ -82,6 +82,12 @@ function main() {
     GHOSTTY_DOCK_SURFACE="0A1B-2C3D" DOCK_TAB_ID="abc-123" fire '{"hook_event_name":"UserPromptSubmit","session_id":"s5","cwd":"/y/other"}'
     check "surface id beats dock tab id" "$state/sessions/srf-0A1B-2C3D.json" '.status' "running"
 
+    # A stock Ghostty (here: this shell) started from a Dock tab inherits its ids.
+    GHOSTTY_DOCK_TEST_LINEAGE="333 $$ ttys008" GHOSTTY_DOCK_SURFACE="0A1B-2C3D" DOCK_TAB_ID="abc-123" \
+        fire '{"hook_event_name":"Stop","session_id":"s6","cwd":"/w/undocked"}'
+    check "ids inherited outside Ghostty Dock are ignored" "$state/sessions/tty-ttys008.json" '.name' "undocked"
+    check "inherited ids leave the Dock row alone" "$state/sessions/srf-0A1B-2C3D.json" '.status' "running"
+
     GHOSTTY_DOCK_TEST_LINEAGE="- - -" fire '{"hook_event_name":"Stop","session_id":"s4","cwd":"/z"}'
     check "no terminal falls back to session id" "$state/sessions/sid-s4.json" '.status' "done"
 
