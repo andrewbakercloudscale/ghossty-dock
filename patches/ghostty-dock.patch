@@ -104,10 +104,10 @@ index 0000000..4b8472f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..c3c7cc4
+index 0000000..34b8fd4
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,343 @@
+@@ -0,0 +1,348 @@
 +import AppKit
 +import Combine
 +
@@ -377,6 +377,11 @@ index 0000000..c3c7cc4
 +            }
 +        }
 +        built.sort { a, b in
++            if sortOrder == .alphabetical {
++                let c = a.name.localizedCaseInsensitiveCompare(b.name)
++                if c != .orderedSame { return c == .orderedAscending }
++                return place(a) < place(b)
++            }
 +            if sortOrder != .tabs {
 +                if group(a.status) != group(b.status) { return group(a.status) < group(b.status) }
 +                if group(a.status) == 2, let x = a.since, let y = b.since, x != y { return x > y }
@@ -453,10 +458,10 @@ index 0000000..c3c7cc4
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..aa1c511
+index 0000000..3062eb8
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,121 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -474,7 +479,7 @@ index 0000000..aa1c511
 +    static func register() {
 +        UserDefaults.standard.register(defaults: [
 +            showSidebarKey: true,
-+            orderKey: Order.urgency.rawValue,
++            orderKey: Order.alphabetical.rawValue,
 +            showTabBarKey: false,
 +            jumpHotKeyKey: true,
 +            dockBadgeKey: true,
@@ -482,10 +487,12 @@ index 0000000..aa1c511
 +    }
 +
 +    static var showSidebar: Bool { UserDefaults.standard.bool(forKey: showSidebarKey) }
-+    static var order: Order { Order(rawValue: UserDefaults.standard.string(forKey: orderKey) ?? "") ?? .urgency }
++    static var order: Order { Order(rawValue: UserDefaults.standard.string(forKey: orderKey) ?? "") ?? .alphabetical }
 +
 +    /// How the sidebar lists sessions.
 +    enum Order: String, CaseIterable {
++        /// By name, so rows stay put while their status changes.
++        case alphabetical
 +        /// Needs you, then finished or idle (most recently stopped first),
 +        /// then running, as those are busy without you.
 +        case urgency
@@ -496,6 +503,7 @@ index 0000000..aa1c511
 +
 +        var label: String {
 +            switch self {
++            case .alphabetical: return "Alphabetical (rows stay put)"
 +            case .urgency: return "Needs you, then recently idle, running last"
 +            case .runningFirst: return "Running first, then needs you, then recently idle"
 +            case .tabs: return "Tab order"
@@ -509,7 +517,7 @@ index 0000000..aa1c511
 +
 +struct DockSettingsView: View {
 +    @AppStorage(DockSettings.showSidebarKey) private var showSidebar = true
-+    @AppStorage(DockSettings.orderKey) private var order = DockSettings.Order.urgency
++    @AppStorage(DockSettings.orderKey) private var order = DockSettings.Order.alphabetical
 +    @AppStorage(DockSettings.showTabBarKey) private var showTabBar = false
 +    @AppStorage(DockSettings.jumpHotKeyKey) private var jumpHotKey = true
 +    @AppStorage(DockSettings.dockBadgeKey) private var dockBadge = true
@@ -577,10 +585,10 @@ index 0000000..aa1c511
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..0373ecf
+index 0000000..62ccbf7
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,356 @@
+@@ -0,0 +1,398 @@
 +import AppKit
 +import SwiftUI
 +
@@ -778,10 +786,10 @@ index 0000000..0373ecf
 +                }
 +                .buttonStyle(.plain)
 +                .onHover { hoverClose = $0 }
-+                .help("Close tab")
++                .dockTip("Close tab")
 +                if row.sessionId != nil {
 +                    DockIconButton(symbol: "arrow.up.right.square", busy: undocking,
-+                                   help: undocking ? "Undocking…" : "Undock: restart it in its own Ghostty window",
++                                   help: undocking ? "Undocking…" : "Undock to its own window",
 +                                   action: onUndock)
 +                }
 +            }
@@ -848,8 +856,50 @@ index 0000000..0373ecf
 +        .buttonStyle(.plain)
 +        .disabled(busy)
 +        .onHover { hover = $0 }
-+        .help(help)
++        .dockTip(help)
 +    }
++}
++
++/// A tooltip that shows at once, to the left of a small sidebar button.
++/// SwiftUI's .help is slow and loses to the row's own tooltip.
++private struct DockTip: ViewModifier {
++    var text: String
++    @State private var shown = false
++    @State private var pending: DispatchWorkItem?
++
++    func body(content: Content) -> some View {
++        content
++            .onHover { inside in
++                pending?.cancel()
++                if inside {
++                    let work = DispatchWorkItem { shown = true }
++                    pending = work
++                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
++                } else {
++                    shown = false
++                }
++            }
++            .overlay(alignment: .trailing) {
++                if shown {
++                    Text(text)
++                        .font(.system(size: 11, weight: .medium))
++                        .foregroundStyle(DockPalette.text)
++                        .padding(.horizontal, 7)
++                        .padding(.vertical, 3)
++                        .background(RoundedRectangle(cornerRadius: 5).fill(DockPalette.surface))
++                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(DockPalette.greyLine, lineWidth: 1))
++                        .fixedSize()
++                        .offset(x: -22)
++                        .allowsHitTesting(false)
++                        .transition(.opacity)
++                }
++            }
++            .zIndex(shown ? 1 : 0)
++    }
++}
++
++extension View {
++    func dockTip(_ text: String) -> some View { modifier(DockTip(text: text)) }
 +}
 +
 +/// A session in a Ghostty app of its own: grey, in a dashed outline, with a
@@ -879,7 +929,7 @@ index 0000000..0373ecf
 +            }
 +            Spacer(minLength: 0)
 +            DockIconButton(symbol: "arrow.down.left.square", busy: session.moving,
-+                           help: session.moving ? "Docking…" : "Dock: restart it in a tab here",
++                           help: session.moving ? "Docking…" : "Dock into a tab here",
 +                           action: onDock)
 +        }
 +        .padding(.horizontal, 8)
