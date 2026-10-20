@@ -61,6 +61,14 @@ function main() {
     codesign --force --sign "$DOCK_SIGN_ID" "$app" || exit 1
     codesign --verify "$app" || exit 1
 
+    # Under the LaunchAgent, launchd restarts a killed copy by itself; a
+    # second `open` then made two copies, two Dock icons and two sidebars.
+    local agent="gui/$(id -u)/consulting.cloudscale.ghosttydock"
+    local managed=false
+    launchctl print "$agent" >/dev/null 2>&1 && managed=true
+    if $managed; then
+        launchctl bootout "$agent" 2>/dev/null
+    fi
     local was_running=false
     if pgrep -x GhosttyDock >/dev/null; then
         was_running=true
@@ -73,7 +81,10 @@ function main() {
     cp -R "$app" "$DEST" || exit 1
     echo "== installed: $DEST"
 
-    if $open_after || $was_running; then
+    if $managed; then
+        launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/consulting.cloudscale.ghosttydock.plist" || exit 1
+        echo "== relaunched by its LaunchAgent"
+    elif $open_after || $was_running; then
         open "$DEST"
         echo "== launched"
     fi

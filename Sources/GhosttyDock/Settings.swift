@@ -92,6 +92,7 @@ struct SettingsView: View {
             }
             Section {
                 Toggle("Start Ghostty Dock at login", isOn: $store.startAtLogin)
+                LabeledContent("Next session that needs you", value: HotKey.jumpLabel)
             }
             if let error = store.error {
                 Text(error).foregroundStyle(.red).font(.callout)

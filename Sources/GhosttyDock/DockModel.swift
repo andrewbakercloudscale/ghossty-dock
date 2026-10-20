@@ -6,6 +6,10 @@ import DockCore
 /// Ghostty is asked off the main thread; everything published is set on it.
 final class DockModel: ObservableObject {
     @Published private(set) var rows: [Row] = []
+    /// Sessions in their own Ghostty app, waiting to finish before they are
+    /// moved into the shared window (by Ghostty pid).
+    @Published private(set) var pendingMoves = Set<Int32>()
+    @Published private(set) var lastMoveReport: String?
 
     var waitingCount: Int { rows.filter { $0.status == .waiting }.count }
     var unreadCount: Int { rows.filter { $0.status == .unread }.count }
@@ -21,6 +25,10 @@ final class DockModel: ObservableObject {
     private var timer: Timer?
     private var watcher: DispatchSourceFileSystemObject?
     private var polling = false
+    private var lastSessions: [SessionRecord] = []
+    private var lastInstances: [GhosttyInstance] = []
+    private let mover = DispatchQueue(label: "ghostty-dock.gather")
+    private var moving = Set<Int32>()
 
     init() {
         seen = files.seen()
@@ -68,6 +76,10 @@ final class DockModel: ObservableObject {
 
         let liveTerminals = snapshotOK ? Set(snapshot.terminals.map(\.terminalId)) : nil
         let sessions = files.prune(sessions: files.sessions(), liveTerminals: liveTerminals, isAlive: isAlive)
+
+        lastSessions = sessions
+        lastInstances = instances
+        movePendingThatAreIdle()
 
         var snap = snapshot
         for t in snap.terminals where !windowOrder.contains(t.windowId) { windowOrder.append(t.windowId) }
@@ -118,6 +130,65 @@ final class DockModel: ObservableObject {
         NSApp.activate()
         guard panel.runModal() == .OK, let url = panel.url else { return }
         GhosttyBridge.openSession(folder: url.path)
+    }
+
+    /// Separate Ghostty apps that could move into the shared window.
+    var separateInstances: [GhosttyInstance] {
+        lastInstances.filter { $0.pid != homePid && $0.folder != nil }
+    }
+
+    /// Moves every session in its own Ghostty app into a tab of the shared
+    /// window: idle ones now, busy ones as soon as they are idle.
+    func gatherAll() { gatherAll(only: nil) }
+
+    func gatherAll(only: Int32?) {
+        guard homePid != nil else {
+            lastMoveReport = "Not yet: click a tab of the main Ghostty window once, so Ghostty Dock knows which window is the main one."
+            return
+        }
+        pendingMoves.formUnion(separateInstances.map(\.pid).filter { only == nil || $0 == only })
+        movePendingThatAreIdle()
+    }
+
+    private func movePendingThatAreIdle() {
+        let live = Set(lastInstances.map(\.pid))
+        pendingMoves = pendingMoves.filter { live.contains($0) && $0 != homePid }
+        for pid in pendingMoves where !moving.contains(pid) {
+            guard let inst = lastInstances.first(where: { $0.pid == pid }) else { continue }
+            let session = lastSessions.first { $0.ghosttyPid == pid }
+            if let s = session, s.status == "running" || s.status == "waiting" { continue }
+            moving.insert(pid)
+            mover.async { [weak self] in
+                let outcome = Gatherer.gather(instance: inst, session: session)
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.moving.remove(pid)
+                    switch outcome {
+                    case .moved(let name):
+                        self.pendingMoves.remove(pid)
+                        self.lastMoveReport = "Moved \(name) into this window."
+                    case .busy:
+                        break // stays pending; tried again when it is idle
+                    case .skipped(let name, let why):
+                        self.pendingMoves.remove(pid)
+                        self.lastMoveReport = "\(name): \(why)."
+                    }
+                    self.poll()
+                }
+            }
+        }
+    }
+
+    /// Selects the next session that needs you, after the one on screen;
+    /// with none waiting, the next finished one.
+    func jumpToNextWaiting() {
+        var candidates = rows.filter { $0.status == .waiting }
+        if candidates.isEmpty { candidates = rows.filter { $0.status == .unread } }
+        guard !candidates.isEmpty else { NSSound.beep(); return }
+        let current = rows.first(where: \.selected)?.id
+        let next = candidates.firstIndex(where: { $0.id == current }).map { candidates[($0 + 1) % candidates.count] }
+            ?? candidates[0]
+        select(next)
     }
 
     /// Which Ghostty process answers AppleScript: the one whose window titles
