@@ -44,7 +44,7 @@ function claude_under() {
         { parent[$1] = $2; cmd[$1] = $0 }
         END {
             for (p in cmd) {
-                if (cmd[p] !~ /[0-9]+ +[0-9]+ +claude --session-id/) continue
+                if (cmd[p] !~ /^ *[0-9]+ +[0-9]+ +claude .*--(session-id|resume) /) continue
                 q = p
                 while (q > 1) { q = parent[q]; if (q == root) { print p; exit } }
             }
@@ -70,14 +70,15 @@ function move_one() {
     local cpid
     cpid=$(claude_under "$gpid")
     if [ -z "$cpid" ]; then
-        log "$gpid: no Claude Code in it, closing that Ghostty only"
-        $dry || kill -TERM "$gpid" 2>/dev/null
+        # A shell, a --continue session (no id to resume) or anything else:
+        # never closed, as there is no way to bring it back.
+        log "$gpid: no Claude Code session with an id in it, left alone"
         return 0
     fi
     local args sid flags cwd
     args=$(ps -o command= -p "$cpid")
-    sid=$(sed -E 's/.*--session-id ([^ ]+).*/\1/' <<<"$args")
-    flags=$(sed -E 's/^claude //; s/--session-id [^ ]+ ?//' <<<"$args")
+    sid=$(sed -E 's/.*--(session-id|resume) ([^ ]+).*/\2/' <<<"$args")
+    flags=$(sed -E 's/^claude //; s/--(session-id|resume) [^ ]+ ?//' <<<"$args")
     cwd=$(lsof -a -p "$cpid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
     local quiet
     quiet=$(quiet_for "$(transcript_for "$cwd" "$sid")")

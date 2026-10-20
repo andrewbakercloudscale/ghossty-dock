@@ -96,7 +96,7 @@ function main() {
     fi
 
     if ! ensure_ghostty_running; then
-        fallback_new_app "$launcher" "$folder"
+        fallback_new_app "$launcher" "$folder" "$command"
         exit 0
     fi
 
@@ -105,7 +105,7 @@ function main() {
     local result
     if ! result=$(open_tab "$dock_id" "$command" "$folder" "$window"); then
         echo "Error: Ghostty did not open the tab ($result); opening a separate Ghostty instead" >&2
-        fallback_new_app "$launcher" "$folder"
+        fallback_new_app "$launcher" "$folder" "$command"
         exit 0
     fi
     record_tab "$dock_id" "$result" "${launcher:-$command}" "$folder"
@@ -189,7 +189,12 @@ function record_tab() {
 function fallback_new_app() {
     local launcher="$1"
     local folder="$2"
-    if [ -n "$launcher" ]; then
+    local command="$3"
+    # Always stock Ghostty: the fallback must not depend on what just failed.
+    if [ -n "$command" ] && [ -z "$launcher" ]; then
+        open -na /Applications/Ghostty.app --args --window-save-state=never --quit-after-last-window-closed=true \
+            --working-directory="$folder" -e /bin/zsh -lc "$command"
+    elif [ -n "$launcher" ]; then
         open -na "$GHOSTTY_APP" --args --window-save-state=never --quit-after-last-window-closed=true -e "$launcher" "$folder"
     else
         open -na "$GHOSTTY_APP" --args --window-save-state=never --quit-after-last-window-closed=true --working-directory="$folder"
