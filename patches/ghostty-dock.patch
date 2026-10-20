@@ -576,10 +576,10 @@ index 0000000..a69ab05
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..efb3220
+index 0000000..b62708f
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,320 @@
+@@ -0,0 +1,317 @@
 +import SwiftUI
 +
 +/// Catppuccin Mocha. All text is DockPalette.text or a status colour; grey
@@ -823,18 +823,15 @@ index 0000000..efb3220
 +                    .lineLimit(1)
 +                    .truncationMode(.middle)
 +                Text(session.moving ? "Docking…"
-+                     : session.busy ? "Own window · busy" : "Own window")
++                     : session.busy ? "Undocked · busy" : "Undocked")
 +                    .font(.system(size: 10.5))
 +                    .foregroundStyle(DockPalette.grey)
 +                    .lineLimit(1)
 +            }
 +            Spacer(minLength: 0)
 +            Button(action: onDock) {
-+                HStack(spacing: 3) {
-+                    Image(systemName: session.moving ? "hourglass" : "tray.and.arrow.down.fill")
-+                        .font(.system(size: 10, weight: .bold))
-+                    if !session.moving { Text("Dock").font(.system(size: 10.5, weight: .semibold)) }
-+                }
++                Text(session.moving ? "Docking…" : "Dock")
++                    .font(.system(size: 10.5, weight: .semibold))
 +                .foregroundStyle(DockPalette.text)
 +                .padding(.horizontal, 6)
 +                .padding(.vertical, 3)
