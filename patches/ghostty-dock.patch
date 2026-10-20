@@ -104,10 +104,10 @@ index 0000000..4b8472f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..6b7d7f6
+index 0000000..3b6a30d
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,340 @@
+@@ -0,0 +1,331 @@
 +import AppKit
 +import Combine
 +
@@ -164,8 +164,6 @@ index 0000000..6b7d7f6
 +    /// `ghostty-dock-move --list`, and the sessions it is moving out of here.
 +    @Published private(set) var undocked: [Undocked] = []
 +    @Published private(set) var undocking: Set<String> = []
-+
-+    var movable: Int { undocked.filter { !$0.moving }.count }
 +
 +    var waitingCount: Int { rows.filter { $0.status == .waiting }.count }
 +    var unreadCount: Int { rows.filter { $0.status == .unread }.count }
@@ -242,13 +240,6 @@ index 0000000..6b7d7f6
 +        p.standardError = FileHandle.nullDevice
 +        try? p.run()
 +        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.refreshMovable() }
-+    }
-+
-+    /// Moves every session from separate Ghostty apps into tabs here. Busy
-+    /// ones are waited for, never interrupted.
-+    func bringInOthers() {
-+        undocked = undocked.map { var u = $0; u.moving = true; return u }
-+        runMover([])
 +    }
 +
 +    /// Moves one session from its own Ghostty app into a tab here at once:
@@ -573,10 +564,10 @@ index 0000000..a69ab05
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..e9882d4
+index 0000000..efb3220
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,331 @@
+@@ -0,0 +1,320 @@
 +import SwiftUI
 +
 +/// Catppuccin Mocha. All text is DockPalette.text or a status colour; grey
@@ -678,17 +669,6 @@ index 0000000..e9882d4
 +            .buttonStyle(.plain)
 +            .foregroundStyle(DockPalette.text)
 +            .help("New tab")
-+            if model.movable > 0 {
-+                Button(action: model.bringInOthers) {
-+                    HStack(spacing: 2) {
-+                        Image(systemName: "tray.and.arrow.down.fill").font(.system(size: 12, weight: .semibold))
-+                        Text("\(model.movable)").font(.system(size: 10, weight: .bold))
-+                    }
-+                }
-+                .buttonStyle(.plain)
-+                .foregroundStyle(DockPalette.text)
-+                .help("Dock all \(model.movable) undocked session(s)")
-+            }
 +            Button(action: model.jumpToNextWaiting) {
 +                Image(systemName: "arrow.down.to.line").font(.system(size: 12, weight: .semibold))
 +            }
