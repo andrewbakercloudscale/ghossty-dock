@@ -41,6 +41,31 @@ reports each session's status.
 - Ctrl-Opt-J: jump to the next session that needs you (then finished ones).
 - Dock badge: how many sessions need you.
 
+## Keyboard shortcuts
+
+| Keys | Does |
+|---|---|
+| ⌘1 – ⌘8, ⌘9 | Go to that session in the sidebar, or the last one |
+| ⌃⇥ / ⌃⇧⇥, ⌘⇧] / ⌘⇧[ | Next / previous session, in the sidebar's order |
+| ⌘⇧J (⌃⌥J from any app) | Next session that needs you, then finished ones |
+| ⌘⇧R | Restart this session |
+| ⌘⇧U | Undock this session to its own window |
+| ⌘⇧S | Show or hide the sidebar |
+
+While the sidebar is hidden, ⌘1–9 and the next/previous keys are Ghostty's
+own again (tab order). Everything else in Ghostty (⌘T, ⌘W, splits) is unchanged.
+
+## Themes
+
+Settings → Theme picks one of 20 (Catppuccin Mocha, Macchiato, Frappe and
+Latte; TokyoNight Storm, Night and Day; Dracula; Nord; Gruvbox Dark and Light;
+Rose Pine and Rose Pine Dawn; Kanagawa Wave; Everforest Dark Hard; One Half
+Dark; GitHub Dark and Light; Monokai Pro; Solarized Light). The terminal and
+the sidebar change together, in every window. The default follows the `theme`
+in your Ghostty config. Your Ghostty config is never edited: the choice is
+written to `~/.local/state/ghostty-dock/theme.conf`, which only Ghostty Dock
+loads.
+
 ## Settings (Cmd-,)
 
 <img src="docs/settings.png" width="420" alt="Ghostty Dock Settings">

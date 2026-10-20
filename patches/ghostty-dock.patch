@@ -117,10 +117,10 @@ index ade9bf3..dfbd82b 100644
  // rest of the app.
 diff --git a/macos/Sources/Features/Dock/DockAbout.swift b/macos/Sources/Features/Dock/DockAbout.swift
 new file mode 100644
-index 0000000..56f1442
+index 0000000..3b654b9
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAbout.swift
-@@ -0,0 +1,321 @@
+@@ -0,0 +1,323 @@
 +import AppKit
 +import SwiftUI
 +
@@ -129,6 +129,7 @@ index 0000000..56f1442
 +struct DockAboutView: View {
 +    @ObservedObject var updates = DockUpdates.shared
 +    @State private var copied = false
++    @AppStorage(DockSettings.themeKey) private var themeName = ""
 +
 +    static let linkedIn = URL(string: "https://www.linkedin.com/in/andrew-baker-ninja/")!
 +    static let blog = URL(string: "https://andrewbaker.ninja/")!
@@ -154,7 +155,8 @@ index 0000000..56f1442
 +        .frame(width: 540)
 +        .frame(minHeight: 480, idealHeight: 720)
 +        .background(DockPalette.base)
-+        .environment(\.colorScheme, .dark)
++        .environment(\.colorScheme, DockPalette.scheme)
++        .id(themeName)
 +    }
 +
 +    private var hero: some View {
@@ -910,10 +912,10 @@ index 0000000..fa00ead
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..5da0f2a
+index 0000000..9fafe4a
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,189 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -928,6 +930,7 @@ index 0000000..5da0f2a
 +    static let dockBadgeKey = "dock.dockBadge"
 +    static let sidebarWidthKey = "dock.sidebarWidth"
 +    static let restoreSessionsKey = "dock.restoreSessions"
++    static let themeKey = "dock.theme"
 +
 +    static func register() {
 +        UserDefaults.standard.register(defaults: [
@@ -977,6 +980,7 @@ index 0000000..5da0f2a
 +    @AppStorage(DockSettings.jumpHotKeyKey) private var jumpHotKey = true
 +    @AppStorage(DockSettings.dockBadgeKey) private var dockBadge = true
 +    @AppStorage(DockSettings.restoreSessionsKey) private var restoreSessions = true
++    @AppStorage(DockSettings.themeKey) private var theme = ""
 +    @ObservedObject private var updates = DockUpdates.shared
 +    @State private var startAtLogin = SMAppService.mainApp.status == .enabled
 +    @State private var loginError: String?
@@ -989,6 +993,17 @@ index 0000000..5da0f2a
 +                    ForEach(DockSettings.Order.allCases, id: \.self) { Text($0.label).tag($0) }
 +                }
 +                Toggle("Also show Ghostty's tab bar", isOn: $showTabBar)
++            }
++            Section("Theme") {
++                Picker("Theme", selection: $theme) {
++                    Text("As in the Ghostty config (\(DockTheme.configTheme ?? "Ghostty's default"))").tag("")
++                    Divider()
++                    ForEach(DockTheme.choices, id: \.self) { Text($0).tag($0) }
++                }
++                .onChange(of: theme) { _ in DockTheme.apply() }
++                DockThemeSwatch(name: theme.isEmpty ? (DockTheme.configTheme ?? "Catppuccin Mocha") : theme)
++                Text("The terminal and the sidebar both change, in every window. Ghostty's own config file is left as it is.")
++                    .font(.callout)
 +            }
 +            Section("Getting your attention") {
 +                Toggle("⌃⌥J jumps to the next session that needs you", isOn: $jumpHotKey)
@@ -1042,6 +1057,34 @@ index 0000000..5da0f2a
 +            loginError = "macOS refused: \(error.localizedDescription)"
 +            startAtLogin = SMAppService.mainApp.status == .enabled
 +        }
++    }
++}
++
++/// The theme's background, text and six colours, as the sidebar and the
++/// terminal will show them.
++struct DockThemeSwatch: View {
++    var name: String
++
++    var body: some View {
++        let c = DockTheme.colours(for: name)
++        HStack(spacing: 10) {
++            HStack(spacing: 4) {
++                ForEach(Array(c.swatch.dropFirst(2).enumerated()), id: \.offset) { _, colour in
++                    Circle().fill(colour).frame(width: 12, height: 12)
++                }
++            }
++            HStack(spacing: 6) {
++                Text("Needs you").foregroundStyle(c.peach)
++                Text("Running").foregroundStyle(c.green)
++                Text("Finished").foregroundStyle(c.blue)
++                Text("Idle").foregroundStyle(c.mauve)
++            }
++            .font(.system(size: 11, weight: .semibold))
++            Spacer(minLength: 0)
++        }
++        .padding(.horizontal, 10).padding(.vertical, 7)
++        .background(RoundedRectangle(cornerRadius: 7).fill(c.base))
++        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(c.surface, lineWidth: 1))
 +    }
 +}
 +
@@ -1161,29 +1204,32 @@ index 0000000..690d975
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..8cb5339
+index 0000000..edde607
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,487 @@
+@@ -0,0 +1,492 @@
 +import AppKit
 +import SwiftUI
 +
-+/// Catppuccin Mocha. All text is DockPalette.text or a status colour; grey
-+/// marks only sessions outside the Dock. Every status has its own hue, used
-+/// for both its dot and its label.
++/// The sidebar's colours, from the chosen theme (Catppuccin Mocha unless
++/// Settings says otherwise). All text is DockPalette.text or a status colour;
++/// grey marks only sessions outside the Dock. Every status has its own hue,
++/// used for both its dot and its label.
 +enum DockPalette {
-+    static let base = Color(red: 0.118, green: 0.118, blue: 0.180)      // #1e1e2e
-+    static let mantle = Color(red: 0.094, green: 0.094, blue: 0.145)    // #181825
-+    static let surface = Color(red: 0.192, green: 0.196, blue: 0.267)   // #313244
-+    static let text = Color(red: 0.804, green: 0.839, blue: 0.957)      // #cdd6f4
-+    static let green = Color(red: 0.651, green: 0.890, blue: 0.631)     // #a6e3a1
-+    static let peach = Color(red: 0.980, green: 0.702, blue: 0.529)     // #fab387
-+    static let blue = Color(red: 0.537, green: 0.706, blue: 0.980)      // #89b4fa
-+    static let mauve = Color(red: 0.796, green: 0.651, blue: 0.969)     // #cba6f7
-+    static let teal = Color(red: 0.580, green: 0.886, blue: 0.835)      // #94e2d5
++    private static var theme: DockTheme.Colours { DockTheme.colours }
++    static var base: Color { theme.base }
++    static var mantle: Color { theme.mantle }
++    static var surface: Color { theme.surface }
++    static var text: Color { theme.text }
++    static var green: Color { theme.green }
++    static var peach: Color { theme.peach }
++    static var blue: Color { theme.blue }
++    static var mauve: Color { theme.mauve }
++    static var teal: Color { theme.teal }
 +    /// Only for sessions outside the Dock, so they read as not part of it.
-+    static let grey = Color(red: 0.651, green: 0.678, blue: 0.784)      // #a6adc8
-+    static let greyLine = Color(red: 0.424, green: 0.439, blue: 0.525)  // #6c7086
++    static var grey: Color { theme.grey }
++    static var greyLine: Color { theme.greyLine }
++    static var scheme: ColorScheme { theme.dark ? .dark : .light }
 +
 +    static func color(_ s: DockSessions.Status) -> Color {
 +        switch s {
@@ -1212,6 +1258,7 @@ index 0000000..8cb5339
 +    @ObservedObject var model = DockSessions.shared
 +    @ObservedObject var updates = DockUpdates.shared
 +    @AppStorage(DockSettings.showSidebarKey) private var show = true
++    @AppStorage(DockSettings.themeKey) private var themeName = ""
 +    @AppStorage(DockSettings.sidebarWidthKey) private var width = Double(Self.width)
 +    @State private var dragStart: Double?
 +    var onNewTab: () -> Void
@@ -1259,7 +1306,8 @@ index 0000000..8cb5339
 +        .frame(maxHeight: .infinity)
 +        .background(DockPalette.mantle)
 +        .overlay(alignment: .trailing) { resizeHandle }
-+        .environment(\.colorScheme, .dark)
++        .environment(\.colorScheme, DockPalette.scheme)
++        .id(themeName)
 +    }
 +
 +    /// Drag the sidebar's right edge to resize it; double-click resets it.
@@ -1652,6 +1700,160 @@ index 0000000..8cb5339
 +        .accessibilityLabel(DockPalette.label(status))
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockTheme.swift b/macos/Sources/Features/Dock/DockTheme.swift
+new file mode 100644
+index 0000000..29d7386
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockTheme.swift
+@@ -0,0 +1,148 @@
++import AppKit
++import SwiftUI
++
++/// Themes for the whole window: the terminal gets the Ghostty theme of that
++/// name, and the sidebar takes its colours from the same theme file. The
++/// choice lives in Ghostty Dock's settings, so stock Ghostty's config is
++/// never touched; Ghostty Dock loads it after that config (see Ghostty.Config).
++enum DockTheme {
++    /// Twenty that look good with the sidebar, dark first. Each is a Ghostty
++    /// theme of exactly this name.
++    static let choices: [String] = [
++        "Catppuccin Mocha", "Catppuccin Macchiato", "Catppuccin Frappe",
++        "TokyoNight Storm", "TokyoNight Night", "Dracula", "Nord", "Gruvbox Dark",
++        "Rose Pine", "Kanagawa Wave", "Everforest Dark Hard", "One Half Dark",
++        "GitHub Dark Default", "Monokai Pro",
++        "Catppuccin Latte", "GitHub Light Default", "Rose Pine Dawn",
++        "iTerm2 Solarized Light", "Gruvbox Light", "TokyoNight Day",
++    ]
++
++    /// "" means whatever the Ghostty config says.
++    static var selected: String { UserDefaults.standard.string(forKey: DockSettings.themeKey) ?? "" }
++
++    /// What Ghostty Dock loads after the Ghostty config: the chosen theme, or
++    /// nothing when following the config.
++    static var overrideFile: URL {
++        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/state/ghostty-dock/theme.conf")
++    }
++
++    /// Writes the override for the chosen theme and reloads the config, so
++    /// every terminal changes at once.
++    static func apply() {
++        let name = selected
++        try? FileManager.default.createDirectory(at: overrideFile.deletingLastPathComponent(),
++                                                 withIntermediateDirectories: true)
++        try? (name.isEmpty ? "" : "theme = \(name)\n").write(to: overrideFile, atomically: true, encoding: .utf8)
++        cache = nil
++        configCache = nil
++        (NSApp.delegate as? AppDelegate)?.reloadConfig(nil)
++    }
++
++    /// The theme the config names when not overridden; with "light:A,dark:B"
++    /// it is the one for the current appearance.
++    static var configTheme: String? {
++        if let c = configCache, Date().timeIntervalSince(c.at) < 5 { return c.name }
++        let name = readConfigTheme()
++        configCache = (Date(), name)
++        return name
++    }
++    private static var configCache: (at: Date, name: String?)?
++
++    private static func readConfigTheme() -> String? {
++        let config = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/ghostty/config")
++        guard let text = try? String(contentsOf: config, encoding: .utf8) else { return nil }
++        let line = text.split(separator: "\n").last { $0.trimmingCharacters(in: .whitespaces).hasPrefix("theme") }
++        guard let line, let eq = line.firstIndex(of: "=") else { return nil }
++        let value = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
++        let parts = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
++        let darkMode = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
++        for p in parts where p.hasPrefix(darkMode ? "dark:" : "light:") { return String(p.dropFirst(darkMode ? 5 : 6)) }
++        return parts.first.map { $0.replacingOccurrences(of: "dark:", with: "").replacingOccurrences(of: "light:", with: "") }
++    }
++
++    struct Colours {
++        var base, mantle, surface, text, green, peach, blue, mauve, teal, grey, greyLine: Color
++        var dark: Bool
++        /// background, foreground and palette 1–6, for swatches.
++        var swatch: [Color]
++    }
++
++    /// Catppuccin Mocha by hand, as the sidebar was designed in it: its
++    /// "needs you" is peach, which is not one of the terminal's 16 colours.
++    static let mocha = Colours(
++        base: Color(hex: 0x1e1e2e), mantle: Color(hex: 0x181825), surface: Color(hex: 0x313244),
++        text: Color(hex: 0xcdd6f4), green: Color(hex: 0xa6e3a1), peach: Color(hex: 0xfab387),
++        blue: Color(hex: 0x89b4fa), mauve: Color(hex: 0xcba6f7), teal: Color(hex: 0x94e2d5),
++        grey: Color(hex: 0xa6adc8), greyLine: Color(hex: 0x6c7086), dark: true,
++        swatch: [0x1e1e2e, 0xcdd6f4, 0xf38ba8, 0xa6e3a1, 0xfab387, 0x89b4fa, 0xcba6f7, 0x94e2d5].map { Color(hex: $0) })
++
++    private static var cache: (String, Colours)?
++
++    /// The sidebar's colours for the theme in effect.
++    static var colours: Colours {
++        let name = selected.isEmpty ? (configTheme ?? "Catppuccin Mocha") : selected
++        if let cache, cache.0 == name { return cache.1 }
++        let c = colours(for: name)
++        cache = (name, c)
++        return c
++    }
++
++    static func colours(for name: String) -> Colours {
++        if name == "Catppuccin Mocha" { return mocha }
++        guard let t = read(name), let bg = t.bg, let fg = t.fg else { return mocha }
++        let dark = bg.luminance < 0.5
++        func p(_ i: Int, _ fallback: RGB) -> RGB { t.palette[i] ?? fallback }
++        return Colours(
++            base: bg.color,
++            mantle: bg.mix(RGB(0, 0, 0), dark ? 0.2 : 0.05).color,
++            surface: bg.mix(fg, dark ? 0.12 : 0.1).color,
++            text: fg.color,
++            green: p(2, fg).color, peach: p(3, fg).color, blue: p(4, fg).color,
++            mauve: p(5, fg).color, teal: p(6, fg).color,
++            grey: bg.mix(fg, 0.6).color, greyLine: bg.mix(fg, 0.38).color,
++            dark: dark,
++            swatch: [bg, fg, p(1, fg), p(2, fg), p(3, fg), p(4, fg), p(5, fg), p(6, fg)].map(\.color))
++    }
++
++    struct RGB {
++        var r, g, b: Double
++        init(_ r: Double, _ g: Double, _ b: Double) { self.r = r; self.g = g; self.b = b }
++        init?(hex: String) {
++            let h = hex.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "#", with: "")
++            guard h.count == 6, let v = Int(h, radix: 16) else { return nil }
++            self.init(Double((v >> 16) & 0xff) / 255, Double((v >> 8) & 0xff) / 255, Double(v & 0xff) / 255)
++        }
++        var color: Color { Color(red: r, green: g, blue: b) }
++        var luminance: Double { 0.2126 * r + 0.7152 * g + 0.0722 * b }
++        func mix(_ o: RGB, _ t: Double) -> RGB { RGB(r + (o.r - r) * t, g + (o.g - g) * t, b + (o.b - b) * t) }
++    }
++
++    /// A Ghostty theme file: the user's own first, then the ones bundled.
++    private static func read(_ name: String) -> (bg: RGB?, fg: RGB?, palette: [Int: RGB])? {
++        let home = FileManager.default.homeDirectoryForCurrentUser
++        let places = [home.appendingPathComponent(".config/ghostty/themes/\(name)"),
++                      Bundle.main.resourceURL?.appendingPathComponent("ghostty/themes/\(name)")].compactMap { $0 }
++        guard let text = places.lazy.compactMap({ try? String(contentsOf: $0, encoding: .utf8) }).first else { return nil }
++        var bg: RGB?, fg: RGB?, palette: [Int: RGB] = [:]
++        for raw in text.split(separator: "\n") {
++            let parts = raw.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
++            guard parts.count == 2 else { continue }
++            switch parts[0] {
++            case "background": bg = RGB(hex: parts[1])
++            case "foreground": fg = RGB(hex: parts[1])
++            case "palette":
++                let kv = parts[1].split(separator: "=", maxSplits: 1).map(String.init)
++                if kv.count == 2, let i = Int(kv[0]), let c = RGB(hex: kv[1]) { palette[i] = c }
++            default: break
++            }
++        }
++        return (bg, fg, palette)
++    }
++}
++
++extension Color {
++    init(hex: Int) {
++        self.init(red: Double((hex >> 16) & 0xff) / 255, green: Double((hex >> 8) & 0xff) / 255,
++                  blue: Double(hex & 0xff) / 255)
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
 index 0000000..57f65f1
@@ -1873,6 +2075,22 @@ index 2f0644b..1807a0c 100644
  
              case GHOSTTY_ACTION_FLOAT_WINDOW:
                  toggleFloatWindow(app, target: target, mode: action.action.float_window)
+diff --git a/macos/Sources/Ghostty/Ghostty.Config.swift b/macos/Sources/Ghostty/Ghostty.Config.swift
+index 160894b..0853534 100644
+--- a/macos/Sources/Ghostty/Ghostty.Config.swift
++++ b/macos/Sources/Ghostty/Ghostty.Config.swift
+@@ -77,6 +77,11 @@ extension Ghostty {
+             }
+ 
+             ghostty_config_load_recursive_files(cfg)
++
++            // Ghostty Dock: the theme picked in its settings, over the config's.
++            if path == nil, FileManager.default.fileExists(atPath: DockTheme.overrideFile.path) {
++                ghostty_config_load_file(cfg, DockTheme.overrideFile.path)
++            }
+ #endif
+ 
+             // TODO: we'd probably do some config loading here... for now we'd
 diff --git a/macos/Sources/Ghostty/Surface View/SurfaceView.swift b/macos/Sources/Ghostty/Surface View/SurfaceView.swift
 index 47503dc..31360b6 100644
 --- a/macos/Sources/Ghostty/Surface View/SurfaceView.swift	
