@@ -12,7 +12,14 @@
 DEPENDENCIES=(osascript uuidgen open)
 SCRIPT_NAME=$(basename "$0")
 STATE_DIR="${GHOSTTY_DOCK_STATE:-$HOME/.local/state/ghostty-dock}"
+DOCK_APP="$HOME/Applications/Ghostty Dock.app"
+# Ghostty Dock (Ghostty with the session sidebar) when installed, else Ghostty.
+if [ -z "${GHOSTTY_APP:-}" ] && [ -d "$DOCK_APP" ]; then
+    GHOSTTY_APP="$DOCK_APP"
+    APP_REF='application id "consulting.cloudscale.ghosttydock"'
+fi
 GHOSTTY_APP="${GHOSTTY_APP:-/Applications/Ghostty.app}"
+APP_REF="${APP_REF:-application \"Ghostty\"}"
 
 function usage() {
     cat <<EOM
@@ -113,7 +120,7 @@ function ensure_ghostty_running() {
     open -a "$GHOSTTY_APP" --args --window-save-state=never --initial-window=false --quit-after-last-window-closed=true || return 1
     local i
     for ((i = 0; i < 40; i++)); do
-        if ghostty_running && osascript -e 'tell application "Ghostty" to count windows' >/dev/null 2>&1; then
+        if ghostty_running && osascript -e "tell $APP_REF to count windows" >/dev/null 2>&1; then
             return 0
         fi
         sleep 0.25
@@ -122,7 +129,7 @@ function ensure_ghostty_running() {
 }
 
 function ghostty_running() {
-    [ "$(osascript -e 'application "Ghostty" is running' 2>/dev/null)" = "true" ]
+    [ "$(osascript -e "$APP_REF is running" 2>/dev/null)" = "true" ]
 }
 
 # Prints "<tab id> <terminal id>" of the new tab. An empty command opens
@@ -132,7 +139,8 @@ function open_tab() {
     local command="$2"
     local folder="$3"
     local window="$4"
-    osascript - "$dock_id" "$command" "$folder" "$window" 2>&1 <<'APPLESCRIPT'
+    # Ghostty Dock understands Ghostty's dictionary; only the target differs.
+    sed "s/tell application \"Ghostty\"/tell $APP_REF/" <<'APPLESCRIPT' | osascript - "$dock_id" "$command" "$folder" "$window" 2>&1
 on run argv
     set dockId to item 1 of argv
     set cmd to item 2 of argv
