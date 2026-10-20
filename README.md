@@ -5,9 +5,31 @@ every Claude Code session as a tab, coloured by status (needs you, running,
 finished, idle, shell) and sorted needs-you first. Ctrl-Opt-J jumps to the
 next session waiting for you.
 
+<img src="docs/statuses.png" width="240" alt="Session sidebar"> <img src="docs/icon.png" width="128" alt="Ghostty Dock icon">
+
 It is Ghostty 1.3.1 plus `patches/ghostty-dock.patch`, built as
 `~/Applications/Ghostty Dock.app`. A Claude Code hook (`bin/ghostty-dock-hook`)
 reports each session's status.
+
+## Sidebar
+
+| Icon | Colour | Means |
+|---|---|---|
+| ? (pulsing) | peach | needs you: a question or permission prompt |
+| ✓ | blue | finished, not looked at yet |
+| moon | mauve | idle |
+| spinning arrows | green | running |
+| terminal | teal | plain shell, no Claude Code |
+
+- Click a row to switch to it; ✕ closes it; + opens a new tab.
+- Ctrl-Opt-J: jump to the next session that needs you (then finished ones).
+- Dock badge: how many sessions need you.
+
+## Settings (Cmd-,)
+
+- Sort: **urgency** (needs you, then idle with most recently idle first, then
+  running), **running first** (same, flipped), or **tab order**.
+- Sidebar on/off, native tab bar, hotkey, Dock badge, open at login.
 
 ## Install
 
