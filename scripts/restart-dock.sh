@@ -72,6 +72,12 @@ function quiet_secs() {
     local sid="$2"
     local file
     file="$HOME/.claude/projects/$(sed 's/[^A-Za-z0-9]/-/g' <<<"$cwd")/$sid.jsonl"
+    # A session whose transcript saving is off looks quiet forever, so the
+    # hook's status counts too.
+    if grep -lq "\"session_id\":\"$sid\".*\"status\":\"running\"\|\"status\":\"running\".*\"session_id\":\"$sid\"" "$STATE_DIR"/sessions/*.json 2>/dev/null; then
+        echo 0
+        return
+    fi
     [ -f "$file" ] || { echo 999999; return; }
     echo $(($(date +%s) - $(stat -f %m "$file")))
 }
