@@ -28,7 +28,7 @@ reports each session's status.
 ## Settings (Cmd-,)
 
 - Sort: **urgency** (needs you, then idle with most recently idle first, then
-  running), **running first** (same, flipped), or **tab order**.
+  running), **running first** (running, then needs you, then idle), or **tab order**.
 - Sidebar on/off, native tab bar, hotkey, Dock badge, open at login.
 
 ## Install
