@@ -114,6 +114,11 @@ function restart() {
     $dry && { printf '%s' "$sessions"; return 0; }
     $now || wait_until_quiet "$sessions" || return 1
 
+    # What scripts/undo.sh reopens if this goes wrong.
+    local c s f
+    while IFS=$'\t' read -r c s f; do
+        [ -n "$s" ] && printf '%s\t%s\t%s\n' "$s" "$c" "$f" >>"$STATE_DIR/sessions-snapshot.tsv"
+    done <<<"$sessions"
     log "quitting Ghostty Dock ($pid)"
     for cpid in $(claudes_under "$pid"); do kill -TERM "$cpid" 2>/dev/null; done
     sleep 3
