@@ -23,6 +23,8 @@ reports each session's status.
 | spinning arrows | green | running |
 | terminal | teal | plain shell, no Claude Code |
 
+- Under "Sessions", a counter per state (needs you, running, finished, idle,
+  shell, and undocked when there are any) shows how many tabs are in it.
 - Click a row to switch to it; ✕ closes it; + opens a new tab.
 - Each row shows its status, how long it has been in it, and **Age**: how long
   the session has existed (since its transcript was created, across restarts).

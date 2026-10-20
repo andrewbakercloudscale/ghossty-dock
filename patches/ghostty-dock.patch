@@ -1030,10 +1030,10 @@ index 0000000..ff1ea86
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..e055204
+index 0000000..8cb5339
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,446 @@
+@@ -0,0 +1,487 @@
 +import AppKit
 +import SwiftUI
 +
@@ -1153,10 +1153,35 @@ index 0000000..e055204
 +    }
 +
 +    private var header: some View {
++        VStack(alignment: .leading, spacing: 7) {
++            headerButtons
++            counters
++        }
++        .padding(.horizontal, 12)
++        .padding(.top, 10)
++        .padding(.bottom, 6)
++    }
++
++    /// How many tabs are in each state, in the sidebar's status colours; a
++    /// state with none is faint.
++    private var counters: some View {
++        HStack(spacing: 4) {
++            ForEach([DockSessions.Status.waiting, .running, .unread, .idle, .shell], id: \.self) { status in
++                let n = model.rows.filter { $0.status == status }.count
++                DockCounter(symbol: DockStatusDot.symbol(status), count: n, color: DockPalette.color(status))
++                    .help("\(n) \(DockPalette.label(status).lowercased())")
++            }
++            if !model.undocked.isEmpty {
++                DockCounter(symbol: "macwindow", count: model.undocked.count, color: DockPalette.grey)
++                    .help("\(model.undocked.count) undocked")
++            }
++            Spacer(minLength: 0)
++        }
++    }
++
++    private var headerButtons: some View {
 +        HStack(spacing: 6) {
 +            Text("Sessions").font(.system(size: 12, weight: .semibold)).foregroundStyle(DockPalette.text)
-+            if model.waitingCount > 0 { DockBadge(count: model.waitingCount, color: DockPalette.peach) }
-+            if model.unreadCount > 0 { DockBadge(count: model.unreadCount, color: DockPalette.blue) }
 +            Spacer()
 +            if updates.available || updates.state == .installing {
 +                Button(action: updates.confirmInstall) {
@@ -1196,9 +1221,25 @@ index 0000000..e055204
 +            .foregroundStyle(DockPalette.text)
 +            .help("About Ghostty Dock and updates")
 +        }
-+        .padding(.horizontal, 12)
-+        .padding(.top, 10)
-+        .padding(.bottom, 6)
++    }
++}
++
++/// One state's count: its icon and number in its colour, on a tint of it.
++struct DockCounter: View {
++    var symbol: String
++    var count: Int
++    var color: Color
++
++    var body: some View {
++        HStack(spacing: 2.5) {
++            Image(systemName: symbol).font(.system(size: 9.5, weight: .bold))
++            Text("\(count)").font(.system(size: 10.5, weight: .bold)).monospacedDigit()
++        }
++        .foregroundStyle(color)
++        .padding(.horizontal, 5)
++        .padding(.vertical, 2)
++        .background(Capsule().fill(color.opacity(0.16)))
++        .opacity(count == 0 ? 0.4 : 1)
 +    }
 +}
 +
