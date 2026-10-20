@@ -104,10 +104,10 @@ index 0000000..4b8472f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..b4eaf27
+index 0000000..6b7d7f6
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,339 @@
+@@ -0,0 +1,340 @@
 +import AppKit
 +import Combine
 +
@@ -251,17 +251,18 @@ index 0000000..b4eaf27
 +        runMover([])
 +    }
 +
-+    /// Moves one session from its own Ghostty app into a tab here.
++    /// Moves one session from its own Ghostty app into a tab here at once:
++    /// claude is stopped and resumed, busy or not.
 +    func dock(_ u: Undocked) {
 +        if let i = undocked.firstIndex(of: u) { undocked[i].moving = true }
-+        runMover(["--pid", String(u.pid)])
++        runMover(["--now", "--pid", String(u.pid)])
 +    }
 +
-+    /// Moves a tab's session out into a Ghostty app of its own, once quiet.
++    /// Moves a tab's session out into a Ghostty app of its own, at once.
 +    func undock(_ row: Row) {
 +        guard let sid = row.sessionId else { return }
 +        undocking.insert(sid)
-+        runMover(["--undock", sid])
++        runMover(["--now", "--undock", sid])
 +    }
 +
 +    /// Brings an undocked session's own Ghostty window to the front.
@@ -572,7 +573,7 @@ index 0000000..a69ab05
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..735848b
+index 0000000..e9882d4
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
 @@ -0,0 +1,331 @@
@@ -758,7 +759,7 @@ index 0000000..735848b
 +                .buttonStyle(.plain)
 +                .disabled(undocking)
 +                .onHover { hoverUndock = $0 }
-+                .help(undocking ? "Undocking once quiet for a minute" : "Undock: move to its own Ghostty window")
++                .help(undocking ? "Undocking…" : "Undock: restart it in its own Ghostty window")
 +            }
 +            // On every row, so any tab can be closed without hunting for it.
 +            Button(action: onClose) {
@@ -829,7 +830,7 @@ index 0000000..735848b
 +                    .foregroundStyle(DockPalette.grey)
 +                    .lineLimit(1)
 +                    .truncationMode(.middle)
-+                Text(session.moving ? (session.busy ? "Docking once quiet" : "Docking…")
++                Text(session.moving ? "Docking…"
 +                     : session.busy ? "Own window · busy" : "Own window")
 +                    .font(.system(size: 10.5))
 +                    .foregroundStyle(DockPalette.grey)
@@ -850,7 +851,7 @@ index 0000000..735848b
 +            .buttonStyle(.plain)
 +            .disabled(session.moving)
 +            .onHover { hoverDock = $0 }
-+            .help(session.moving ? "Moves in once quiet for a minute" : "Move into a tab here")
++            .help(session.moving ? "Docking…" : "Restart it in a tab here")
 +        }
 +        .padding(.horizontal, 8)
 +        .padding(.vertical, 6)
