@@ -56,27 +56,40 @@ function app_pid() {
     ps -axo pid=,command= | awk -v bin="$APP_BIN" '{ pid = $1; $1 = ""; sub(/^ /, "") } index($0, bin) == 1 && (length($0) == length(bin) || substr($0, length(bin) + 1, 1) == " ") { print pid; exit }'
 }
 
-# Prints the pid of every claude under the app.
+# Prints the pid of every claude under the app, however it was started
+# (`claude`, `claude --continue`, a full path, ...).
 function claudes_under() {
     local root="$1"
     ps -axo pid=,ppid=,command= | awk -v root="$root" '
         { parent[$1] = $2; cmd[$1] = $0 }
         END {
             for (p in cmd) {
-                if (cmd[p] !~ /^ *[0-9]+ +[0-9]+ +claude --(session-id|resume) /) continue
+                if (cmd[p] !~ /^ *[0-9]+ +[0-9]+ +([^ ]*\/)?claude( |$)/) continue
                 q = p
                 while (q > 1) { q = parent[q]; if (q == root) { print p; break } }
             }
         }'
 }
 
-# Prints "<cwd>\t<session id>\t<flags>" for a claude pid.
+# The session a claude pid is on, from the hook's state: for claudes started
+# without an id (`claude`, `claude --continue`), or whose id has changed.
+function hook_session() {
+    local cpid="$1"
+    local file
+    file=$(grep -l "\"claude_pid\":$cpid[,}]" "$STATE_DIR"/sessions/*.json 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
+    [ -n "$file" ] && sed -nE 's/.*"session_id":"([^"]+)".*/\1/p' "$file"
+}
+
+# Prints "<cwd>\t<session id>\t<flags>" for a claude pid; the session id is
+# empty when it cannot be told, and that claude is not resumed.
 function describe() {
     local cpid="$1"
     local args sid flags cwd
     args=$(ps -o command= -p "$cpid")
-    sid=$(sed -E 's/.*--(session-id|resume) ([^ ]+).*/\2/' <<<"$args")
-    flags=$(sed -E 's/^claude //; s/--(session-id|resume) [^ ]+ ?//' <<<"$args")
+    sid=$(hook_session "$cpid")
+    [ -z "$sid" ] && grep -qE -- "--(session-id|resume) " <<<"$args" &&
+        sid=$(sed -E 's/.*--(session-id|resume) ([^ ]+).*/\2/' <<<"$args")
+    flags=$(sed -E 's/^([^ ]*\/)?claude ?//; s/--(session-id|resume) [^ ]+ ?//; s/(^| )(--continue|-c)( |$)/\1/; s/ +$//' <<<"$args")
     cwd=$(lsof -a -p "$cpid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
     printf '%s\t%s\t%s\n' "$cwd" "$sid" "$flags"
 }
