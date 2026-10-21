@@ -1503,10 +1503,10 @@ index 0000000..1468a67
 +}
 diff --git a/macos/Sources/Features/Dock/DockAgentsView.swift b/macos/Sources/Features/Dock/DockAgentsView.swift
 new file mode 100644
-index 0000000..cc51650
+index 0000000..eca5fe4
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAgentsView.swift
-@@ -0,0 +1,556 @@
+@@ -0,0 +1,502 @@
 +import AppKit
 +import SwiftUI
 +
@@ -1573,7 +1573,10 @@ index 0000000..cc51650
 +                    if la != lb { return la }
 +                    return (a.started ?? .distantPast) > (b.started ?? .distantPast)
 +                }
-+                if !agents.isEmpty || scope != .live { built.append(Section(sessionId: sid, row: row, agents: agents)) }
++                // Sessions at work without agents show too, so they are not mistaken for idle.
++                if !agents.isEmpty || row.status == .running || row.status == .waiting {
++                    built.append(Section(sessionId: sid, row: row, agents: agents))
++                }
 +            }
 +            built.sort { a, b in
 +                let la = a.agents.contains { $0.live(now: now) }, lb = b.agents.contains { $0.live(now: now) }
@@ -1603,27 +1606,28 @@ index 0000000..cc51650
 +
 +    var body: some View {
 +        VStack(spacing: 0) {
-+            header
++            toolbar
 +            Divider().overlay(DockPalette.surface)
 +            if page == .setup {
 +                DockAgentConfigView()
 +            } else {
-+            HStack(alignment: .top, spacing: 0) {
 +                ScrollView {
-+                    LazyVStack(alignment: .leading, spacing: 18) {
-+                        solo
-+                        if model.sections.allSatisfy({ $0.agents.isEmpty }) { empty }
-+                        ForEach(model.sections) { section in
-+                            DockAgentSection(section: section, now: model.now, maxTokens: maxTokens,
-+                                             cost: sessions.costs[section.sessionId],
-+                                             context: sessions.contexts[section.sessionId])
++                    VStack(alignment: .leading, spacing: 22) {
++                        tiles
++                        if model.sections.isEmpty {
++                            empty
++                        } else {
++                            VStack(alignment: .leading, spacing: 16) {
++                                ForEach(model.sections) { section in
++                                    DockAgentGroup(section: section, now: model.now, maxTokens: maxTokens,
++                                                   cost: sessions.costs[section.sessionId],
++                                                   context: sessions.contexts[section.sessionId])
++                                }
++                            }
 +                        }
 +                    }
-+                    .padding(16)
++                    .padding(20)
 +                }
-+                Divider().overlay(DockPalette.surface)
-+                questions.frame(width: 260)
-+            }
 +            }
 +        }
 +        .frame(minWidth: 760, minHeight: 460)
@@ -1636,237 +1640,198 @@ index 0000000..cc51650
 +
 +    private var maxTokens: Int { max(1, model.agents.map(\.tokens).max() ?? 1) }
 +
-+    private var header: some View {
-+        let agents = model.agents
-+        let live = agents.filter { $0.live(now: model.now) }.count
-+        let worktrees = Set(agents.compactMap(\.worktree)).count
-+        let withAgents = model.sections.filter { !$0.agents.isEmpty }.count
-+        return VStack(alignment: .leading, spacing: 10) {
-+            HStack(spacing: 10) {
-+                Text("Agents").font(.title2.weight(.bold)).foregroundStyle(DockPalette.text)
-+                Picker("", selection: $page) {
-+                    ForEach(Page.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-+                }
-+                .pickerStyle(.segmented)
-+                .labelsHidden()
-+                .frame(width: 170)
-+                .help("Activity: what agents are doing. Set Up: how each agent is configured, and change it.")
-+                HStack(spacing: 5) {
-+                    Circle().fill(live > 0 ? DockPalette.green : DockPalette.grey).frame(width: 7, height: 7)
-+                    Text("\(live) live").font(.callout.weight(.semibold))
-+                }
-+                .foregroundStyle(live > 0 ? DockPalette.green : DockPalette.grey)
-+                .padding(.horizontal, 9).padding(.vertical, 3)
-+                .background(Capsule().fill((live > 0 ? DockPalette.green : DockPalette.grey).opacity(0.15)))
++    private var toolbar: some View {
++        HStack(spacing: 12) {
++            Picker("", selection: $page) {
++                ForEach(Page.allCases, id: \.self) { Text($0.rawValue).tag($0) }
++            }
++            .pickerStyle(.segmented)
++            .labelsHidden()
++            .frame(width: 180)
++            .help("Activity: what agents are doing. Set Up: how each agent is configured, and change it.")
++            Spacer()
++            if page == .activity {
 +                Picker("", selection: $model.scope) {
 +                    ForEach(DockAgentsModel.Scope.allCases) { Text($0.rawValue).tag($0) }
 +                }
 +                .pickerStyle(.segmented)
-+                .frame(width: 200)
-+                .padding(.leading, 8)
++                .labelsHidden()
++                .frame(width: 190)
 +                .help("Live: running now. Today: started or active today. All: every agent of the open sessions.")
-+                Button { showGuide.toggle() } label: {
-+                    Label("How to use agents", systemImage: "questionmark.circle")
-+                }
-+                .buttonStyle(.plain)
-+                .foregroundStyle(DockPalette.blue)
-+                .popover(isPresented: $showGuide, arrowEdge: .bottom) {
-+                    DockAgentGuide().padding(16).frame(width: 520)
-+                        .background(DockPalette.base)
-+                        .environment(\.colorScheme, DockPalette.scheme)
-+                }
-+                Spacer()
 +            }
-+            Text("An agent is a helper a session starts to do part of its work (Claude Code's Agent tool): "
-+                 + "it has its own context, often runs in the background or its own git worktree, "
-+                 + "and reports back to the session that started it.")
-+                .font(.callout)
-+                .foregroundStyle(DockPalette.grey)
-+                .fixedSize(horizontal: false, vertical: true)
-+            HStack(spacing: 22) {
-+                DockAgentStat(value: "\(agents.count)", label: "agents")
-+                DockAgentStat(value: "\(withAgents)", label: "sessions")
-+                DockAgentStat(value: "\(worktrees)", label: "worktrees")
-+                DockAgentStat(value: DockCost.formatTokens(agents.map(\.tokens).reduce(0, +)), label: "tokens")
-+                DockAgentStat(value: DockCost.formatTokens(agents.map(\.outputTokens).reduce(0, +)), label: "output")
-+                DockAgentStat(value: "\(agents.map(\.toolCalls).reduce(0, +))", label: "tool calls")
-+                DockAgentStat(value: DockCost.format(agents.map(\.dollars).reduce(0, +)), label: "agent cost")
-+                Spacer()
++            Button { showGuide.toggle() } label: {
++                Image(systemName: "questionmark.circle").font(.title3)
 +            }
-+            velocity
++            .buttonStyle(.plain)
++            .foregroundStyle(DockPalette.blue)
++            .help("What agents are and how to use them")
++            .popover(isPresented: $showGuide, arrowEdge: .bottom) {
++                DockAgentGuide().padding(16).frame(width: 520)
++                    .background(DockPalette.base)
++                    .environment(\.colorScheme, DockPalette.scheme)
++            }
 +        }
-+        .padding(16)
++        .padding(.horizontal, 20)
++        .padding(.vertical, 12)
 +        .background(DockPalette.mantle)
 +    }
 +
-+    /// How fast every open session is spending, agents included, as the
-+    /// cost panel's burn rate shows it.
-+    private var velocity: some View {
++    /// Four numbers that answer: how fast am I spending, how much today,
++    /// what are agents doing, and is anything waiting on me.
++    private var tiles: some View {
 +        let v = sessions.velocity
-+        return HStack(spacing: 22) {
-+            Label("Spend", systemImage: "flame.fill")
-+                .font(.callout.weight(.semibold))
-+                .foregroundStyle(DockPalette.peach)
-+            DockAgentStat(value: DockCost.format(v.nowPerHour) + "/hr", label: "now")
-+                .help("Spent in the last 10 minutes, as an hourly rate")
-+            DockAgentStat(value: DockCost.format(v.lastHour), label: "last hour")
-+                .help("Spent in the last 60 minutes")
-+            DockAgentStat(value: DockCost.format(v.averagePerHour) + "/hr", label: "today's average")
-+                .help("Today's spend over the hours since the first reply today")
-+            DockAgentStat(value: DockCost.format(v.today), label: "today")
-+                .help("Spent since midnight by the sessions open in the Dock, agents included")
-+            DockAgentStat(value: DockCost.formatTokens(v.tokensPerMinute), label: "tokens/min")
-+                .help("Tokens a minute over the last 10 minutes, cache reads included")
-+            Spacer()
++        let agents = model.agents
++        let live = agents.filter { $0.live(now: model.now) }.count
++        let waiting = sessions.rows.filter { $0.status == .waiting }
++        let agentSub = model.scope == .live
++            ? (live == 0 ? "None at work" : DockCost.format(agents.map(\.dollars).reduce(0, +)) + " so far")
++            : "\(agents.count) \(model.scope == .today ? "today" : "in all") · "
++                + DockCost.format(agents.map(\.dollars).reduce(0, +))
++        return HStack(spacing: 12) {
++            DockAgentTile(symbol: "flame.fill", title: "Spending now", tint: DockPalette.peach,
++                          value: DockCost.format(v.nowPerHour) + "/hr",
++                          detail: DockCost.format(v.lastHour) + " last hour · "
++                              + DockCost.formatTokens(v.tokensPerMinute) + " tok/min",
++                          help: "The last 10 minutes as an hourly rate, every open session, agents included")
++            DockAgentTile(symbol: "calendar", title: "Today", tint: DockPalette.blue,
++                          value: DockCost.format(v.today),
++                          detail: "Average " + DockCost.format(v.averagePerHour) + "/hr",
++                          help: "Spent since midnight by the sessions open in the Dock, agents included")
++            DockAgentTile(symbol: "person.2.fill", title: "Agents running", tint: DockPalette.green,
++                          value: "\(live)", detail: agentSub,
++                          help: "Subagents of the open sessions working right now")
++            DockAgentTile(symbol: "questionmark.bubble.fill", title: "Needs you",
++                          tint: waiting.isEmpty ? DockPalette.grey : DockPalette.peach,
++                          value: "\(waiting.count)",
++                          detail: waiting.isEmpty ? "Nothing waiting"
++                              : waiting.map(\.name).joined(separator: ", "),
++                          help: waiting.isEmpty ? "No session is waiting on you" : "Click to go to \(waiting[0].name)",
++                          action: waiting.first.map { row in { sessions.select(row) } })
 +        }
 +    }
 +
 +    private var empty: some View {
-+        VStack(spacing: 14) {
-+            Image(systemName: "person.3").font(.largeTitle).foregroundStyle(DockPalette.grey)
-+            Text(model.scope == .live ? "No agents running right now" : "No agents yet")
-+                .font(.headline).foregroundStyle(DockPalette.text)
-+            DockAgentGuide().frame(maxWidth: 560)
++        VStack(spacing: 10) {
++            Image(systemName: "person.3").font(.system(size: 34)).foregroundStyle(DockPalette.grey)
++            Text(model.scope == .live ? "No agents at work" : "No agents yet")
++                .font(.title3.weight(.semibold)).foregroundStyle(DockPalette.text)
++            Text("An agent is a helper a session starts for part of a job. Ask for one in a prompt:")
++                .font(.callout).foregroundStyle(DockPalette.grey)
++            Text("“Use 3 agents in parallel to review these files, then sum up.”")
++                .font(.system(.callout, design: .monospaced)).foregroundStyle(DockPalette.text)
++                .textSelection(.enabled)
++                .padding(.horizontal, 12).padding(.vertical, 8)
++                .background(RoundedRectangle(cornerRadius: 8).fill(DockPalette.mantle))
++            Button("More examples and how to make your own") { showGuide = true }
++                .buttonStyle(.plain)
++                .foregroundStyle(DockPalette.blue)
++                .font(.callout)
 +        }
 +        .frame(maxWidth: .infinity)
-+        .padding(.top, 30)
-+    }
-+
-+    /// Sessions busy right now with no live agent: working on their own.
-+    private var solo: some View {
-+        let live = Set(model.agents.filter { $0.live(now: model.now) }.map(\.sessionId))
-+        let busy = sessions.rows.filter { r in
-+            (r.status == .running || r.status == .waiting) && !(r.sessionId.map(live.contains) ?? false)
-+        }
-+        return Group {
-+            if !busy.isEmpty {
-+                VStack(alignment: .leading, spacing: 8) {
-+                    Text(busy.count == 1 ? "1 session is active without agents"
-+                         : "\(busy.count) sessions are active without agents")
-+                        .font(.callout.weight(.semibold))
-+                        .foregroundStyle(DockPalette.text)
-+                    Text("They are doing the work themselves, in one context. Click one to go to it.")
-+                        .font(.caption).foregroundStyle(DockPalette.grey)
-+                    HStack(spacing: 8) {
-+                        ForEach(busy, id: \.id) { row in
-+                            Button { sessions.select(row) } label: {
-+                                HStack(spacing: 5) {
-+                                    Circle().fill(DockPalette.color(row.status)).frame(width: 7, height: 7)
-+                                    Text(row.name).font(.callout)
-+                                    Text(row.status == .waiting ? "waiting" : "running")
-+                                        .font(.caption).foregroundStyle(DockPalette.color(row.status))
-+                                }
-+                                .padding(.horizontal, 9).padding(.vertical, 4)
-+                                .background(Capsule().fill(DockPalette.color(row.status).opacity(0.14)))
-+                            }
-+                            .buttonStyle(.plain)
-+                            .foregroundStyle(DockPalette.text)
-+                        }
-+                    }
-+                }
-+                .padding(12)
-+                .frame(maxWidth: .infinity, alignment: .leading)
-+                .background(RoundedRectangle(cornerRadius: 10).fill(DockPalette.mantle))
-+            }
-+        }
-+    }
-+
-+    /// Sessions waiting on you, with what they ask.
-+    private var questions: some View {
-+        let waiting = sessions.rows.filter { $0.status == .waiting }
-+        return VStack(alignment: .leading, spacing: 10) {
-+            Text("NEEDS YOU").font(.caption.weight(.bold)).tracking(1.2).foregroundStyle(DockPalette.peach)
-+            if waiting.isEmpty {
-+                Text("Nothing is waiting on you.").font(.callout).foregroundStyle(DockPalette.grey)
-+            }
-+            ScrollView {
-+                VStack(alignment: .leading, spacing: 8) {
-+                    ForEach(waiting) { row in
-+                        Button { sessions.select(row) } label: {
-+                            VStack(alignment: .leading, spacing: 4) {
-+                                Text(row.name).font(.callout.weight(.semibold)).foregroundStyle(DockPalette.text)
-+                                Text(row.prompt ?? "Waiting for you")
-+                                    .font(.caption).foregroundStyle(DockPalette.text.opacity(0.8))
-+                                    .lineLimit(4)
-+                                if let since = row.since {
-+                                    Text(since, style: .relative).font(.caption2).foregroundStyle(DockPalette.grey)
-+                                }
-+                            }
-+                            .frame(maxWidth: .infinity, alignment: .leading)
-+                            .padding(9)
-+                            .background(RoundedRectangle(cornerRadius: 8).fill(DockPalette.peach.opacity(0.1)))
-+                            .overlay(Rectangle().fill(DockPalette.peach).frame(width: 3), alignment: .leading)
-+                        }
-+                        .buttonStyle(.plain)
-+                        .help("Go to \(row.name)")
-+                    }
-+                }
-+            }
-+            Spacer(minLength: 0)
-+        }
-+        .padding(14)
-+        .frame(maxHeight: .infinity, alignment: .top)
-+        .background(DockPalette.mantle)
++        .padding(.top, 40)
 +    }
 +}
 +
-+private struct DockAgentStat: View {
++/// One big number with a label, an icon and a line under it.
++private struct DockAgentTile: View {
++    var symbol: String
++    var title: String
++    var tint: Color
 +    var value: String
-+    var label: String
++    var detail: String
++    var help: String
++    var action: (() -> Void)?
++    @State private var hover = false
 +
 +    var body: some View {
-+        HStack(alignment: .firstTextBaseline, spacing: 5) {
-+            Text(value).font(.title3.weight(.bold)).monospacedDigit().foregroundStyle(DockPalette.text)
-+            Text(label).font(.callout).foregroundStyle(DockPalette.grey)
++        VStack(alignment: .leading, spacing: 6) {
++            Label(title, systemImage: symbol)
++                .font(.caption.weight(.semibold))
++                .foregroundStyle(tint)
++            Text(value)
++                .font(.system(size: 26, weight: .bold, design: .rounded))
++                .monospacedDigit()
++                .foregroundStyle(DockPalette.text)
++                .lineLimit(1)
++                .minimumScaleFactor(0.6)
++            Text(detail)
++                .font(.caption)
++                .foregroundStyle(DockPalette.grey)
++                .lineLimit(1)
++                .truncationMode(.tail)
 +        }
++        .padding(14)
++        .frame(maxWidth: .infinity, alignment: .leading)
++        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(DockPalette.mantle))
++        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
++            .strokeBorder(hover && action != nil ? tint.opacity(0.7) : tint.opacity(0.25), lineWidth: 1))
++        .overlay(alignment: .top) {
++            RoundedRectangle(cornerRadius: 2).fill(tint).frame(height: 3).padding(.horizontal, 14)
++        }
++        .contentShape(Rectangle())
++        .onHover { hover = $0 }
++        .onTapGesture { action?() }
++        .help(help)
 +    }
 +}
 +
-+/// One session: its name and totals, then a card per agent.
-+private struct DockAgentSection: View {
++/// One session: a header line, then a row per agent.
++private struct DockAgentGroup: View {
 +    var section: DockAgentsModel.Section
 +    var now: Date
 +    var maxTokens: Int
 +    var cost: Double?
 +    var context: Int?
 +
-+    private let columns = [GridItem(.adaptive(minimum: 250, maximum: 400), spacing: 12)]
-+
 +    var body: some View {
-+        VStack(alignment: .leading, spacing: 10) {
++        VStack(alignment: .leading, spacing: 0) {
 +            Button { DockSessions.shared.select(section.row) } label: {
 +                HStack(spacing: 8) {
 +                    Circle().fill(DockPalette.color(section.row.status)).frame(width: 8, height: 8)
 +                    Text(section.row.name).font(.headline).foregroundStyle(DockPalette.text)
-+                    Text(DockPalette.label(section.row.status)).font(.caption).foregroundStyle(DockPalette.color(section.row.status))
-+                    Text(totals).font(.caption).monospacedDigit().foregroundStyle(DockPalette.grey)
++                    Text(DockPalette.label(section.row.status))
++                        .font(.caption.weight(.medium))
++                        .foregroundStyle(DockPalette.color(section.row.status))
++                        .padding(.horizontal, 7).padding(.vertical, 2)
++                        .background(Capsule().fill(DockPalette.color(section.row.status).opacity(0.14)))
 +                    Spacer()
++                    Text(totals).font(.caption).monospacedDigit().foregroundStyle(DockPalette.grey)
 +                }
++                .padding(.horizontal, 12)
++                .padding(.vertical, 9)
 +                .contentShape(Rectangle())
 +            }
 +            .buttonStyle(.plain)
 +            .help("Go to \(section.row.name)")
 +            if section.agents.isEmpty {
-+                Text("No agents").font(.caption).foregroundStyle(DockPalette.grey).padding(.leading, 16)
++                Divider().overlay(DockPalette.surface)
++                Text("Working on its own, without agents")
++                    .font(.callout).foregroundStyle(DockPalette.grey)
++                    .padding(.horizontal, 12).padding(.vertical, 10)
 +            } else {
-+                LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-+                    ForEach(section.agents) { agent in
-+                        DockAgentCard(agent: agent, row: section.row, now: now, maxTokens: maxTokens)
-+                    }
++                ForEach(section.agents) { agent in
++                    Divider().overlay(DockPalette.surface)
++                    DockAgentRow(agent: agent, row: section.row, now: now, maxTokens: maxTokens)
 +                }
 +            }
 +        }
++        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(DockPalette.mantle))
++        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 +    }
 +
 +    private var totals: String {
-+        var parts = ["\(section.agents.count) agent" + (section.agents.count == 1 ? "" : "s")]
-+        if let cost { parts.append(DockCost.format(cost) + " session") }
++        var parts: [String] = []
++        if !section.agents.isEmpty {
++            parts.append("\(section.agents.count) agent" + (section.agents.count == 1 ? "" : "s"))
++        }
++        if let cost { parts.append(DockCost.format(cost)) }
 +        if let context { parts.append(DockCost.formatTokens(context) + " context") }
-+        return parts.joined(separator: " · ")
++        return parts.joined(separator: "  ·  ")
 +    }
 +}
 +
-+private struct DockAgentCard: View {
++/// One agent: what it is doing, its share of tokens, its cost and time.
++private struct DockAgentRow: View {
 +    var agent: DockAgents.Agent
 +    var row: DockSessions.Row
 +    var now: Date
@@ -1877,60 +1842,44 @@ index 0000000..cc51650
 +    private var tint: Color { live ? DockPalette.green : agent.finished ? DockPalette.mauve : DockPalette.grey }
 +
 +    var body: some View {
-+        VStack(alignment: .leading, spacing: 8) {
-+            HStack(alignment: .top, spacing: 7) {
-+                Circle().fill(tint).frame(width: 8, height: 8).padding(.top, 5)
-+                    .overlay(live ? Circle().stroke(tint.opacity(0.4), lineWidth: 4) : nil)
++        HStack(spacing: 14) {
++            Circle().fill(tint).frame(width: 8, height: 8)
++                .overlay(live ? Circle().stroke(tint.opacity(0.35), lineWidth: 4) : nil)
++            VStack(alignment: .leading, spacing: 3) {
 +                Text(agent.description.isEmpty ? agent.id : agent.description)
 +                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(DockPalette.text)
-+                    .lineLimit(2)
-+                Spacer(minLength: 4)
-+                Text(elapsed).font(.caption.weight(.medium)).monospacedDigit().foregroundStyle(tint)
++                    .lineLimit(1)
++                Text(subtitle).font(.caption).foregroundStyle(DockPalette.grey).lineLimit(1)
++                if let line = live ? (agent.lastTool ?? agent.lastText) : (agent.lastText ?? agent.lastTool) {
++                    Text(line).font(.system(size: 11, design: .monospaced))
++                        .foregroundStyle(DockPalette.text.opacity(0.7)).lineLimit(1)
++                }
 +            }
-+            Text(subtitle).font(.caption).foregroundStyle(DockPalette.grey).lineLimit(1)
-+            VStack(alignment: .leading, spacing: 3) {
++            Spacer(minLength: 8)
++            VStack(alignment: .trailing, spacing: 4) {
++                Text(DockCost.formatTokens(agent.tokens) + " tok")
++                    .font(.caption.weight(.medium)).monospacedDigit().foregroundStyle(DockPalette.text)
 +                GeometryReader { g in
 +                    ZStack(alignment: .leading) {
 +                        Capsule().fill(DockPalette.surface)
 +                        Capsule().fill(DockPalette.blue)
-+                            .frame(width: max(4, g.size.width * CGFloat(agent.tokens) / CGFloat(maxTokens)))
++                            .frame(width: max(3, g.size.width * CGFloat(agent.tokens) / CGFloat(maxTokens)))
 +                    }
 +                }
-+                .frame(height: 5)
-+                HStack(alignment: .firstTextBaseline, spacing: 4) {
-+                    Text(agent.tokens.formatted()).font(.system(size: 14, weight: .bold, design: .monospaced))
-+                        .foregroundStyle(DockPalette.text)
-+                    Text("tok").font(.caption).foregroundStyle(DockPalette.grey)
-+                    Spacer()
-+                    Text(DockCost.format(agent.dollars)).font(.callout.weight(.semibold)).monospacedDigit()
-+                        .foregroundStyle(DockPalette.text)
-+                }
++                .frame(width: 90, height: 4)
 +            }
-+            HStack(spacing: 10) {
-+                metric("arrow.up", DockCost.formatTokens(agent.outputTokens), "Output tokens")
-+                metric("rectangle.stack", DockCost.formatTokens(agent.context), "Context at its last reply")
-+                metric("wrench.and.screwdriver", "\(agent.toolCalls)", topTools)
-+                if agent.toolErrors > 0 {
-+                    metric("exclamationmark.triangle", "\(agent.toolErrors)", "Tool calls that failed", DockPalette.peach)
-+                }
-+                metric("doc", "\(agent.files.count)", "Files written or edited")
-+                metric("bubble.left", "\(agent.replies)", "Replies")
-+            }
-+            if let line = live ? (agent.lastTool ?? agent.lastText) : (agent.lastText ?? agent.lastTool) {
-+                Text(line).font(.system(size: 10.5, design: .monospaced))
-+                    .foregroundStyle(DockPalette.text.opacity(0.75)).lineLimit(2)
-+            }
-+            if let branch = agent.branch {
-+                Label(branch, systemImage: "arrow.triangle.branch").font(.caption2).foregroundStyle(DockPalette.teal)
-+                    .lineLimit(1)
-+            }
++            .frame(width: 90)
++            Text(DockCost.format(agent.dollars))
++                .font(.callout.weight(.semibold)).monospacedDigit().foregroundStyle(DockPalette.text)
++                .frame(width: 64, alignment: .trailing)
++            Text(elapsed)
++                .font(.caption.weight(.medium)).monospacedDigit().foregroundStyle(tint)
++                .frame(width: 92, alignment: .trailing)
 +        }
-+        .padding(11)
-+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(DockPalette.mantle))
-+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-+            .strokeBorder(live ? DockPalette.green.opacity(0.6) : hover ? DockPalette.blue.opacity(0.6) : DockPalette.surface,
-+                          lineWidth: 1.25))
-+        .opacity(live || hover ? 1 : 0.85)
++        .padding(.horizontal, 12)
++        .padding(.vertical, 9)
++        .background(hover ? DockPalette.surface.opacity(0.5) : Color.clear)
++        .contentShape(Rectangle())
 +        .onHover { hover = $0 }
 +        .onTapGesture { DockSessions.shared.select(row) }
 +        .help(tooltip)
@@ -1948,26 +1897,22 @@ index 0000000..cc51650
 +        }
 +    }
 +
-+    private func metric(_ symbol: String, _ value: String, _ help: String, _ color: Color = DockPalette.text) -> some View {
-+        HStack(spacing: 3) {
-+            Image(systemName: symbol).font(.system(size: 9, weight: .semibold)).foregroundStyle(DockPalette.grey)
-+            Text(value).font(.caption.weight(.medium)).monospacedDigit().foregroundStyle(color)
-+        }
-+        .help(help)
-+    }
-+
 +    private var elapsed: String {
 +        guard let started = agent.started else { return "" }
 +        if live { return DockAgents.duration(now.timeIntervalSince(started)) }
-+        let ran = DockAgents.duration((agent.lastActive ?? started).timeIntervalSince(started))
-+        let ago = agent.lastActive.map { DockAgents.duration(now.timeIntervalSince($0)) + " ago" } ?? ""
-+        return ran + " · " + ago
++        return agent.lastActive.map { DockAgents.duration(now.timeIntervalSince($0)) + " ago" } ?? ""
 +    }
 +
 +    private var subtitle: String {
 +        var parts = [agent.type, DockAgents.shortModel(agent.model)]
 +        if agent.background { parts.append("background") }
-+        parts.append(live ? "running" : agent.finished ? "finished" : "stopped")
++        if let branch = agent.branch { parts.append(branch) }
++        parts.append("\(agent.toolCalls) tool calls")
++        if agent.toolErrors > 0 { parts.append("\(agent.toolErrors) failed") }
++        if !agent.files.isEmpty { parts.append("\(agent.files.count) files") }
++        if !live, let started = agent.started {
++            parts.append("ran " + DockAgents.duration((agent.lastActive ?? started).timeIntervalSince(started)))
++        }
 +        return parts.joined(separator: " · ")
 +    }
 +
@@ -1980,6 +1925,7 @@ index 0000000..cc51650
 +        var lines = [agent.description, "\(agent.type) · \(agent.model ?? "?") · in \(row.name)"]
 +        lines.append("Input \(agent.inputTokens.formatted()) · output \(agent.outputTokens.formatted())")
 +        lines.append("Cache read \(agent.cacheReadTokens.formatted()) · cache write \(agent.cacheWriteTokens.formatted())")
++        lines.append("Context at its last reply \(agent.context.formatted())")
 +        lines.append(topTools)
 +        if let worktree = agent.worktree { lines.append("Worktree: " + worktree) }
 +        lines.append("Click to go to its session")
