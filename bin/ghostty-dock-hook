@@ -135,6 +135,19 @@ function already_running() {
     grep -q '"status":"running"' "$file" 2>/dev/null
 }
 
+# "Bash: npm test" for the transcript's last tool call, or nothing.
+function pending_call() {
+    local transcript
+    transcript=$(jq -r '.transcript_path // empty' <<<"$1" 2>/dev/null)
+    [ -f "$transcript" ] || return 0
+    tail -c 262144 "$transcript" 2>/dev/null | grep '"tool_use"' | tail -1 | jq -r '
+        def clip: tostring | split("\n")[0] | if length > 140 then .[0:137] + "..." else . end;
+        [.message.content[]? | select(.type == "tool_use")] | last // empty
+        | .name + ((.input.command // .input.file_path // .input.notebook_path // .input.pattern
+                    // .input.url // .input.query // .input.description // null)
+                   | if . == null then "" else ": " + clip end)' 2>/dev/null
+}
+
 function record_state() {
     local file="$1"
     local key="$2"
@@ -142,6 +155,13 @@ function record_state() {
     local claude_pid="$4"
     local ghostty_pid="$5"
     local tty="$6"
+
+    # A permission prompt names only the tool; the call it is about is the
+    # last tool_use in the transcript. Read only then, and only its tail.
+    local pending=""
+    case "$input" in
+    *permission*) pending=$(pending_call "$input") ;;
+    esac
 
     local old="{}"
     [ -s "$file" ] && old=$(cat "$file" 2>/dev/null)
@@ -156,8 +176,10 @@ function record_state() {
         --arg claude_pid "$claude_pid" \
         --arg ghostty_pid "$ghostty_pid" \
         --arg tty "$tty" \
+        --arg pending "$pending" \
         -f /dev/stdin <<'JQ' 2>/dev/null
 def num($s): if $s == "-" or $s == "" then null else ($s | tonumber) end;
+def clip: tostring | split("\n")[0] | if length > 160 then .[0:157] + "..." else . end;
 ($in.hook_event_name // "") as $ev
 | ($in.notification_type // "") as $nt
 | ($in.message // "") as $msg
@@ -194,7 +216,14 @@ def num($s): if $s == "-" or $s == "" then null else ($s | tonumber) end;
         ghostty_pid: num($ghostty_pid),
         tty: (if $tty == "-" then null else $tty end),
         event: $ev,
-        tool: ($in.tool_name // null)
+        tool: ($in.tool_name // null),
+        prompt: (if $st != "waiting" then null
+                 elif $ev == "PreToolUse" and $in.tool_name == "AskUserQuestion" then
+                   ($in.tool_input.questions[0].question // "A question for you" | clip)
+                 elif $ev == "PreToolUse" then "Plan ready for review"
+                 elif $nt == "permission_prompt" or ($msg | test("permission"; "i")) then
+                   (if $pending != "" then "Allow " + $pending else $msg end | clip)
+                 else ($msg | clip) end)
       }
   end
 JQ

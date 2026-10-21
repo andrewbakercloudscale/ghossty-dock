@@ -4,7 +4,7 @@
 # ~/.local/bin, the hook into ~/.claude/settings.json, the "Launch ... in
 # Ghostty" Finder Quick Actions switched to open tabs, and the app (Ghostty
 # with the session sidebar built in, scripts/build-terminal.sh) into
-# ~/Applications.
+# ~/Applications. From a release zip, the app is already built and is copied.
 
 DEPENDENCIES=(jq perl swift codesign launchctl)
 SCRIPT_NAME=$(basename "$0")
@@ -79,8 +79,14 @@ function main() {
         print_warning "skipped the app (--skip-app)"
         return
     fi
-    print_step 4 4 "Build and install the app"
-    bash "$ROOT/scripts/build-terminal.sh" --no-open || exit 1
+    # A release zip carries the app ready-built (scripts/release.sh).
+    if [ -d "$ROOT/Ghostty Dock.app" ]; then
+        print_step 4 4 "Install the app"
+        mkdir -p "$(dirname "$APP")" && rm -rf "$APP" && ditto "$ROOT/Ghostty Dock.app" "$APP" || exit 1
+    else
+        print_step 4 4 "Build and install the app"
+        bash "$ROOT/scripts/build-terminal.sh" --no-open || exit 1
+    fi
     print_success "Ghostty Dock is installed: open it from ~/Applications"
     echo "  - Sessions already open keep their own Ghostty app until closed."
 }

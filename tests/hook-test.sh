@@ -50,14 +50,21 @@ function main() {
     check "since kept while status unchanged" "$f" '.since|tostring' "$since"
     check "project sticks when Claude cds" "$f" '.name' "my-proj"
 
-    fire '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"/x/my-proj","tool_name":"AskUserQuestion"}'
+    fire '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"/x/my-proj","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which database?"}]}}'
     check "question is waiting" "$f" '.status' "waiting"
+    check "question text is the prompt" "$f" '.prompt' "Which database?"
 
     fire '{"hook_event_name":"PostToolUse","session_id":"s1","cwd":"/x/my-proj","tool_name":"AskUserQuestion"}'
     check "answer resumes running" "$f" '.status' "running"
+    check "running has no prompt" "$f" '.prompt' "null"
 
-    fire '{"hook_event_name":"Notification","session_id":"s1","cwd":"/x/my-proj","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}'
+    local transcript="$state/t.jsonl"
+    printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"hi"},{"type":"tool_use","name":"Bash","input":{"command":"npm test\necho done"}}]}}' >"$transcript"
+    fire '{"hook_event_name":"Notification","session_id":"s1","cwd":"/x/my-proj","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash","transcript_path":"'"$transcript"'"}'
     check "permission prompt is waiting" "$f" '.status' "waiting"
+    check "permission prompt names the tool call" "$f" '.prompt' "Allow Bash: npm test"
+    fire '{"hook_event_name":"Notification","session_id":"s1","cwd":"/x/my-proj","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}'
+    check "permission prompt without a transcript says what Claude said" "$f" '.prompt' "Claude needs your permission to use Bash"
 
     fire '{"hook_event_name":"Stop","session_id":"s1","cwd":"/x/my-proj"}'
     check "stop is done" "$f" '.status' "done"
