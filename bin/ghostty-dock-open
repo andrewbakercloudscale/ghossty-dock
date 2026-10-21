@@ -94,8 +94,14 @@ function main() {
 
     exit_on_missing_tools "${DEPENDENCIES[@]}"
 
+    local shown="${launcher:-$command}"
     if [ -z "$command" ] && [ -n "$launcher" ]; then
         command="$(shell_quote "$launcher") $(shell_quote "$folder")"
+    elif [ -n "$command" ]; then
+        # Ghostty runs the command without a profile, with the app's PATH:
+        # only /usr/bin:/bin when it was started from Finder or launchd, so a
+        # bare `claude` is not found. Give it the usual tool folders.
+        command="/usr/bin/env $(shell_quote "PATH=$(command_path)") $command"
     fi
 
     if ! ensure_ghostty_running; then
@@ -111,7 +117,17 @@ function main() {
         fallback_new_app "$launcher" "$folder" "$command"
         exit 0
     fi
-    record_tab "$dock_id" "$result" "${launcher:-$command}" "$folder"
+    record_tab "$dock_id" "$result" "$shown" "$folder"
+}
+
+# The caller's PATH with the usual tool folders in front, once each.
+function command_path() {
+    local dir out=""
+    local IFS=:
+    for dir in "$HOME/.local/bin" /opt/homebrew/bin /usr/local/bin $PATH; do
+        case ":$out:" in *":$dir:"*) ;; *) out="${out:+$out:}$dir" ;; esac
+    done
+    echo "$out"
 }
 
 # Starts Ghostty without a window when it is not running, and waits until it

@@ -149,6 +149,43 @@ function restore() {
     done <<<"$sessions"
 }
 
+# Terminals opened while the screen is off fail to start (Metal cannot make
+# their surfaces: "error initializing surface err=error.OutOfMemory"), so a
+# restart while you are away waits for the screen to come back on.
+function display_on() {
+    [ "$(pmset -g log 2>/dev/null | grep -E "Display is turned (on|off)" | tail -1 | grep -oE "(on|off) *$" | tr -d ' ')" != "off" ]
+}
+
+function wait_for_display() {
+    display_on && return 0
+    log "waiting for the screen to come on"
+    until display_on; do sleep 15; done
+    log "screen is on"
+    sleep 5
+}
+
+# Opens a tab resuming each session, then checks they started and tries the
+# missing ones once more.
+function resume_all() {
+    local sessions="$1"
+    local cwd sid flags
+    while IFS=$'\t' read -r cwd sid flags; do
+        [ -z "$sid" ] && continue
+        log "resuming $(basename "$cwd")"
+        "$OPENER" --command "caffeinate -i claude --resume $sid $flags" "$cwd" >>"$LOG" 2>&1 \
+            || log "$(basename "$cwd"): opening the tab failed"
+    done <<<"$sessions"
+    sleep 20
+    while IFS=$'\t' read -r cwd sid flags; do
+        [ -z "$sid" ] && continue
+        running_anywhere "$sid" && continue
+        log "$(basename "$cwd") did not start; trying again"
+        wait_for_display
+        "$OPENER" --command "caffeinate -i claude --resume $sid $flags" "$cwd" >>"$LOG" 2>&1 \
+            || log "$(basename "$cwd"): opening the tab failed"
+    done <<<"$sessions"
+}
+
 function restart() {
     local now="$1"
     local dry="$2"
@@ -161,6 +198,7 @@ function restart() {
     log "$(grep -c . <<<"$sessions") session(s) to resume"
     $dry && { printf '%s' "$sessions"; return 0; }
     $now || wait_until_quiet "$sessions" || return 1
+    wait_for_display
 
     # What scripts/undo.sh reopens if this goes wrong.
     local c s f
@@ -180,13 +218,7 @@ function restart() {
 
     # The opener starts the app with window-save-state=never, so it comes up
     # with only these tabs.
-    local cwd sid flags
-    while IFS=$'\t' read -r cwd sid flags; do
-        [ -z "$sid" ] && continue
-        log "resuming $(basename "$cwd")"
-        "$OPENER" --command "caffeinate -i claude --resume $sid $flags" "$cwd" >>"$LOG" 2>&1 \
-            || log "$(basename "$cwd"): opening the tab failed"
-    done <<<"$sessions"
+    resume_all "$sessions"
     log "done"
 }
 
