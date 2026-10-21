@@ -804,10 +804,10 @@ index 0000000..fbba1d2
 +}
 diff --git a/macos/Sources/Features/Dock/DockSearch.swift b/macos/Sources/Features/Dock/DockSearch.swift
 new file mode 100644
-index 0000000..dfd8ad5
+index 0000000..2b66815
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSearch.swift
-@@ -0,0 +1,221 @@
+@@ -0,0 +1,230 @@
 +import AppKit
 +import SwiftUI
 +
@@ -819,7 +819,9 @@ index 0000000..dfd8ad5
 +    private var monitor: Any?
 +    private let state = DockSearchState()
 +
-+    func show() {
++    /// Drops down from `anchor` (the magnifier, in screen coordinates), or
++    /// from the sidebar's header when opened with ⌘P.
++    func show(below anchor: NSPoint? = nil) {
 +        if panel == nil {
 +            let p = DockKeyPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 360),
 +                                 styleMask: [.titled, .fullSizeContentView],
@@ -838,9 +840,14 @@ index 0000000..dfd8ad5
 +        guard let panel else { return }
 +        state.query = ""
 +        state.index = 0
-+        if let anchor = NSApp.keyWindow ?? NSApp.mainWindow {
-+            let f = anchor.frame
-+            panel.setFrameOrigin(NSPoint(x: f.midX - panel.frame.width / 2, y: f.maxY - panel.frame.height - 90))
++        if let window = NSApp.keyWindow ?? NSApp.mainWindow {
++            let f = window.frame
++            let top = anchor ?? NSPoint(x: f.minX + 24, y: f.maxY - 52)
++            let screen = (window.screen ?? NSScreen.main)?.visibleFrame ?? f
++            let size = panel.frame.size
++            let x = min(max(top.x - 24, screen.minX + 8), screen.maxX - size.width - 8)
++            let y = max(top.y - 14 - size.height, screen.minY + 8)
++            panel.setFrameOrigin(NSPoint(x: x, y: y))
 +        } else {
 +            panel.center()
 +        }
@@ -994,6 +1001,8 @@ index 0000000..dfd8ad5
 +        }
 +        .frame(width: 520, height: 360)
 +        .background(DockPalette.mantle)
++        // No gap for the hidden title bar above the search field.
++        .ignoresSafeArea()
 +        .environment(\.colorScheme, DockPalette.scheme)
 +        .onAppear { focused = true }
 +    }
@@ -2228,7 +2237,7 @@ index 0000000..291ee5e
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..24d3e53
+index 0000000..13dde54
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
 @@ -0,0 +1,683 @@
@@ -2481,7 +2490,7 @@ index 0000000..24d3e53
 +                .disabled(updates.state == .installing)
 +                .dockTip(updates.latest.map { "Install \($0) from GitHub" } ?? "Install the latest version")
 +            }
-+            Button(action: { DockSearchPanel.shared.show() }) {
++            Button(action: { DockSearchPanel.shared.show(below: NSEvent.mouseLocation) }) {
 +                Image(systemName: "magnifyingglass").font(.system(size: 12, weight: .semibold))
 +            }
 +            .buttonStyle(.plain)
