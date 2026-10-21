@@ -3422,7 +3422,7 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..ab14185
+index 0000000..8567a97
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
 @@ -0,0 +1,804 @@
@@ -3661,16 +3661,16 @@ index 0000000..ab14185
 +            Spacer()
 +            if updates.restartPending && updates.state != .installing {
 +                Button(action: updates.confirmRestart) {
-+                    Text(updates.restarting ? "Restarting…" : "Restart")
-+                        .font(.system(size: 10.5, weight: .semibold))
++                    Image(systemName: updates.restarting ? "hourglass" : "arrow.clockwise")
++                        .font(.system(size: 11, weight: .bold))
 +                        .foregroundStyle(DockPalette.base)
-+                        .padding(.horizontal, 7)
-+                        .padding(.vertical, 2)
-+                        .background(Capsule().fill(DockPalette.green))
++                        .frame(width: 20, height: 20)
++                        .background(Circle().fill(DockPalette.green))
 +                }
 +                .buttonStyle(.plain)
 +                .disabled(updates.restarting)
-+                .dockTip("A newer build is installed: restart to use it, once sessions are quiet")
++                .dockTip(updates.restarting ? "Restarting once sessions are quiet…"
++                         : "Restart: a newer build is installed; restarts once sessions are quiet")
 +            }
 +            if updates.available || updates.state == .installing {
 +                Button(action: updates.confirmInstall) {
