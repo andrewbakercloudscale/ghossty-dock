@@ -1434,6 +1434,78 @@ index 0000000..4b8472f
 +        }, 1, &spec, nil, nil)
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockLoadingView.swift b/macos/Sources/Features/Dock/DockLoadingView.swift
+new file mode 100644
+index 0000000..5c3bff6
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockLoadingView.swift
+@@ -0,0 +1,66 @@
++import AppKit
++import SwiftUI
++
++/// Covers the window while the app starts and its sessions come back:
++/// the app icon in a turning gold ring, Loading… and how many are back.
++struct DockLoadingView: View {
++    @ObservedObject var model = DockSessions.shared
++    @State private var angle = 0.0
++    @State private var bob = false
++    @State private var dots = 0
++    private let tick = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
++
++    var body: some View {
++        ZStack {
++            DockPalette.base.opacity(0.97).ignoresSafeArea()
++            VStack(spacing: 22) {
++                ZStack {
++                    Circle()
++                        .stroke(DockPalette.surface, lineWidth: 5)
++                    Circle()
++                        .trim(from: 0, to: 0.7)
++                        .stroke(AngularGradient(colors: [DockRunningShimmer.gold.opacity(0),
++                                                         DockRunningShimmer.gold,
++                                                         Color(hex: 0xfff4c2)],
++                                                center: .center, startAngle: .zero, endAngle: .degrees(252)),
++                                style: StrokeStyle(lineWidth: 5, lineCap: .round))
++                        .rotationEffect(.degrees(angle))
++                        .shadow(color: DockRunningShimmer.gold.opacity(0.5), radius: 6)
++                    Image(nsImage: NSApp.applicationIconImage)
++                        .resizable()
++                        .frame(width: 72, height: 72)
++                        .offset(y: bob ? -4 : 4)
++                }
++                .frame(width: 120, height: 120)
++
++                Text("Loading" + String(repeating: ".", count: dots) + String(repeating: " ", count: 3 - dots))
++                    .font(.system(size: 22, weight: .semibold, design: .rounded))
++                    .monospacedDigit()
++                    .foregroundStyle(DockPalette.text)
++
++                if model.expected > 0 {
++                    VStack(spacing: 8) {
++                        ProgressView(value: Double(min(model.loaded, model.expected)), total: Double(model.expected))
++                            .tint(DockRunningShimmer.gold)
++                            .frame(width: 220)
++                        Text("\(min(model.loaded, model.expected)) of \(model.expected) sessions back")
++                            .font(.system(size: 12))
++                            .foregroundStyle(DockPalette.text.opacity(0.7))
++                    }
++                    .animation(.easeOut(duration: 0.3), value: model.loaded)
++                }
++
++                Button("Skip") { model.skipLoading() }
++                    .buttonStyle(.plain)
++                    .font(.system(size: 11))
++                    .foregroundStyle(DockPalette.text.opacity(0.5))
++            }
++        }
++        .environment(\.colorScheme, DockPalette.scheme)
++        .onReceive(tick) { _ in dots = (dots + 1) % 4 }
++        .onAppear {
++            withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) { angle = 360 }
++            withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { bob = true }
++        }
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockNotices.swift b/macos/Sources/Features/Dock/DockNotices.swift
 new file mode 100644
 index 0000000..9a04d08
@@ -2007,10 +2079,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..604fdd5
+index 0000000..6521353
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,892 @@
+@@ -0,0 +1,931 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -2115,6 +2187,15 @@ index 0000000..604fdd5
 +    /// Only rows in this state, from clicking its counter; nil shows all.
 +    @Published var statusFilter: Status?
 +
++    /// True while the app is starting and its sessions are still coming
++    /// back, so the window shows Loading… rather than half-filled rows.
++    @Published private(set) var loading = true
++    /// Sessions open at the last quit, from the restart script's record.
++    private(set) var expected = 0
++    private let launched = Date()
++    private var loadingCount = -1
++    private var loadingChanged = Date()
++
 +    /// The rows you can see: not in a folded group, and in the state
 +    /// filtered on.
 +    var visibleRows: [Row] {
@@ -2178,6 +2259,35 @@ index 0000000..604fdd5
 +        }
 +        collapsed = Set((UserDefaults.standard.string(forKey: DockSettings.collapsedKey) ?? "")
 +            .split(separator: "\n").map(String.init))
++        expected = ((try? String(contentsOf: stateDir.appendingPathComponent("open-sessions.tsv"), encoding: .utf8)) ?? "")
++            .split(separator: "\n").filter { $0.contains("\t") }.count
++    }
++
++    /// Sessions back with their cost read, for the Loading… screen.
++    var loaded: Int { rows.filter { r in r.sessionId.map { costs[$0] != nil } ?? false }.count }
++
++    func skipLoading() { loading = false }
++
++    /// Ends Loading… once every expected session is back, or nothing has
++    /// changed for a few seconds, or after 40 seconds whatever happens.
++    private func checkLoading(_ built: [Row]) {
++        guard loading else { return }
++        let ready = built.filter { r in r.sessionId.map { costs[$0] != nil } ?? false }.count
++        let pending = built.filter { $0.sessionId != nil }.count
++        if pending != loadingCount {
++            loadingCount = pending
++            loadingChanged = Date()
++            refreshCosts()
++        }
++        let age = Date().timeIntervalSince(launched)
++        let quiet = Date().timeIntervalSince(loadingChanged)
++        if (expected > 0 && ready >= expected && age > 1.5)
++            || (expected == 0 && age > 2 && quiet > 2)
++            || (age > 5 && quiet > 6 && ready >= pending)
++            || (age > 5 && quiet > 12)
++            || age > 40 {
++            loading = false
++        }
 +    }
 +
 +    func start() {
@@ -2581,6 +2691,7 @@ index 0000000..604fdd5
 +        notify(flat, appActive: appActive)
 +        noticeFailed(flat)
 +        if flat != rows { rows = flat }
++        checkLoading(flat)
 +        if grouped.map(\.id) != groups.map(\.id) || grouped.map(\.items) != groups.map(\.items) { groups = grouped }
 +        let badge = DockSettings.dockBadge && waitingCount > 0 ? "\(waitingCount)" : nil
 +        if NSApp.dockTile.badgeLabel != badge { NSApp.dockTile.badgeLabel = badge }
@@ -4855,10 +4966,20 @@ index 0000000..86cd02b
 +    }
 +}
 diff --git a/macos/Sources/Features/Terminal/TerminalView.swift b/macos/Sources/Features/Terminal/TerminalView.swift
-index b6e1c63..34e68ba 100644
+index b6e1c63..386c856 100644
 --- a/macos/Sources/Features/Terminal/TerminalView.swift
 +++ b/macos/Sources/Features/Terminal/TerminalView.swift
-@@ -79,6 +79,10 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
+@@ -44,6 +44,9 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
+     // The required view model
+     @ObservedObject var viewModel: ViewModel
+ 
++    /// For the Loading… screen while sessions come back at startup.
++    @ObservedObject private var dock = DockSessions.shared
++
+     // An optional delegate to receive information about terminal changes.
+     weak var delegate: (any TerminalViewDelegate)?
+ 
+@@ -79,6 +82,10 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                          DebugBuildWarningView()
                      }
  
@@ -4869,7 +4990,7 @@ index b6e1c63..34e68ba 100644
                      TerminalSplitTreeView(
                          tree: viewModel.surfaceTree,
                          action: { delegate?.performSplitAction($0) })
-@@ -103,6 +107,7 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
+@@ -103,6 +110,7 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                          }
                          .frame(idealWidth: lastFocusedSurface?.value?.initialSize?.width,
                                 idealHeight: lastFocusedSurface?.value?.initialSize?.height)
@@ -4877,6 +4998,24 @@ index b6e1c63..34e68ba 100644
                  }
                  // Ignore safe area to extend up in to the titlebar region if we have the "hidden" titlebar style
                  .ignoresSafeArea(.container, edges: ghostty.config.macosTitlebarStyle == .hidden ? .top : [])
+@@ -117,12 +125,17 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
+                     }
+                 }
+ 
++                if dock.loading {
++                    DockLoadingView().transition(.opacity)
++                }
++
+                 // Show update information above all else.
+                 if viewModel.updateOverlayIsVisible {
+                     UpdateOverlay()
+                 }
+             }
+             .frame(maxWidth: .greatestFiniteMagnitude, maxHeight: .greatestFiniteMagnitude)
++            .animation(.easeOut(duration: 0.4), value: dock.loading)
+         }
+     }
+ }
 diff --git a/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift b/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift
 index e19d671..ae08f36 100644
 --- a/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift	
