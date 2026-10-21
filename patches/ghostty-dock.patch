@@ -1,22 +1,5 @@
-diff --git a/macos/Sources/.omc/state/sessions/658a6aff-5a3e-4642-96fd-48580b1307f8/pre-tool-advisory-throttle.json b/macos/Sources/.omc/state/sessions/658a6aff-5a3e-4642-96fd-48580b1307f8/pre-tool-advisory-throttle.json
-new file mode 100644
-index 0000000..0aa0f24
---- /dev/null
-+++ b/macos/Sources/.omc/state/sessions/658a6aff-5a3e-4642-96fd-48580b1307f8/pre-tool-advisory-throttle.json
-@@ -0,0 +1,10 @@
-+{
-+  "version": 1,
-+  "entries": {
-+    "79a93d4a2f8f50b95f852280616242fee1855dc99a3c75211917f55e72e95fae": {
-+      "last_emitted_at_ms": 1792529466872,
-+      "message": "Use parallel execution for independent tasks. Use run_in_background for long operations (npm install, builds, tests)."
-+    }
-+  },
-+  "updated_at": "2026-10-20T20:51:06.872Z"
-+}
-\ No newline at end of file
 diff --git a/macos/Sources/App/macOS/AppDelegate.swift b/macos/Sources/App/macOS/AppDelegate.swift
-index b02337e..b50dc95 100644
+index b02337e..ebd22f3 100644
 --- a/macos/Sources/App/macOS/AppDelegate.swift
 +++ b/macos/Sources/App/macOS/AppDelegate.swift
 @@ -210,6 +210,11 @@ class AppDelegate: NSObject,
@@ -58,7 +41,30 @@ index b02337e..b50dc95 100644
  
          // If we have configuration errors, we need to show them.
          let c = ConfigurationErrorsController.sharedInstance
-@@ -941,7 +945,7 @@ class AppDelegate: NSObject,
+@@ -894,6 +898,12 @@ class AppDelegate: NSObject,
+         didReceive: UNNotificationResponse,
+         withCompletionHandler: () -> Void
+     ) {
++        // Ghostty Dock: a session's notification goes to its tab.
++        if let sid = didReceive.notification.request.content.userInfo[DockSessions.notificationSessionKey] as? String {
++            DockSessions.shared.select(sessionId: sid)
++            withCompletionHandler()
++            return
++        }
+         ghostty.handleUserNotification(response: didReceive)
+         withCompletionHandler()
+     }
+@@ -903,7 +913,8 @@ class AppDelegate: NSObject,
+         willPresent: UNNotification,
+         withCompletionHandler: (UNNotificationPresentationOptions) -> Void
+     ) {
+-        let shouldPresent = ghostty.shouldPresentNotification(notification: willPresent)
++        let shouldPresent = willPresent.request.content.userInfo[DockSessions.notificationSessionKey] != nil
++            || ghostty.shouldPresentNotification(notification: willPresent)
+         let options: UNNotificationPresentationOptions = shouldPresent ? [.banner, .sound] : []
+         withCompletionHandler(options)
+     }
+@@ -941,7 +952,7 @@ class AppDelegate: NSObject,
      // MARK: - IB Actions
  
      @IBAction func openConfig(_ sender: Any?) {
@@ -67,7 +73,7 @@ index b02337e..b50dc95 100644
      }
  
      @IBAction func reloadConfig(_ sender: Any?) {
-@@ -949,7 +953,10 @@ class AppDelegate: NSObject,
+@@ -949,7 +960,10 @@ class AppDelegate: NSObject,
      }
  
      @IBAction func checkForUpdates(_ sender: Any?) {
@@ -79,7 +85,7 @@ index b02337e..b50dc95 100644
          // UpdateSimulator.happyPath.simulate(with: updateViewModel)
      }
  
-@@ -970,7 +977,7 @@ class AppDelegate: NSObject,
+@@ -970,7 +984,7 @@ class AppDelegate: NSObject,
      }
  
      @IBAction func showAbout(_ sender: Any?) {
@@ -88,7 +94,7 @@ index b02337e..b50dc95 100644
      }
  
      @IBAction func showHelp(_ sender: Any) {
-@@ -1104,6 +1111,7 @@ extension AppDelegate {
+@@ -1104,6 +1118,7 @@ extension AppDelegate {
          // Note: This COULD Be done all in the xib file, but I find it easier to
          // modify this stuff as code.
          self.menuAbout?.setImageIfDesired(systemSymbolName: "info.circle")
@@ -444,6 +450,109 @@ index 0000000..3b654b9
 +        if DockUpdates.shared.lastCheck == nil { DockUpdates.shared.check() }
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockCost.swift b/macos/Sources/Features/Dock/DockCost.swift
+new file mode 100644
+index 0000000..44da088
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockCost.swift
+@@ -0,0 +1,97 @@
++import Foundation
++
++/// What a Claude Code session has cost so far, from its transcript, priced as
++/// the Claude Code Cost Sidebar prices it (its check-pricing.sh). Only
++/// Foundation, so tests/dock-logic can run it.
++///
++/// Transcripts reach tens of megabytes, so each file is read once and then
++/// only from where the last read stopped.
++final class DockCost {
++    /// (input, output) $ per million tokens.
++    static let prices: [String: (Double, Double)] = [
++        "claude-fable-5-1": (10, 50), "claude-fable-5": (10, 50),
++        "claude-mythos-5-1": (10, 50), "claude-mythos-5": (10, 50),
++        "claude-opus-5-5": (4, 20), "claude-opus-5": (5, 25),
++        "claude-opus-4-8": (5, 25), "claude-opus-4-7": (5, 25), "claude-opus-4-6": (5, 25),
++        "claude-sonnet-5-5": (2, 10), "claude-sonnet-5": (2, 10), "claude-sonnet-4-6": (3, 15),
++        "claude-haiku-5-5": (1, 5), "claude-haiku-4-5": (1, 5), "claude-haiku-4-5-20251001": (1, 5),
++    ]
++    /// Cache reads are a tenth of input except for these ($ per million).
++    static let cacheRead: [String: Double] = ["claude-opus-5-5": 0.20, "claude-fable-5-1": 0.25]
++
++    /// One transcript line's cost and its dedup key, if it is a priced
++    /// assistant message. Cache writes are 1.25x input (5 minute) and 2x
++    /// (1 hour); fast mode is 2x everything.
++    static func cost(ofLine line: Data) -> (key: String, dollars: Double)? {
++        guard let d = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
++              d["type"] as? String == "assistant",
++              let msg = d["message"] as? [String: Any],
++              let usage = msg["usage"] as? [String: Any],
++              let model = msg["model"] as? String,
++              let (pin, pout) = prices[model] else { return nil }
++        func n(_ v: Any?) -> Double { (v as? NSNumber)?.doubleValue ?? 0 }
++        let cc = usage["cache_creation"] as? [String: Any]
++        let cw1h = cc.map { n($0["ephemeral_1h_input_tokens"]) } ?? 0
++        let cw5m = cc.map { n($0["ephemeral_5m_input_tokens"]) } ?? n(usage["cache_creation_input_tokens"])
++        var dollars = (n(usage["input_tokens"]) * pin
++            + n(usage["output_tokens"]) * pout
++            + n(usage["cache_read_input_tokens"]) * (cacheRead[model] ?? pin * 0.1)
++            + cw1h * pin * 2 + cw5m * pin * 1.25) / 1e6
++        if usage["speed"] as? String == "fast" { dollars *= 2 }
++        let key = "\(msg["id"] as? String ?? "")|\(d["requestId"] as? String ?? "")"
++        return (key, dollars)
++    }
++
++    private struct FileState {
++        var offset: UInt64 = 0
++        var dollars: Double = 0
++    }
++
++    private var files: [String: FileState] = [:]
++    /// Message ids already counted: a message is written once per content
++    /// block, with the same usage each time.
++    private var counted: Set<String> = []
++
++    /// The session's cost: its transcript and its subagents' transcripts.
++    /// Reads only what was added since the last call.
++    func dollars(transcript: URL) -> Double {
++        var urls = [transcript]
++        let subagents = transcript.deletingPathExtension().appendingPathComponent("subagents")
++        if let names = try? FileManager.default.contentsOfDirectory(atPath: subagents.path) {
++            urls += names.filter { $0.hasSuffix(".jsonl") }.map { subagents.appendingPathComponent($0) }
++        }
++        return urls.reduce(0) { $0 + read($1) }
++    }
++
++    private func read(_ url: URL) -> Double {
++        var state = files[url.path] ?? FileState()
++        guard let h = try? FileHandle(forReadingFrom: url) else { return state.dollars }
++        defer { try? h.close() }
++        let end = (try? h.seekToEnd()) ?? 0
++        if end < state.offset { state = FileState() }   // rewritten
++        guard end > state.offset else { return state.dollars }
++        try? h.seek(toOffset: state.offset)
++        let data = h.readData(ofLength: Int(end - state.offset))
++        // Only whole lines; a half-written last line waits for next time.
++        guard let lastNewline = data.lastIndex(of: UInt8(ascii: "\n")) else { return state.dollars }
++        let usage = Data("\"usage\"".utf8)
++        var start = data.startIndex
++        while start <= lastNewline {
++            let stop = data[start...lastNewline].firstIndex(of: UInt8(ascii: "\n")) ?? lastNewline
++            let line = data[start..<stop]
++            if line.range(of: usage) != nil, let (key, dollars) = Self.cost(ofLine: Data(line)),
++               counted.insert(key).inserted {
++                state.dollars += dollars
++            }
++            start = stop + 1
++        }
++        state.offset += UInt64(lastNewline - data.startIndex + 1)
++        files[url.path] = state
++        return state.dollars
++    }
++
++    /// "$0.42", "$3.10", "$128".
++    static func format(_ dollars: Double) -> String {
++        dollars >= 100 ? String(format: "$%.0f", dollars) : String(format: "$%.2f", dollars)
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockHotKey.swift b/macos/Sources/Features/Dock/DockHotKey.swift
 new file mode 100644
 index 0000000..4b8472f
@@ -488,14 +597,417 @@ index 0000000..4b8472f
 +        }, 1, &spec, nil, nil)
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockOrdering.swift b/macos/Sources/Features/Dock/DockOrdering.swift
+new file mode 100644
+index 0000000..fbba1d2
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockOrdering.swift
+@@ -0,0 +1,169 @@
++import Foundation
++
++/// What a tab is doing. Raw values are the urgency order: needs you first.
++enum DockStatus: Int, Comparable {
++    case waiting = 0, running, unread, idle, shell
++
++    static func < (a: DockStatus, b: DockStatus) -> Bool { a.rawValue < b.rawValue }
++}
++
++/// A colour you give a row, to mark it or to group by.
++enum DockTag: String, CaseIterable, Codable {
++    case red, orange, yellow, green, blue, purple, pink
++
++    var label: String { rawValue.capitalized }
++}
++
++/// How the sidebar orders and groups its rows. Only Foundation, so
++/// tests/dock-logic can run it without Ghostty or AppKit.
++enum DockOrdering {
++    /// How the sidebar lists sessions.
++    enum Order: String, CaseIterable {
++        /// By name, so rows stay put while their status changes.
++        case alphabetical
++        /// Needs you, then finished or idle (most recently stopped first),
++        /// then running, as those are busy without you.
++        case urgency
++        /// The same, with running sessions at the top instead.
++        case runningFirst
++        /// As the tabs are arranged.
++        case tabs
++        /// As you dragged them.
++        case manual
++
++        var label: String {
++            switch self {
++            case .alphabetical: return "Alphabetical (rows stay put)"
++            case .urgency: return "Needs you, then recently idle, running last"
++            case .runningFirst: return "Running first, then needs you, then recently idle"
++            case .tabs: return "Tab order"
++            case .manual: return "As you drag them"
++            }
++        }
++    }
++
++    /// How rows are folded under headings.
++    enum Grouping: String, CaseIterable {
++        case none, folder, colour
++
++        var label: String {
++            switch self {
++            case .none: return "No groups"
++            case .folder: return "By folder (the project's parent)"
++            case .colour: return "By colour"
++            }
++        }
++    }
++
++    /// What sorting needs to know about a row.
++    struct Facts {
++        var key: String
++        var name: String
++        var status: DockStatus
++        var since: Date?
++        /// Window (first seen) and tab index, for tab order and ties.
++        var place: [Int]
++        var pinned = false
++    }
++
++    /// Pinned rows first, then by the chosen order. `manual` is the keys in
++    /// the order you dragged them; rows not in it go after, in tab order.
++    static func sorted<T>(_ items: [T], order: Order, manual: [String] = [], facts: (T) -> Facts) -> [T] {
++        let manualIndex = Dictionary(manual.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
++        // Finished and idle are one group, most recently stopped first.
++        func group(_ s: DockStatus) -> Int {
++            switch (s, order) {
++            case (.running, .runningFirst): return 0
++            case (.waiting, _): return 1
++            case (.unread, _), (.idle, _): return 2
++            case (.running, _): return 3
++            case (.shell, _): return 4
++            }
++        }
++        let keyed = items.map { (item: $0, f: facts($0)) }
++        return keyed.sorted { x, y in
++            let a = x.f, b = y.f
++            if a.pinned != b.pinned { return a.pinned }
++            switch order {
++            case .alphabetical:
++                let c = a.name.localizedCaseInsensitiveCompare(b.name)
++                if c != .orderedSame { return c == .orderedAscending }
++            case .urgency, .runningFirst:
++                if group(a.status) != group(b.status) { return group(a.status) < group(b.status) }
++                if group(a.status) == 2, let s = a.since, let t = b.since, s != t { return s > t }
++            case .manual:
++                switch (manualIndex[a.key], manualIndex[b.key]) {
++                case let (i?, j?) where i != j: return i < j
++                case (_?, nil): return true
++                case (nil, _?): return false
++                default: break
++                }
++            case .tabs:
++                break
++            }
++            return a.place.lexicographicallyPrecedes(b.place)
++        }.map(\.item)
++    }
++
++    /// The hand-made order after dragging `key` to just before `target`
++    /// (to the end when nil). `visible` is every row's key as shown now, so
++    /// the first drag starts from what you see.
++    static func move(_ key: String, before target: String?, visible: [String], manual: [String]) -> [String] {
++        var list = manual.filter(visible.contains)
++        for k in visible where !list.contains(k) { list.append(k) }
++        list.removeAll { $0 == key }
++        if let target, let i = list.firstIndex(of: target) {
++            list.insert(key, at: i)
++        } else {
++            list.append(key)
++        }
++        // Keep rows that are closed for now, so they come back where they were.
++        return list + manual.filter { !list.contains($0) }
++    }
++
++    struct Group<T> {
++        var id: String
++        var title: String
++        var items: [T]
++    }
++
++    /// The rows under headings, each group in the order the rows come in.
++    /// Pinned rows make a group of their own at the top.
++    static func grouped<T>(_ items: [T], by grouping: Grouping, pinned: (T) -> Bool,
++                           folder: (T) -> String?, tag: (T) -> DockTag?) -> [Group<T>] {
++        guard grouping != .none else { return [Group(id: "all", title: "", items: items)] }
++        var groups: [Group<T>] = []
++        let pins = items.filter(pinned)
++        if !pins.isEmpty { groups.append(Group(id: "pinned", title: "Pinned", items: pins)) }
++        let rest = items.filter { !pinned($0) }
++        switch grouping {
++        case .none:
++            break
++        case .folder:
++            let names = Set(rest.compactMap(folder)).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
++            for name in names {
++                groups.append(Group(id: "folder:" + name, title: name, items: rest.filter { folder($0) == name }))
++            }
++            let other = rest.filter { folder($0) == nil }
++            if !other.isEmpty { groups.append(Group(id: "folder:", title: "Other", items: other)) }
++        case .colour:
++            for t in DockTag.allCases {
++                let these = rest.filter { tag($0) == t }
++                if !these.isEmpty { groups.append(Group(id: "tag:" + t.rawValue, title: t.label, items: these)) }
++            }
++            let other = rest.filter { tag($0) == nil }
++            if !other.isEmpty { groups.append(Group(id: "tag:", title: "No colour", items: other)) }
++        }
++        return groups
++    }
++
++    /// The folder a project sits in, for grouping: ~/code/acme/api is "acme".
++    /// Claude's worktrees count as their project.
++    static func folder(ofProject path: String) -> String? {
++        var p = path
++        if let r = p.range(of: "/.claude/worktrees/") { p = String(p[..<r.lowerBound]) }
++        let parts = p.split(separator: "/")
++        guard parts.count >= 2 else { return nil }
++        return String(parts[parts.count - 2])
++    }
++}
+diff --git a/macos/Sources/Features/Dock/DockSearch.swift b/macos/Sources/Features/Dock/DockSearch.swift
+new file mode 100644
+index 0000000..dfd8ad5
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockSearch.swift
+@@ -0,0 +1,221 @@
++import AppKit
++import SwiftUI
++
++/// ⌘P: type part of a session's name, folder or question to jump to it.
++/// ↑↓ choose, Return goes, Esc closes.
++final class DockSearchPanel {
++    static let shared = DockSearchPanel()
++    private var panel: NSPanel?
++    private var monitor: Any?
++    private let state = DockSearchState()
++
++    func show() {
++        if panel == nil {
++            let p = DockKeyPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 360),
++                                 styleMask: [.titled, .fullSizeContentView],
++                                 backing: .buffered, defer: false)
++            p.titleVisibility = .hidden
++            p.titlebarAppearsTransparent = true
++            p.isMovableByWindowBackground = true
++            p.level = .floating
++            p.isReleasedWhenClosed = false
++            p.hidesOnDeactivate = true
++            p.contentViewController = NSHostingController(rootView: DockSearchView(state: state) { [weak self] in
++                self?.close()
++            })
++            panel = p
++        }
++        guard let panel else { return }
++        state.query = ""
++        state.index = 0
++        if let anchor = NSApp.keyWindow ?? NSApp.mainWindow {
++            let f = anchor.frame
++            panel.setFrameOrigin(NSPoint(x: f.midX - panel.frame.width / 2, y: f.maxY - panel.frame.height - 90))
++        } else {
++            panel.center()
++        }
++        NSApp.activate(ignoringOtherApps: true)
++        panel.makeKeyAndOrderFront(nil)
++        monitor = monitor ?? NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
++            guard let self, self.panel?.isKeyWindow == true else { return e }
++            switch Int(e.keyCode) {
++            case 125: self.state.step(1); return nil          // ↓
++            case 126: self.state.step(-1); return nil         // ↑
++            case 36, 76: self.state.go(); self.close(); return nil  // Return
++            case 53: self.close(); return nil                 // Esc
++            default: return e
++            }
++        }
++    }
++
++    func close() {
++        panel?.orderOut(nil)
++        if let monitor { NSEvent.removeMonitor(monitor) }
++        monitor = nil
++    }
++}
++
++/// A borderless-looking panel that can still take typing.
++private final class DockKeyPanel: NSPanel {
++    override var canBecomeKey: Bool { true }
++    override func resignKey() {
++        super.resignKey()
++        DockSearchPanel.shared.close()
++    }
++}
++
++final class DockSearchState: ObservableObject {
++    @Published var query = "" { didSet { index = 0 } }
++    @Published var index = 0
++
++    enum Hit: Identifiable {
++        case row(DockSessions.Row)
++        case undocked(DockSessions.Undocked)
++        case closed(DockSessions.Closed)
++
++        var id: String {
++            switch self {
++            case .row(let r): return "r" + r.key
++            case .undocked(let u): return "u\(u.pid)"
++            case .closed(let c): return "c" + c.sessionId
++            }
++        }
++    }
++
++    var hits: [Hit] {
++        let m = DockSessions.shared
++        let all = m.rows.map(Hit.row) + m.undocked.map(Hit.undocked)
++            + m.closed.reversed().map(Hit.closed)
++        let q = query.trimmingCharacters(in: .whitespaces)
++        guard !q.isEmpty else { return all }
++        return all
++            .compactMap { h -> (Hit, Int)? in
++                let fields: [String]
++                switch h {
++                case .row(let r): fields = [r.name, r.detail, r.prompt ?? "", r.tag?.label ?? ""]
++                case .undocked(let u): fields = [u.name, u.cwd]
++                case .closed(let c): fields = [c.name, c.folder]
++                }
++                let scores = fields.compactMap { Self.score(q, in: $0) }
++                return scores.max().map { (h, $0) }
++            }
++            .sorted { $0.1 > $1.1 }
++            .map(\.0)
++    }
++
++    /// Higher is better: a prefix beats a word start beats a substring beats
++    /// letters in order. Nil when the letters are not all there in order.
++    static func score(_ q: String, in text: String) -> Int? {
++        let t = text.lowercased(), q = q.lowercased()
++        if t.hasPrefix(q) { return 1000 - t.count }
++        if let r = t.range(of: q) {
++            let atWord = r.lowerBound == t.startIndex || !t[t.index(before: r.lowerBound)].isLetter
++            return (atWord ? 800 : 600) - t.count
++        }
++        var i = t.startIndex
++        for c in q {
++            guard let found = t[i...].firstIndex(of: c) else { return nil }
++            i = t.index(after: found)
++        }
++        return 300 - t.count
++    }
++
++    func step(_ by: Int) {
++        let n = hits.count
++        guard n > 0 else { return }
++        index = (index + by + n) % n
++    }
++
++    func go() {
++        let h = hits
++        guard h.indices.contains(index) else { return }
++        let m = DockSessions.shared
++        switch h[index] {
++        case .row(let r): m.select(r)
++        case .undocked(let u): m.show(u)
++        case .closed(let c): m.reopen(c)
++        }
++    }
++}
++
++struct DockSearchView: View {
++    @ObservedObject var state: DockSearchState
++    @ObservedObject var model = DockSessions.shared
++    var onClose: () -> Void
++    @FocusState private var focused: Bool
++
++    var body: some View {
++        let hits = state.hits
++        VStack(spacing: 0) {
++            HStack(spacing: 8) {
++                Image(systemName: "magnifyingglass").foregroundStyle(DockPalette.text)
++                TextField("Find a session", text: $state.query)
++                    .textFieldStyle(.plain)
++                    .font(.system(size: 16))
++                    .foregroundStyle(DockPalette.text)
++                    .focused($focused)
++            }
++            .padding(14)
++            Rectangle().fill(DockPalette.surface).frame(height: 1)
++            ScrollViewReader { proxy in
++                ScrollView {
++                    LazyVStack(spacing: 2) {
++                        ForEach(Array(hits.enumerated()), id: \.element.id) { i, hit in
++                            hitRow(hit, selected: i == state.index)
++                                .id(hit.id)
++                                .contentShape(Rectangle())
++                                .onTapGesture {
++                                    state.index = i
++                                    state.go()
++                                    onClose()
++                                }
++                        }
++                        if hits.isEmpty {
++                            Text("No session matches").font(.system(size: 13)).foregroundStyle(DockPalette.text)
++                                .padding(20)
++                        }
++                    }
++                    .padding(6)
++                }
++                .onChange(of: state.index) { i in
++                    if hits.indices.contains(i) { proxy.scrollTo(hits[i].id) }
++                }
++            }
++        }
++        .frame(width: 520, height: 360)
++        .background(DockPalette.mantle)
++        .environment(\.colorScheme, DockPalette.scheme)
++        .onAppear { focused = true }
++    }
++
++    @ViewBuilder
++    private func hitRow(_ hit: DockSearchState.Hit, selected: Bool) -> some View {
++        HStack(spacing: 10) {
++            switch hit {
++            case .row(let r):
++                DockStatusDot(status: r.status)
++                VStack(alignment: .leading, spacing: 1) {
++                    Text(r.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(DockPalette.text)
++                    Text(r.prompt ?? DockPalette.label(r.status))
++                        .font(.system(size: 11)).foregroundStyle(DockPalette.color(r.status)).lineLimit(1)
++                }
++            case .undocked(let u):
++                Image(systemName: "macwindow").foregroundStyle(DockPalette.grey).frame(width: 18)
++                VStack(alignment: .leading, spacing: 1) {
++                    Text(u.name).font(.system(size: 13)).foregroundStyle(DockPalette.grey)
++                    Text("Undocked").font(.system(size: 11)).foregroundStyle(DockPalette.grey)
++                }
++            case .closed(let c):
++                Image(systemName: "arrow.uturn.backward.circle").foregroundStyle(DockPalette.text).frame(width: 18)
++                VStack(alignment: .leading, spacing: 1) {
++                    Text(c.name).font(.system(size: 13)).foregroundStyle(DockPalette.text)
++                    Text("Closed · Return reopens it").font(.system(size: 11)).foregroundStyle(DockPalette.text)
++                }
++            }
++            Spacer(minLength: 0)
++        }
++        .padding(.horizontal, 10)
++        .padding(.vertical, 6)
++        .background(RoundedRectangle(cornerRadius: 7).fill(selected ? DockPalette.blue.opacity(0.24) : Color.clear))
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..fa00ead
+index 0000000..e42aac4
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,416 @@
+@@ -0,0 +1,642 @@
 +import AppKit
 +import Combine
++import UserNotifications
 +
 +/// Ghostty Dock: every tab of every terminal window, with the status of the
 +/// Claude Code session running in it, for the vertical tab sidebar.
@@ -510,15 +1022,13 @@ index 0000000..fa00ead
 +    static let surfaceEnv = "GHOSTTY_DOCK_SURFACE"
 +    static let finishedSecs = 10
 +
-+    enum Status: Int, Comparable {
-+        // Raw values are the sort order: needs you first.
-+        case waiting = 0, running, unread, idle, shell
-+
-+        static func < (a: Status, b: Status) -> Bool { a.rawValue < b.rawValue }
-+    }
++    typealias Status = DockStatus
 +
 +    struct Row: Identifiable, Equatable {
 +        let id: ObjectIdentifier
++        /// What its name, pin, colour and place are kept under: the session
++        /// id, so they survive a restart, else the folder.
++        var key: String
 +        var name: String
 +        var detail: String
 +        var status: Status
@@ -528,13 +1038,37 @@ index 0000000..fa00ead
 +        var sessionId: String?
 +        /// When its session was first started: its transcript's creation.
 +        var started: Date?
++        /// The folder claude was started in.
++        var project: String?
++        /// What it is waiting on: the question, or the tool call to allow.
++        var prompt: String?
++        var pinned = false
++        var tag: DockTag?
++        var renamed = false
 +        weak var controller: TerminalController?
 +
 +        static func == (a: Row, b: Row) -> Bool {
-+            a.id == b.id && a.name == b.name && a.detail == b.detail && a.status == b.status
++            a.id == b.id && a.key == b.key && a.name == b.name && a.detail == b.detail && a.status == b.status
 +                && a.since == b.since && a.selected == b.selected && a.sessionId == b.sessionId
-+                && a.started == b.started
++                && a.started == b.started && a.project == b.project && a.prompt == b.prompt
++                && a.pinned == b.pinned && a.tag == b.tag && a.renamed == b.renamed
 +        }
++    }
++
++    /// Your changes to a row: its name, pin and colour.
++    struct Meta: Codable, Equatable {
++        var name: String?
++        var pinned = false
++        var tag: DockTag?
++    }
++
++    /// A tab that was closed with a session in it, for Reopen Closed Tab.
++    struct Closed: Equatable {
++        var sessionId: String
++        var name: String
++        var folder: String
++        /// What claude was started with, besides the session id.
++        var flags = ""
 +    }
 +
 +    /// A Claude Code session running in a stock Ghostty app of its own.
@@ -547,7 +1081,20 @@ index 0000000..fa00ead
 +        var moving: Bool
 +    }
 +
++    /// Every row, in the order shown, groups flattened.
 +    @Published private(set) var rows: [Row] = []
++    /// The rows under their headings, as shown.
++    @Published private(set) var groups: [DockOrdering.Group<Row>] = []
++    /// Session id to what it has cost so far.
++    @Published private(set) var costs: [String: Double] = [:]
++    @Published private(set) var meta: [String: Meta] = [:]
++    @Published private(set) var closed: [Closed] = []
++    @Published var collapsed: Set<String> = []
++
++    /// The rows you can see: not in a folded group.
++    var visibleRows: [Row] {
++        groups.filter { !collapsed.contains($0.id) || $0.title.isEmpty }.flatMap(\.items)
++    }
 +
 +    /// Claude Code sessions in their own stock Ghostty app, from
 +    /// `ghostty-dock-move --list`, and the sessions it is moving out of here.
@@ -574,9 +1121,24 @@ index 0000000..fa00ead
 +    /// First-seen order of tabs, so rows keep their place within a status group.
 +    private var order: [ObjectIdentifier] = []
 +
++    /// Last status of each row, to notice when one starts needing you.
++    private var lastStatus: [String: Status] = [:]
++    /// Rows seen on the last refresh, to notice tabs that closed.
++    private var lastRows: [ObjectIdentifier: Row] = [:]
++    private let costMeter = DockCost()
++    private let costQueue = DispatchQueue(label: "ghostty-dock.cost", qos: .utility)
++    private var costTimer: Timer?
++    private var transcripts: [String: URL] = [:]
++
 +    private init() {
 +        seen = (try? JSONDecoder().decode([String: Int].self,
 +                                          from: Data(contentsOf: stateDir.appendingPathComponent("seen.json")))) ?? [:]
++        if let data = UserDefaults.standard.data(forKey: DockSettings.rowMetaKey),
++           let m = try? JSONDecoder().decode([String: Meta].self, from: data) {
++            meta = m
++        }
++        collapsed = Set((UserDefaults.standard.string(forKey: DockSettings.collapsedKey) ?? "")
++            .split(separator: "\n").map(String.init))
 +    }
 +
 +    func start() {
@@ -587,6 +1149,8 @@ index 0000000..fa00ead
 +        refreshMovable()
 +        startSessionRestore()
 +        watchSessions()
++        costTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in self?.refreshCosts() }
++        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.refreshCosts() }
 +        NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil,
 +                                               queue: .main) { [weak self] _ in self?.applySettings() }
 +        applySettings()
@@ -730,6 +1294,8 @@ index 0000000..fa00ead
 +        var name: String
 +        var claude_pid: Int32?
 +        var session_id: String?
++        var project: String?
++        var prompt: String?
 +    }
 +
 +    /// The creation date of session <id>'s transcript, in any project folder.
@@ -737,16 +1303,43 @@ index 0000000..fa00ead
 +        if let d = startedCache[sid] { return d }
 +        if let missed = startedMissed[sid], Date().timeIntervalSince(missed) < 30 { return nil }
 +        startedMissed[sid] = Date()
++        guard let file = transcript(sid),
++              let d = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.creationDate] as? Date
++        else { return nil }
++        startedCache[sid] = d
++        return d
++    }
++
++    /// Session <id>'s transcript, in whichever project folder it is.
++    private func transcript(_ sid: String) -> URL? {
++        if let url = transcripts[sid] { return url }
 +        let projects = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
 +        let dirs = (try? FileManager.default.contentsOfDirectory(at: projects, includingPropertiesForKeys: nil)) ?? []
 +        for dir in dirs {
 +            let file = dir.appendingPathComponent(sid + ".jsonl")
-+            if let d = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.creationDate] as? Date {
-+                startedCache[sid] = d
-+                return d
++            if FileManager.default.fileExists(atPath: file.path) {
++                transcripts[sid] = file
++                return file
 +            }
 +        }
 +        return nil
++    }
++
++    /// Each session's cost so far, read off the main thread: the first read
++    /// of a long transcript takes a moment.
++    private func refreshCosts() {
++        guard DockSettings.showCost else { return }
++        let files = rows.compactMap { r in r.sessionId.flatMap { sid in transcript(sid).map { (sid, $0) } } }
++        guard !files.isEmpty else { return }
++        costQueue.async { [weak self] in
++            guard let self else { return }
++            var found: [String: Double] = [:]
++            for (sid, url) in files { found[sid] = self.costMeter.dollars(transcript: url) }
++            DispatchQueue.main.async {
++                let merged = self.costs.merging(found) { _, new in new }
++                if merged != self.costs { self.costs = merged }
++            }
++        }
 +    }
 +
 +    func refresh() {
@@ -775,7 +1368,8 @@ index 0000000..fa00ead
 +            let onScreen = appActive && selected
 +
 +            // A tab with splits is one row: its most urgent session.
-+            var best: (status: Status, since: Int, name: String, key: String, sid: String?)?
++            var best: (status: Status, since: Int, name: String, key: String, sid: String?,
++                       project: String?, prompt: String?)?
 +            for surface in controller.surfaceTree {
 +                let key = surface.id.uuidString
 +                guard let s = sessions[key] else { continue }
@@ -793,7 +1387,10 @@ index 0000000..fa00ead
 +                    saveSeen()
 +                    status = .idle
 +                }
-+                if best == nil || status < best!.status { best = (status, s.since, s.name, key, s.session_id) }
++                if best == nil || status < best!.status {
++                    best = (status, s.since, s.name, key, s.session_id.flatMap { $0.isEmpty ? nil : $0 },
++                            s.project, s.prompt)
++                }
 +            }
 +
 +            let focused = controller.focusedSurface ?? controller.surfaceTree.first
@@ -802,12 +1399,20 @@ index 0000000..fa00ead
 +            let name = best?.name.isEmpty == false ? best!.name
 +                : !title.isEmpty ? title
 +                : (pwd as NSString).lastPathComponent
-+            built.append(Row(id: id, name: name.isEmpty ? "shell" : name, detail: pwd,
++            let key = best?.sid ?? "dir:" + pwd
++            let m = meta[key]
++            built.append(Row(id: id, key: key,
++                             name: m?.name ?? (name.isEmpty ? "shell" : name), detail: pwd,
 +                             status: best?.status ?? .shell,
 +                             since: best.map { Date(timeIntervalSince1970: TimeInterval($0.since)) },
 +                             selected: selected,
 +                             sessionId: best?.sid,
 +                             started: best?.sid.flatMap(started),
++                             project: best?.project,
++                             prompt: best?.status == .waiting ? best?.prompt : nil,
++                             pinned: m?.pinned ?? false,
++                             tag: m?.tag,
++                             renamed: m?.name != nil,
 +                             controller: controller))
 +        }
 +        order.removeAll { id in !built.contains { $0.id == id } }
@@ -819,28 +1424,10 @@ index 0000000..fa00ead
 +                .compactMap { order.firstIndex(of: $0) }.min() ?? 0
 +            return (first, tabs.firstIndex(of: w) ?? 0)
 +        }
-+        let sortOrder = DockSettings.order
-+        // Finished and idle are one group, most recently stopped first.
-+        func group(_ s: Status) -> Int {
-+            switch (s, sortOrder) {
-+            case (.running, .runningFirst): return 0
-+            case (.waiting, _): return 1
-+            case (.unread, _), (.idle, _): return 2
-+            case (.running, _): return 3
-+            case (.shell, _): return 4
-+            }
-+        }
-+        built.sort { a, b in
-+            if sortOrder == .alphabetical {
-+                let c = a.name.localizedCaseInsensitiveCompare(b.name)
-+                if c != .orderedSame { return c == .orderedAscending }
-+                return place(a) < place(b)
-+            }
-+            if sortOrder != .tabs {
-+                if group(a.status) != group(b.status) { return group(a.status) < group(b.status) }
-+                if group(a.status) == 2, let x = a.since, let y = b.since, x != y { return x > y }
-+            }
-+            return place(a) < place(b)
++        built = DockOrdering.sorted(built, order: DockSettings.order, manual: DockSettings.manualOrder) { r in
++            let p = place(r)
++            return DockOrdering.Facts(key: r.key, name: r.name, status: r.status, since: r.since,
++                                      place: [p.0, p.1], pinned: r.pinned)
 +        }
 +        for row in built where closeWhenEmpty[row.id] != nil {
 +            if row.status == .shell {
@@ -851,9 +1438,21 @@ index 0000000..fa00ead
 +            }
 +        }
 +        closeWhenEmpty = closeWhenEmpty.filter { id, _ in built.contains { $0.id == id } }
-+        if built != rows { rows = built }
++        let grouped = DockOrdering.grouped(built, by: DockSettings.grouping, pinned: \.pinned,
++                                           folder: { $0.project.flatMap(DockOrdering.folder(ofProject:)) },
++                                           tag: \.tag)
++        let flat = grouped.flatMap(\.items)
++        noticeClosed(flat)
++        notify(flat, appActive: appActive)
++        if flat != rows { rows = flat }
++        if grouped.map(\.id) != groups.map(\.id) || grouped.map(\.items) != groups.map(\.items) { groups = grouped }
 +        let badge = DockSettings.dockBadge && waitingCount > 0 ? "\(waitingCount)" : nil
 +        if NSApp.dockTile.badgeLabel != badge { NSApp.dockTile.badgeLabel = badge }
++    }
++
++    /// Brings up the tab holding session <sid>, as a notification's click does.
++    func select(sessionId sid: String) {
++        if let row = rows.first(where: { $0.sessionId == sid }) { select(row) }
 +    }
 +
 +    func select(_ row: Row) {
@@ -885,6 +1484,144 @@ index 0000000..fa00ead
 +        select(next)
 +    }
 +
++    // MARK: Your changes to rows
++
++    func setMeta(_ row: Row, _ change: (inout Meta) -> Void) {
++        var m = meta[row.key] ?? Meta()
++        change(&m)
++        meta[row.key] = m == Meta() ? nil : m
++        if let data = try? JSONEncoder().encode(meta) {
++            UserDefaults.standard.set(data, forKey: DockSettings.rowMetaKey)
++        }
++        refresh()
++    }
++
++    func togglePinned(_ row: Row) { setMeta(row) { $0.pinned.toggle() } }
++    func setTag(_ row: Row, _ tag: DockTag?) { setMeta(row) { $0.tag = tag } }
++
++    /// Asks for a new name; an empty one goes back to the folder's name.
++    func rename(_ row: Row) {
++        let alert = NSAlert()
++        alert.messageText = "Rename “\(row.name)”"
++        alert.informativeText = "Leave it empty to go back to the folder's name."
++        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
++        field.stringValue = row.renamed ? row.name : ""
++        field.placeholderString = row.name
++        alert.accessoryView = field
++        alert.addButton(withTitle: "Rename")
++        alert.addButton(withTitle: "Cancel")
++        alert.window.initialFirstResponder = field
++        guard alert.runModal() == .alertFirstButtonReturn else { return }
++        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
++        setMeta(row) { $0.name = name.isEmpty ? nil : name }
++    }
++
++    /// Drops `key`'s row just before `target`'s (at the end when nil) and
++    /// switches the sidebar to the order you drag.
++    func move(_ key: String, before target: String?) {
++        guard key != target else { return }
++        let list = DockOrdering.move(key, before: target, visible: rows.map(\.key), manual: DockSettings.manualOrder)
++        UserDefaults.standard.set(list, forKey: DockSettings.manualOrderKey)
++        if DockSettings.order != .manual {
++            UserDefaults.standard.set(DockOrdering.Order.manual.rawValue, forKey: DockSettings.orderKey)
++        }
++        refresh()
++    }
++
++    func toggleCollapsed(_ groupId: String) {
++        if collapsed.contains(groupId) { collapsed.remove(groupId) } else { collapsed.insert(groupId) }
++        UserDefaults.standard.set(collapsed.sorted().joined(separator: "\n"), forKey: DockSettings.collapsedKey)
++    }
++
++    // MARK: Reopen closed tab
++
++    /// Remembers sessions whose tab went away other than by Undock or Restart.
++    private func noticeClosed(_ now: [Row]) {
++        let present = Set(now.map(\.id))
++        for (id, row) in lastRows where !present.contains(id) {
++            guard let sid = row.sessionId, !undocking.contains(sid), !restarting.contains(sid),
++                  !now.contains(where: { $0.sessionId == sid }) else { continue }
++            closed.removeAll { $0.sessionId == sid }
++            var c = Closed(sessionId: sid, name: row.name, folder: row.project ?? row.detail)
++            // The restart record, saved every few seconds, still has it.
++            let saved = (try? String(contentsOf: stateDir.appendingPathComponent("open-sessions.tsv"), encoding: .utf8)) ?? ""
++            for line in saved.split(separator: "\n") {
++                let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
++                if f.count >= 2, f[1] == sid {
++                    c.folder = f[0]
++                    c.flags = f.count > 2 ? f[2] : ""
++                }
++            }
++            closed.append(c)
++            if closed.count > 20 { closed.removeFirst() }
++        }
++        lastRows = Dictionary(now.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
++    }
++
++    /// Resumes the last closed session in a new tab. False with none.
++    @discardableResult
++    func reopenClosed() -> Bool {
++        while let last = closed.last {
++            if rows.contains(where: { $0.sessionId == last.sessionId }) {
++                closed.removeLast()
++                continue
++            }
++            return reopen(last)
++        }
++        return false
++    }
++
++    /// Resumes a closed session in a new tab, with the flags it was started with.
++    @discardableResult
++    func reopen(_ c: Closed) -> Bool {
++        closed.removeAll { $0 == c }
++        let opener = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/ghostty-dock-open").path
++        guard FileManager.default.isExecutableFile(atPath: opener) else { return false }
++        let p = Process()
++        p.executableURL = URL(fileURLWithPath: "/bin/bash")
++        p.arguments = [opener, "--command", "caffeinate -i claude --resume \(c.sessionId) \(c.flags)", c.folder]
++        p.standardOutput = FileHandle.nullDevice
++        p.standardError = FileHandle.nullDevice
++        return (try? p.run()) != nil
++    }
++
++    // MARK: Notifications
++
++    /// A notification when a row starts needing you or finishes, unless you
++    /// are looking at it.
++    private func notify(_ now: [Row], appActive: Bool) {
++        let first = lastStatus.isEmpty && !now.isEmpty
++        var next: [String: Status] = [:]
++        for row in now {
++            next[row.key] = row.status
++            guard !first, let before = lastStatus[row.key], before != row.status,
++                  !(appActive && row.selected), let sid = row.sessionId else { continue }
++            if row.status == .waiting, DockSettings.notifyWaiting {
++                post(sid: sid, title: row.name, body: row.prompt ?? "Needs you")
++            } else if row.status == .unread, before == .running || before == .waiting, DockSettings.notifyFinished {
++                post(sid: sid, title: row.name,
++                     body: "Finished" + (costs[sid].map { " · " + DockCost.format($0) + " so far" } ?? ""))
++            }
++        }
++        lastStatus = next
++    }
++
++    static let notificationSessionKey = "ghosttyDockSession"
++
++    private func post(sid: String, title: String, body: String) {
++        let center = UNUserNotificationCenter.current()
++        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
++            guard granted else { return }
++            let content = UNMutableNotificationContent()
++            content.title = title
++            content.body = body
++            content.sound = .default
++            content.userInfo = [Self.notificationSessionKey: sid]
++            // One per session: a newer one replaces the last.
++            center.add(UNNotificationRequest(identifier: "ghostty-dock-" + sid, content: content, trigger: nil))
++        }
++    }
++
 +    private func saveSeen() {
 +        guard let data = try? JSONEncoder().encode(seen) else { return }
 +        try? data.write(to: stateDir.appendingPathComponent("seen.json"), options: .atomic)
@@ -912,10 +1649,10 @@ index 0000000..fa00ead
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..9fafe4a
+index 0000000..959e529
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,202 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -931,6 +1668,13 @@ index 0000000..9fafe4a
 +    static let sidebarWidthKey = "dock.sidebarWidth"
 +    static let restoreSessionsKey = "dock.restoreSessions"
 +    static let themeKey = "dock.theme"
++    static let groupingKey = "dock.grouping"
++    static let manualOrderKey = "dock.manualOrder"
++    static let rowMetaKey = "dock.rowMeta"
++    static let collapsedKey = "dock.collapsed"
++    static let showCostKey = "dock.showCost"
++    static let notifyWaitingKey = "dock.notifyWaiting"
++    static let notifyFinishedKey = "dock.notifyFinished"
 +
 +    static func register() {
 +        UserDefaults.standard.register(defaults: [
@@ -940,33 +1684,25 @@ index 0000000..9fafe4a
 +            jumpHotKeyKey: true,
 +            dockBadgeKey: true,
 +            restoreSessionsKey: true,
++            groupingKey: Grouping.none.rawValue,
++            showCostKey: true,
++            notifyWaitingKey: true,
++            notifyFinishedKey: true,
 +        ])
 +    }
 +
 +    static var showSidebar: Bool { UserDefaults.standard.bool(forKey: showSidebarKey) }
 +    static var order: Order { Order(rawValue: UserDefaults.standard.string(forKey: orderKey) ?? "") ?? .alphabetical }
 +
-+    /// How the sidebar lists sessions.
-+    enum Order: String, CaseIterable {
-+        /// By name, so rows stay put while their status changes.
-+        case alphabetical
-+        /// Needs you, then finished or idle (most recently stopped first),
-+        /// then running, as those are busy without you.
-+        case urgency
-+        /// The same, with running sessions at the top instead.
-+        case runningFirst
-+        /// As the tabs are arranged.
-+        case tabs
-+
-+        var label: String {
-+            switch self {
-+            case .alphabetical: return "Alphabetical (rows stay put)"
-+            case .urgency: return "Needs you, then recently idle, running last"
-+            case .runningFirst: return "Running first, then needs you, then recently idle"
-+            case .tabs: return "Tab order"
-+            }
-+        }
++    typealias Order = DockOrdering.Order
++    typealias Grouping = DockOrdering.Grouping
++    static var grouping: Grouping {
++        Grouping(rawValue: UserDefaults.standard.string(forKey: groupingKey) ?? "") ?? .none
 +    }
++    static var manualOrder: [String] { UserDefaults.standard.stringArray(forKey: manualOrderKey) ?? [] }
++    static var showCost: Bool { UserDefaults.standard.bool(forKey: showCostKey) }
++    static var notifyWaiting: Bool { UserDefaults.standard.bool(forKey: notifyWaitingKey) }
++    static var notifyFinished: Bool { UserDefaults.standard.bool(forKey: notifyFinishedKey) }
 +    static var showTabBar: Bool { UserDefaults.standard.bool(forKey: showTabBarKey) }
 +    static var jumpHotKey: Bool { UserDefaults.standard.bool(forKey: jumpHotKeyKey) }
 +    static var dockBadge: Bool { UserDefaults.standard.bool(forKey: dockBadgeKey) }
@@ -981,6 +1717,10 @@ index 0000000..9fafe4a
 +    @AppStorage(DockSettings.dockBadgeKey) private var dockBadge = true
 +    @AppStorage(DockSettings.restoreSessionsKey) private var restoreSessions = true
 +    @AppStorage(DockSettings.themeKey) private var theme = ""
++    @AppStorage(DockSettings.groupingKey) private var grouping = DockSettings.Grouping.none
++    @AppStorage(DockSettings.showCostKey) private var showCost = true
++    @AppStorage(DockSettings.notifyWaitingKey) private var notifyWaiting = true
++    @AppStorage(DockSettings.notifyFinishedKey) private var notifyFinished = true
 +    @ObservedObject private var updates = DockUpdates.shared
 +    @State private var startAtLogin = SMAppService.mainApp.status == .enabled
 +    @State private var loginError: String?
@@ -992,6 +1732,12 @@ index 0000000..9fafe4a
 +                Picker("Sort", selection: $order) {
 +                    ForEach(DockSettings.Order.allCases, id: \.self) { Text($0.label).tag($0) }
 +                }
++                Picker("Groups", selection: $grouping) {
++                    ForEach(DockSettings.Grouping.allCases, id: \.self) { Text($0.label).tag($0) }
++                }
++                Toggle("Show what each session has cost", isOn: $showCost)
++                Text("Drag a row to move it; the sort becomes “As you drag them”. Right-click a row to rename, pin or colour it.")
++                    .font(.callout)
 +                Toggle("Also show Ghostty's tab bar", isOn: $showTabBar)
 +            }
 +            Section("Theme") {
@@ -1010,6 +1756,10 @@ index 0000000..9fafe4a
 +                Text("Works from any app. With none waiting, it goes to the next finished one.")
 +                    .font(.callout)
 +                Toggle("Dock icon shows how many sessions need you", isOn: $dockBadge)
++                Toggle("Notify me when a session needs me", isOn: $notifyWaiting)
++                Toggle("Notify me when a session finishes", isOn: $notifyFinished)
++                Text("Not for the session on screen. Click a notification to go to its tab.")
++                    .font(.callout)
 +            }
 +            Section("Keyboard shortcuts") {
 +                ForEach(DockShortcuts.summary, id: \.0) { title, keys in
@@ -1107,10 +1857,10 @@ index 0000000..9fafe4a
 +}
 diff --git a/macos/Sources/Features/Dock/DockShortcuts.swift b/macos/Sources/Features/Dock/DockShortcuts.swift
 new file mode 100644
-index 0000000..690d975
+index 0000000..291ee5e
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockShortcuts.swift
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,102 @@
 +import AppKit
 +import Carbon
 +
@@ -1140,7 +1890,7 @@ index 0000000..690d975
 +        }
 +        list += [
 +            Shortcut(keys: "⌘9", title: "Go to Last Session", keyCode: kVK_ANSI_9,
-+                     modifiers: .command, needsSidebar: true) { go(to: model.rows.count - 1) },
++                     modifiers: .command, needsSidebar: true) { go(to: model.visibleRows.count - 1) },
 +            Shortcut(keys: "⌃⇥", title: "Next Session", keyCode: kVK_Tab,
 +                     modifiers: .control, needsSidebar: true) { step(1) },
 +            Shortcut(keys: "⌃⇧⇥", title: "Previous Session", keyCode: kVK_Tab,
@@ -1149,6 +1899,12 @@ index 0000000..690d975
 +                     modifiers: [.command, .shift], needsSidebar: true) { step(1) },
 +            Shortcut(keys: "⌘⇧[", title: "Previous Session", keyCode: kVK_ANSI_LeftBracket,
 +                     modifiers: [.command, .shift], needsSidebar: true) { step(-1) },
++            Shortcut(keys: "⌘⇧T", title: "Reopen Closed Session", keyCode: kVK_ANSI_T,
++                     modifiers: [.command, .shift]) {
++                if !model.reopenClosed() { NSSound.beep() }
++            },
++            Shortcut(keys: "⌘P", title: "Find a Session", keyCode: kVK_ANSI_P,
++                     modifiers: .command) { DockSearchPanel.shared.show() },
 +            Shortcut(keys: "⌘⇧J", title: "Next Session That Needs You", keyCode: kVK_ANSI_J,
 +                     modifiers: [.command, .shift]) { model.jumpToNextWaiting() },
 +            Shortcut(keys: "⌘⇧R", title: "Restart Session", keyCode: kVK_ANSI_R,
@@ -1168,6 +1924,8 @@ index 0000000..690d975
 +        ("Go to session 1–8, or the last", "⌘1–8, ⌘9"),
 +        ("Next / previous session", "⌃⇥ ⌃⇧⇥  or  ⌘⇧] ⌘⇧["),
 +        ("Next session that needs you", "⌘⇧J  (⌃⌥J from any app)"),
++        ("Find a session by name", "⌘P"),
++        ("Reopen the last closed session", "⌘⇧T"),
 +        ("Restart session", "⌘⇧R"),
 +        ("Undock session", "⌘⇧U"),
 +        ("Show or hide the sidebar", "⌘⇧S"),
@@ -1179,13 +1937,13 @@ index 0000000..690d975
 +    }
 +
 +    private static func go(to index: Int) {
-+        let rows = model.rows
++        let rows = model.visibleRows
 +        guard rows.indices.contains(index) else { NSSound.beep(); return }
 +        model.select(rows[index])
 +    }
 +
 +    private static func step(_ by: Int) {
-+        let rows = model.rows
++        let rows = model.visibleRows
 +        guard !rows.isEmpty else { return }
 +        let at = rows.firstIndex(where: \.selected) ?? (by > 0 ? -1 : 0)
 +        model.select(rows[(at + by + rows.count) % rows.count])
@@ -1198,18 +1956,22 @@ index 0000000..690d975
 +        let mods = event.modifierFlags.intersection([.command, .shift, .control, .option])
 +        guard let s = all.first(where: { Int(event.keyCode) == $0.keyCode && $0.modifiers == mods }),
 +              !s.needsSidebar || DockSettings.showSidebar else { return false }
++        // Ghostty's own undo brings a just-closed tab back alive, for a few
++        // seconds; after that, ours resumes the session.
++        if s.keyCode == kVK_ANSI_T, (NSApp.delegate as? AppDelegate)?.undoManager.canUndo == true { return false }
 +        s.action()
 +        return true
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..edde607
+index 0000000..3ee0db7
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,492 @@
+@@ -0,0 +1,625 @@
 +import AppKit
 +import SwiftUI
++import UniformTypeIdentifiers
 +
 +/// The sidebar's colours, from the chosen theme (Catppuccin Mocha unless
 +/// Settings says otherwise). All text is DockPalette.text or a status colour;
@@ -1241,6 +2003,19 @@ index 0000000..edde607
 +        }
 +    }
 +
++    /// A colour you gave a row.
++    static func color(_ t: DockTag) -> Color {
++        switch t {
++        case .red: return Color(hex: 0xf0566a)
++        case .orange: return Color(hex: 0xf5913e)
++        case .yellow: return Color(hex: 0xe8c547)
++        case .green: return Color(hex: 0x4cc46a)
++        case .blue: return Color(hex: 0x4a90e8)
++        case .purple: return Color(hex: 0xa66cf0)
++        case .pink: return Color(hex: 0xf06cb4)
++        }
++    }
++
 +    static func label(_ s: DockSessions.Status) -> String {
 +        switch s {
 +        case .running: return "Running"
@@ -1260,7 +2035,9 @@ index 0000000..edde607
 +    @AppStorage(DockSettings.showSidebarKey) private var show = true
 +    @AppStorage(DockSettings.themeKey) private var themeName = ""
 +    @AppStorage(DockSettings.sidebarWidthKey) private var width = Double(Self.width)
++    @AppStorage(DockSettings.showCostKey) private var showCost = true
 +    @State private var dragStart: Double?
++    @State private var dropTarget: String?
 +    var onNewTab: () -> Void
 +
 +    static let width: CGFloat = 220
@@ -1275,15 +2052,20 @@ index 0000000..edde607
 +            header
 +            ScrollView {
 +                LazyVStack(spacing: 2) {
-+                    ForEach(model.rows) { row in
-+                        DockRowView(row: row,
-+                                    undocking: row.sessionId.map(model.undocking.contains) ?? false,
-+                                    restarting: row.sessionId.map(model.restarting.contains) ?? false,
-+                                    onClose: { model.closeTab(row) },
-+                                    onUndock: { model.undock(row) },
-+                                    onRestart: { model.restart(row) })
-+                            .onTapGesture { model.select(row) }
++                    ForEach(model.groups, id: \.id) { group in
++                        if !group.title.isEmpty {
++                            DockGroupHeader(group: group, collapsed: model.collapsed.contains(group.id)) {
++                                withAnimation(.easeOut(duration: 0.15)) { model.toggleCollapsed(group.id) }
++                            }
++                        }
++                        if group.title.isEmpty || !model.collapsed.contains(group.id) {
++                            ForEach(group.items) { row in rowView(row) }
++                        }
 +                    }
++                    // Drop here to move a row to the end.
++                    Color.clear.frame(height: 14)
++                        .overlay(alignment: .top) { dropLine(dropTarget == "") }
++                        .onDrop(of: [.text], delegate: DockRowDrop(target: nil, hovered: $dropTarget))
 +                    if !model.undocked.isEmpty {
 +                        HStack {
 +                            Text("Undocked").font(.system(size: 11, weight: .semibold)).foregroundStyle(DockPalette.grey)
@@ -1308,6 +2090,25 @@ index 0000000..edde607
 +        .overlay(alignment: .trailing) { resizeHandle }
 +        .environment(\.colorScheme, DockPalette.scheme)
 +        .id(themeName)
++    }
++
++    private func rowView(_ row: DockSessions.Row) -> some View {
++        DockRowView(row: row,
++                    cost: showCost ? row.sessionId.flatMap { model.costs[$0] } : nil,
++                    undocking: row.sessionId.map(model.undocking.contains) ?? false,
++                    restarting: row.sessionId.map(model.restarting.contains) ?? false,
++                    onClose: { model.closeTab(row) },
++                    onUndock: { model.undock(row) },
++                    onRestart: { model.restart(row) })
++            .onTapGesture { model.select(row) }
++            .onDrag { NSItemProvider(object: row.key as NSString) }
++            .onDrop(of: [.text], delegate: DockRowDrop(target: row.key, hovered: $dropTarget))
++            .overlay(alignment: .top) { dropLine(dropTarget == row.key).offset(y: -2) }
++    }
++
++    /// Where a dragged row will land.
++    private func dropLine(_ shown: Bool) -> some View {
++        RoundedRectangle(cornerRadius: 1).fill(DockPalette.blue).frame(height: 2).opacity(shown ? 1 : 0)
 +    }
 +
 +    /// Drag the sidebar's right edge to resize it; double-click resets it.
@@ -1375,6 +2176,12 @@ index 0000000..edde607
 +                .disabled(updates.state == .installing)
 +                .dockTip(updates.latest.map { "Install \($0) from GitHub" } ?? "Install the latest version")
 +            }
++            Button(action: { DockSearchPanel.shared.show() }) {
++                Image(systemName: "magnifyingglass").font(.system(size: 12, weight: .semibold))
++            }
++            .buttonStyle(.plain)
++            .foregroundStyle(DockPalette.text)
++            .help("Find a session (⌘P)")
 +            Button(action: onNewTab) {
 +                Image(systemName: "plus").font(.system(size: 12, weight: .semibold))
 +            }
@@ -1438,6 +2245,7 @@ index 0000000..edde607
 +
 +struct DockRowView: View {
 +    var row: DockSessions.Row
++    var cost: Double?
 +    var undocking: Bool
 +    var restarting: Bool
 +    var onClose: () -> Void
@@ -1450,16 +2258,33 @@ index 0000000..edde607
 +        HStack(spacing: 9) {
 +            DockStatusDot(status: row.status).id(row.status)
 +            VStack(alignment: .leading, spacing: 1) {
-+                Text(row.name)
-+                    .font(.system(size: 13, weight: row.selected ? .semibold : .regular))
-+                    .foregroundStyle(DockPalette.text)
-+                    .lineLimit(1)
-+                    .truncationMode(.middle)
++                HStack(spacing: 4) {
++                    if row.pinned {
++                        Image(systemName: "pin.fill").font(.system(size: 8.5, weight: .bold))
++                            .foregroundStyle(DockPalette.text)
++                    }
++                    Text(row.name)
++                        .font(.system(size: 13, weight: row.selected ? .semibold : .regular))
++                        .foregroundStyle(DockPalette.text)
++                        .lineLimit(1)
++                        .truncationMode(.middle)
++                    if let tag = row.tag {
++                        Circle().fill(DockPalette.color(tag)).frame(width: 7, height: 7)
++                    }
++                }
 +                TimelineView(.periodic(from: .now, by: 30)) { ctx in
 +                    Text(subtitle(now: ctx.date))
 +                        .font(.system(size: 10.5))
 +                        .foregroundStyle(DockPalette.color(row.status))
 +                        .lineLimit(1)
++                }
++                // What it is waiting on, so you know before you switch.
++                if let prompt = row.prompt {
++                    Text(prompt)
++                        .font(.system(size: 10.5, weight: .medium))
++                        .foregroundStyle(DockPalette.text)
++                        .lineLimit(2)
++                        .truncationMode(.tail)
 +                }
 +            }
 +            Spacer(minLength: 0)
@@ -1509,8 +2334,23 @@ index 0000000..edde607
 +        }
 +        .contentShape(Rectangle())
 +        .onHover { hover = $0 }
-+        .help(row.detail.isEmpty ? row.name : row.detail)
++        .help([row.detail.isEmpty ? row.name : row.detail, row.prompt].compactMap { $0 }.joined(separator: "\n"))
 +        .contextMenu {
++            let model = DockSessions.shared
++            Button("Rename…") { model.rename(row) }
++            Button(row.pinned ? "Unpin" : "Pin to the Top") { model.togglePinned(row) }
++            Menu("Colour") {
++                ForEach(DockTag.allCases, id: \.self) { tag in
++                    Button {
++                        model.setTag(row, row.tag == tag ? nil : tag)
++                    } label: {
++                        Label(tag.label, systemImage: row.tag == tag ? "checkmark.circle.fill" : "circle.fill")
++                    }
++                }
++                Divider()
++                Button("None") { model.setTag(row, nil) }.disabled(row.tag == nil)
++            }
++            Divider()
 +            if row.sessionId != nil {
 +                Button("Restart Session", action: onRestart).disabled(restarting)
 +                Button("Undock to Its Own Window", action: onUndock).disabled(undocking)
@@ -1525,6 +2365,7 @@ index 0000000..edde607
 +        if let since = row.since { parts.append(elapsed(now.timeIntervalSince(since))) }
 +        // How long the session has existed, across restarts.
 +        if let started = row.started { parts.append("Age " + age(now.timeIntervalSince(started))) }
++        if let cost { parts.append(DockCost.format(cost)) }
 +        return parts.joined(separator: " · ")
 +    }
 +
@@ -1541,6 +2382,59 @@ index 0000000..edde607
 +        if s < 3600 { return "\(max(1, s / 60))m" }
 +        if s < 86_400 { return "\(s / 3600)h \(s % 3600 / 60)m" }
 +        return "\(s / 86_400)d \(s % 86_400 / 3600)h"
++    }
++}
++
++/// A group's heading: click to fold it. Folded, it still shows how many of
++/// its sessions need you.
++struct DockGroupHeader: View {
++    var group: DockOrdering.Group<DockSessions.Row>
++    var collapsed: Bool
++    var onToggle: () -> Void
++
++    var body: some View {
++        let waiting = group.items.filter { $0.status == .waiting }.count
++        HStack(spacing: 5) {
++            Image(systemName: "chevron.right")
++                .font(.system(size: 8.5, weight: .bold))
++                .rotationEffect(.degrees(collapsed ? 0 : 90))
++            if let tag = DockTag(rawValue: String(group.id.dropFirst(4))), group.id.hasPrefix("tag:") {
++                Circle().fill(DockPalette.color(tag)).frame(width: 7, height: 7)
++            }
++            Text(group.title).font(.system(size: 11, weight: .semibold)).lineLimit(1)
++            Text("\(group.items.count)").font(.system(size: 10.5, weight: .semibold)).monospacedDigit()
++            Spacer(minLength: 0)
++            if waiting > 0 {
++                DockCounter(symbol: DockStatusDot.symbol(.waiting), count: waiting, color: DockPalette.peach)
++            }
++        }
++        .foregroundStyle(DockPalette.text)
++        .padding(.horizontal, 8)
++        .padding(.top, 8)
++        .padding(.bottom, 2)
++        .contentShape(Rectangle())
++        .onTapGesture(perform: onToggle)
++    }
++}
++
++/// Dropping a dragged row: it goes just before the row it lands on.
++struct DockRowDrop: DropDelegate {
++    var target: String?
++    @Binding var hovered: String?
++
++    func dropEntered(info: DropInfo) { hovered = target ?? "" }
++    func dropExited(info: DropInfo) { if hovered == (target ?? "") { hovered = nil } }
++    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
++
++    func performDrop(info: DropInfo) -> Bool {
++        hovered = nil
++        guard let provider = info.itemProviders(for: [.text]).first else { return false }
++        let target = target
++        _ = provider.loadObject(ofClass: NSString.self) { obj, _ in
++            guard let key = obj as? String else { return }
++            DispatchQueue.main.async { DockSessions.shared.move(key, before: target) }
++        }
++        return true
 +    }
 +}
 +

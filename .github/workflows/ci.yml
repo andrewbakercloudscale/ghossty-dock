@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Mondays: does the patch still apply to the newest Ghostty release?
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  hook:
+    name: Hook tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tests/hook-test.sh
+
+  patch:
+    name: Patch applies to Ghostty
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tests/patch-test.sh --latest
+
+  swift:
+    name: Swift tests
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply the patch to the pinned Ghostty
+        run: |
+          tag=$(sed -nE 's/^GHOSTTY_TAG="(.*)"/\1/p' scripts/build-terminal.sh)
+          git clone -q --depth 1 --branch "$tag" https://github.com/ghostty-org/ghostty vendor/ghostty
+          git -C vendor/ghostty apply "$PWD/patches/ghostty-dock.patch"
+      - name: Sidebar ordering, grouping and cost
+        run: swift test --package-path tests/dock-logic
+      - name: DockCore
+        run: swift test

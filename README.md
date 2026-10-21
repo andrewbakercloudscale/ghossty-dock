@@ -40,6 +40,23 @@ reports each session's status.
   Same as `ghostty-dock-move --pid <pid>`, `--undock <session id>`, `--detach`.
 - Ctrl-Opt-J: jump to the next session that needs you (then finished ones).
 - Dock badge: how many sessions need you.
+- **What it's waiting on**: a row that needs you shows the question, or the
+  tool call to allow ("Allow Bash: npm test"), so you know before you switch.
+- **Cost**: each row ends with what the session has cost so far, subagents
+  included, priced like the Cost Sidebar below. Off in Settings.
+- **Notifications** when a session needs you or finishes, unless you are
+  looking at it. Click one to go to its tab. Each can be turned off.
+- **Find (⌘P or the magnifier)**: type part of a name, folder or question;
+  ↑↓ and Return. Closed sessions are in the list too.
+- **Reopen closed (⌘⇧T)**: within a few seconds Ghostty brings the tab back as
+  it was; after that, the session is resumed in a new tab with its old flags.
+- **Right-click a row** to rename it, pin it to the top or give it a colour.
+  These stick to the session, across restarts.
+- **Drag rows** to put them in your own order (the sort becomes "As you drag
+  them").
+- **Groups** (Settings): fold rows under their folder (the project's parent
+  folder) or their colour. Click a heading to fold it; a folded group still
+  shows how many need you.
 
 ## Keyboard shortcuts
 
@@ -51,6 +68,8 @@ reports each session's status.
 | ⌘⇧R | Restart this session |
 | ⌘⇧U | Undock this session to its own window |
 | ⌘⇧S | Show or hide the sidebar |
+| ⌘P | Find a session by name, folder or question |
+| ⌘⇧T | Reopen the last closed session |
 
 While the sidebar is hidden, ⌘1–9 and the next/previous keys are Ghostty's
 own again (tab order). Everything else in Ghostty (⌘T, ⌘W, splits) is unchanged.
@@ -73,10 +92,13 @@ loads.
 | Setting | Default | What it does |
 |---|---|---|
 | Show the sessions sidebar | on | The tab list on the left. Off gives you plain Ghostty tabs. |
-| Sort | Alphabetical | **Alphabetical**: by name, rows never move. **Needs you first**: needs you, then most recently idle, running last. **Running first**: running, then needs you, then idle. **Tab order**: as the tabs are arranged. |
+| Sort | Alphabetical | **Alphabetical**: by name, rows never move. **Needs you first**: needs you, then most recently idle, running last. **Running first**: running, then needs you, then idle. **Tab order**: as the tabs are arranged. **As you drag them**: your own order; dragging a row switches to it. |
+| Groups | No groups | Fold rows under their **folder** (the project's parent folder) or their **colour**. Pinned rows get a group at the top. |
+| Show what each session has cost | on | The $ figure at the end of each row's status line. |
 | Also show Ghostty's tab bar | off | Ghostty's own tab strip along the top, as well as the sidebar. |
 | ⌃⌥J jumps to the next session that needs you | on | A global hotkey, from any app. With none waiting it goes to the next finished one. |
 | Dock icon shows how many sessions need you | on | The red badge on the Dock icon. |
+| Notify me when a session needs me / finishes | on | macOS notifications, not for the session on screen. If Claude Code already notifies you through the terminal, turn one off. |
 | Reopen Claude sessions when Ghostty Dock starts | on | The app records its open sessions every 10 seconds; after a quit, crash or update they come back as tabs with `claude --resume`. Sessions already running elsewhere are skipped. |
 | Open Ghostty Dock at login | off | Adds it to macOS Login Items. |
 | Version / About and Updates… | | The version, and an **Update…** button when GitHub has something newer. |
@@ -121,6 +143,28 @@ One-line install (Claude Code sets it up and tells you what it changed):
     ./install.sh                     # hooks, opener, Finder Quick Actions, app
     scripts/build-terminal.sh        # rebuild the app only
     ghostty-dock-move --detach       # move sessions from separate Ghostty apps into tabs
+
+### From a release, without building
+
+    scripts/release.sh               # build/release/Ghostty-Dock-<version>.zip
+    scripts/release.sh --publish     # and a GitHub release with it
+
+The zip holds the app, the scripts and `install.sh`, which installs the
+ready-built app instead of building one. With `DEVELOPER_ID` (a "Developer ID
+Application" certificate) and `NOTARY_PROFILE` (`xcrun notarytool
+store-credentials`) set, it is signed and notarized and opens anywhere;
+without them it is signed for this Mac only, and other Macs must allow it in
+System Settings → Privacy & Security first. The Update button needs a clone
+of this repo, so release installs update by downloading the next zip.
+
+## Tests
+
+    bash tests/hook-test.sh                          # the Claude Code hook
+    swift test --package-path tests/dock-logic       # sidebar order, groups, cost (after a build)
+    bash tests/patch-test.sh --latest                # the patch still applies to Ghostty
+
+GitHub Actions runs all three on every push, and the patch check every Monday
+against the newest Ghostty release.
 
 ## If it goes wrong: undo
 

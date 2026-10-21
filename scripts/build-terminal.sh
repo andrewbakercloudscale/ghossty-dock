@@ -55,9 +55,11 @@ function fetch_sources() {
 
 function save_patch() {
     mkdir -p "$(dirname "$PATCH")" || exit 1
-    git -C "$SRC" add -N macos/Sources || exit 1
+    # Tool state (.omc) that other tools leave in the tree is not part of the fork.
+    local only=(macos/Sources ':(exclude,glob)**/.omc/**')
+    git -C "$SRC" add -N -- "${only[@]}" || exit 1
     # Against the release tag, not HEAD: the fork's own commits are part of the patch.
-    git -C "$SRC" diff "$GHOSTTY_TAG" -- macos/Sources >"$PATCH" || exit 1
+    git -C "$SRC" diff "$GHOSTTY_TAG" -- "${only[@]}" >"$PATCH" || exit 1
     echo "== saved $(grep -c '^diff --git' "$PATCH") file(s) to ${PATCH#"$ROOT"/}"
 }
 
