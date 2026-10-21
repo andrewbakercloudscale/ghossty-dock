@@ -60,8 +60,8 @@ reports each session's status.
   looking at it. Click one to go to its tab. Each can be turned off. The 🔔 in
   the header lists the last 200; going to a session marks its ones read.
 - **Running sessions** have a gold glint running round their row.
-- **Header buttons** each have their own colour and say what they do under
-  the header when you point at them.
+- **Header buttons** each have their own colour; point at one and the
+  counters line says what it does, so no tooltip covers a button.
 - **Loading screen** at startup: a turning gold ring and "Loading…" with how many sessions are back, until they all are (Skip to dismiss).
 - **Filter by state**: click a counter under the header (needs you, running,
   finished, idle, shell) to show only those sessions; click it again to show

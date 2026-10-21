@@ -4455,10 +4455,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..2f71a3b
+index 0000000..0f25904
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,842 @@
+@@ -0,0 +1,839 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -4660,25 +4660,22 @@ index 0000000..2f71a3b
 +    private var header: some View {
 +        VStack(alignment: .leading, spacing: 7) {
 +            headerButtons
-+                .overlay(alignment: .topTrailing) {
++            // What the header button under the pointer does, in the
++            // counters' place while you point at it, so it covers no button.
++            counters
++                .opacity(headerTip == nil ? 1 : 0)
++                .overlay(alignment: .leading) {
 +                    if let headerTip {
 +                        Text(headerTip)
 +                            .font(.system(size: 11, weight: .medium))
 +                            .foregroundStyle(DockPalette.text)
-+                            .multilineTextAlignment(.trailing)
-+                            .padding(.horizontal, 7)
-+                            .padding(.vertical, 3)
-+                            .background(RoundedRectangle(cornerRadius: 5).fill(DockPalette.surface))
-+                            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(DockPalette.greyLine, lineWidth: 1))
-+                            .fixedSize(horizontal: false, vertical: true)
-+                            // Under the buttons, over the counters: never on them.
-+                            .offset(y: 28)
++                            .lineLimit(1)
++                            .minimumScaleFactor(0.75)
++                            .truncationMode(.tail)
++                            .frame(maxWidth: .infinity, alignment: .leading)
 +                            .allowsHitTesting(false)
-+                            .transition(.opacity)
 +                    }
 +                }
-+                .zIndex(1)
-+            counters
 +        }
 +        .padding(.horizontal, 12)
 +        .padding(.top, 10)
@@ -4724,7 +4721,7 @@ index 0000000..2f71a3b
 +                .disabled(updates.restarting)
 +                .onHover { inside in
 +                    let tip = updates.restarting ? "Restarting once sessions are quiet…"
-+                        : "Restart to load the new build (waits till sessions are quiet)"
++                        : "Restart into the new build once sessions are quiet"
 +                    if inside { headerTip = tip } else if headerTip == tip { headerTip = nil }
 +                }
 +            }
@@ -4749,7 +4746,7 @@ index 0000000..2f71a3b
 +                DockSearchPanel.shared.show(below: NSEvent.mouseLocation)
 +            }
 +            DockHeaderButton(symbol: "person.3", size: 11, color: DockPalette.mauve,
-+                             tip: "Agents: every subagent, its tokens and spend (⌘⇧A)", shownTip: $headerTip) {
++                             tip: "Agents: subagents, tokens, spend (⌘⇧A)", shownTip: $headerTip) {
 +                DockAgentsWindow.shared.show(near: NSEvent.mouseLocation)
 +            }
 +            DockHeaderButton(symbol: notices.unread > 0 ? "bell.badge.fill" : "bell",
@@ -4764,13 +4761,13 @@ index 0000000..2f71a3b
 +            DockHeaderButton(symbol: "plus", color: DockPalette.green, tip: "New tab (⌘T)",
 +                             shownTip: $headerTip, action: onNewTab)
 +            DockHeaderButton(symbol: "arrow.down.to.line", color: DockPalette.peach,
-+                             tip: "Jump to the next session that needs you (⌃⌥J)",
++                             tip: "Next session that needs you (⌃⌥J)",
 +                             shownTip: $headerTip, action: model.jumpToNextWaiting)
 +            DockHeaderButton(symbol: "gearshape", color: DockPalette.text, tip: "Settings (⌘,)",
 +                             shownTip: $headerTip) {
 +                DockSettingsWindow.shared.show(near: NSEvent.mouseLocation)
 +            }
-+            DockHeaderButton(symbol: "info.circle", color: DockPalette.teal, tip: "About Ghostty Dock and updates",
++            DockHeaderButton(symbol: "info.circle", color: DockPalette.teal, tip: "About and updates",
 +                             shownTip: $headerTip) {
 +                DockAboutWindow.shared.show(near: NSEvent.mouseLocation)
 +            }
