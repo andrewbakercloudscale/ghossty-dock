@@ -3265,7 +3265,7 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..3bf9e97
+index 0000000..0f2b290
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
 @@ -0,0 +1,765 @@
@@ -3496,7 +3496,7 @@ index 0000000..3bf9e97
 +        HStack(spacing: 6) {
 +            Text("Sessions").font(.system(size: 12, weight: .semibold)).foregroundStyle(DockPalette.text)
 +            Spacer()
-+            if updates.restartPending && !updates.available && updates.state != .installing {
++            if updates.restartPending && updates.state != .installing {
 +                Button(action: updates.confirmRestart) {
 +                    Text(updates.restarting ? "Restarting…" : "Restart")
 +                        .font(.system(size: 10.5, weight: .semibold))
@@ -4341,10 +4341,10 @@ index 0000000..c3d922c
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..1e5032e
+index 0000000..c0e9418
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
-@@ -0,0 +1,243 @@
+@@ -0,0 +1,247 @@
 +import AppKit
 +import Combine
 +
@@ -4426,7 +4426,11 @@ index 0000000..1e5032e
 +              let stamp = dict["GhosttyDockBuilt"] as? String,
 +              let installed = ISO8601DateFormatter().date(from: stamp) else { return }
 +        let pending = installed > running
-+        if pending != restartPending { restartPending = pending }
++        guard pending != restartPending else { return }
++        restartPending = pending
++        // The new build may already be GitHub's latest: check again, so
++        // Update goes away and Restart is what is offered.
++        if pending { check() }
 +    }
 +
 +    /// Asks first, then restarts once sessions are quiet; they come back as tabs.
