@@ -3311,10 +3311,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..f39e5db
+index 0000000..4c2a10c
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,776 @@
+@@ -0,0 +1,804 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -3778,6 +3778,9 @@ index 0000000..f39e5db
 +                DockAttentionRing()
 +            }
 +        }
++        .overlay {
++            if row.status == .running { DockRunningShimmer() }
++        }
 +        .overlay(alignment: .leading) {
 +            if row.selected {
 +                RoundedRectangle(cornerRadius: 2).fill(DockPalette.blue).frame(width: 4, height: 28).offset(x: -4)
@@ -3897,6 +3900,31 @@ index 0000000..f39e5db
 +            .onAppear {
 +                withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) { bright = true }
 +            }
++    }
++}
++
++/// A gold glint that runs round a running session's row, so busy ones
++/// catch the eye without looking like they need you.
++struct DockRunningShimmer: View {
++    static let gold = Color(hex: 0xe8b923)
++    @State private var angle = 0.0
++
++    var body: some View {
++        GeometryReader { g in
++            let side = hypot(g.size.width, g.size.height)
++            AngularGradient(colors: [Self.gold.opacity(0.12), Self.gold.opacity(0.12), Self.gold.opacity(0.6),
++                                     Color(hex: 0xfff4c2), Self.gold, Self.gold.opacity(0.12)],
++                            center: .center)
++                .frame(width: side, height: side)
++                .rotationEffect(.degrees(angle))
++                .position(x: g.size.width / 2, y: g.size.height / 2)
++        }
++        .mask(RoundedRectangle(cornerRadius: 7).strokeBorder(lineWidth: 1.6))
++        .shadow(color: Self.gold.opacity(0.45), radius: 3)
++        .allowsHitTesting(false)
++        .onAppear {
++            withAnimation(.linear(duration: 2.6).repeatForever(autoreverses: false)) { angle = 360 }
++        }
 +    }
 +}
 +

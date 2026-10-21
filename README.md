@@ -59,6 +59,7 @@ reports each session's status.
 - **Notifications** when a session needs you or finishes, unless you are
   looking at it. Click one to go to its tab. Each can be turned off. The 🔔 in
   the header lists the last 200; going to a session marks its ones read.
+- **Running sessions** have a gold glint running round their row.
 - **Filter by state**: click a counter under the header (needs you, running,
   finished, idle, shell) to show only those sessions; click it again to show
   all.
