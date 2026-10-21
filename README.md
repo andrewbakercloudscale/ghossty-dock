@@ -109,7 +109,7 @@ Five tabs: **Sidebar** (with Compaction), **Theme**, **Notifications**,
 | ⌃⌥J jumps to the next session that needs you | on | A global hotkey, from any app. With none waiting it goes to the next finished one. |
 | Dock icon shows how many sessions need you | on | The red badge on the Dock icon. |
 | Notify me when a session needs me / finishes | on | macOS notifications, not for the session on screen. If Claude Code already notifies you through the terminal, turn one off. |
-| Bring the window to the front when a session needs me | off | Un-minimises Ghostty Dock and shows that session's tab, over whatever app you are in. Never while you are already in Ghostty Dock, so it can't switch tabs as you type. |
+| Bring the window to the front when a session needs me / finishes | off | Un-minimises Ghostty Dock and shows that session's tab, over whatever app you are in. Never while you are already looking at Ghostty Dock, so it can't switch tabs as you type. |
 | Reopen Claude sessions when Ghostty Dock starts | on | The app records its open sessions every 10 seconds; after a quit, crash or update they come back as tabs with `claude --resume`. Sessions already running elsewhere are skipped. |
 | Open Ghostty Dock at login | off | Adds it to macOS Login Items. |
 | Version / About and Updates… | | The version, and an **Update…** button when GitHub has something newer. |
