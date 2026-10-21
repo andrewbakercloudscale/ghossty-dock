@@ -73,5 +73,31 @@ final class CostTests: XCTestCase {
         XCTAssertEqual(DockCost.formatTokens(168_466), "168k")
         XCTAssertEqual(DockCost.formatTokens(200), "1k")
         XCTAssertEqual(DockCost.formatTokens(1_234_000), "1.2M")
+        XCTAssertEqual(DockCost.formatTokens(0), "0")
+    }
+
+    func testVelocity() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("s.jsonl")
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let now = Date()
+        func at(_ ago: TimeInterval, _ id: String) -> String {
+            // Haiku: 1M input = $1.
+            line("claude-haiku-4-5", id: id, usage: #""input_tokens":1000000"#)
+                .replacingOccurrences(of: #"{"type""#, with: #"{"timestamp":"\#(f.string(from: now - ago))","type""#)
+        }
+        let recent = Swift.min(240, now.timeIntervalSince(Calendar.current.startOfDay(for: now)) / 3)
+        try [at(recent, "a"), at(recent * 2, "b")].joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+        let meter = DockCost()
+        _ = meter.dollars(transcript: file)
+        let v = meter.velocity(now: now)
+        XCTAssertEqual(v.today, 2, accuracy: 1e-9)
+        XCTAssertEqual(v.lastHour, 2, accuracy: 1e-9)
+        XCTAssertEqual(v.nowPerHour, 12, accuracy: 1e-9)
+        XCTAssertEqual(v.tokensPerMinute, 200_000)
     }
 }
