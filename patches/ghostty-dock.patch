@@ -857,10 +857,10 @@ index 0000000..1468a67
 +}
 diff --git a/macos/Sources/Features/Dock/DockAgentsView.swift b/macos/Sources/Features/Dock/DockAgentsView.swift
 new file mode 100644
-index 0000000..93aeebc
+index 0000000..37135e2
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAgentsView.swift
-@@ -0,0 +1,437 @@
+@@ -0,0 +1,542 @@
 +import AppKit
 +import SwiftUI
 +
@@ -950,6 +950,7 @@ index 0000000..93aeebc
 +    @ObservedObject var model = DockAgentsModel.shared
 +    @ObservedObject var sessions = DockSessions.shared
 +    @AppStorage(DockSettings.themeKey) private var themeName = ""
++    @State private var showGuide = false
 +
 +    var body: some View {
 +        VStack(spacing: 0) {
@@ -958,6 +959,7 @@ index 0000000..93aeebc
 +            HStack(alignment: .top, spacing: 0) {
 +                ScrollView {
 +                    LazyVStack(alignment: .leading, spacing: 18) {
++                        solo
 +                        if model.sections.allSatisfy({ $0.agents.isEmpty }) { empty }
 +                        ForEach(model.sections) { section in
 +                            DockAgentSection(section: section, now: model.now, maxTokens: maxTokens,
@@ -1003,6 +1005,16 @@ index 0000000..93aeebc
 +                .frame(width: 200)
 +                .padding(.leading, 8)
 +                .help("Live: running now. Today: started or active today. All: every agent of the open sessions.")
++                Button { showGuide.toggle() } label: {
++                    Label("How to use agents", systemImage: "questionmark.circle")
++                }
++                .buttonStyle(.plain)
++                .foregroundStyle(DockPalette.blue)
++                .popover(isPresented: $showGuide, arrowEdge: .bottom) {
++                    DockAgentGuide().padding(16).frame(width: 520)
++                        .background(DockPalette.base)
++                        .environment(\.colorScheme, DockPalette.scheme)
++                }
 +                Spacer()
 +            }
 +            Text("An agent is a helper a session starts to do part of its work (Claude Code's Agent tool): "
@@ -1050,15 +1062,53 @@ index 0000000..93aeebc
 +    }
 +
 +    private var empty: some View {
-+        VStack(spacing: 8) {
++        VStack(spacing: 14) {
 +            Image(systemName: "person.3").font(.largeTitle).foregroundStyle(DockPalette.grey)
 +            Text(model.scope == .live ? "No agents running right now" : "No agents yet")
 +                .font(.headline).foregroundStyle(DockPalette.text)
-+            Text("Subagents your sessions start (the Agent tool) show up here with what they use.")
-+                .font(.callout).foregroundStyle(DockPalette.grey)
++            DockAgentGuide().frame(maxWidth: 560)
 +        }
 +        .frame(maxWidth: .infinity)
-+        .padding(.top, 60)
++        .padding(.top, 30)
++    }
++
++    /// Sessions busy right now with no live agent: working on their own.
++    private var solo: some View {
++        let live = Set(model.agents.filter { $0.live(now: model.now) }.map(\.sessionId))
++        let busy = sessions.rows.filter { r in
++            (r.status == .running || r.status == .waiting) && !(r.sessionId.map(live.contains) ?? false)
++        }
++        return Group {
++            if !busy.isEmpty {
++                VStack(alignment: .leading, spacing: 8) {
++                    Text(busy.count == 1 ? "1 session is active without agents"
++                         : "\(busy.count) sessions are active without agents")
++                        .font(.callout.weight(.semibold))
++                        .foregroundStyle(DockPalette.text)
++                    Text("They are doing the work themselves, in one context. Click one to go to it.")
++                        .font(.caption).foregroundStyle(DockPalette.grey)
++                    HStack(spacing: 8) {
++                        ForEach(busy, id: \.id) { row in
++                            Button { sessions.select(row) } label: {
++                                HStack(spacing: 5) {
++                                    Circle().fill(DockPalette.color(row.status)).frame(width: 7, height: 7)
++                                    Text(row.name).font(.callout)
++                                    Text(row.status == .waiting ? "waiting" : "running")
++                                        .font(.caption).foregroundStyle(DockPalette.color(row.status))
++                                }
++                                .padding(.horizontal, 9).padding(.vertical, 4)
++                                .background(Capsule().fill(DockPalette.color(row.status).opacity(0.14)))
++                            }
++                            .buttonStyle(.plain)
++                            .foregroundStyle(DockPalette.text)
++                        }
++                    }
++                }
++                .padding(12)
++                .frame(maxWidth: .infinity, alignment: .leading)
++                .background(RoundedRectangle(cornerRadius: 10).fill(DockPalette.mantle))
++            }
++        }
 +    }
 +
 +    /// Sessions waiting on you, with what they ask.
@@ -1296,6 +1346,61 @@ index 0000000..93aeebc
 +        if let point, window?.isVisible == false { window?.place(near: point) }
 +        NSApp.activate(ignoringOtherApps: true)
 +        window?.makeKeyAndOrderFront(nil)
++    }
++}
++
++/// What an agent is, how to get Claude to use them, and how to make your own.
++struct DockAgentGuide: View {
++    private let prompts = [
++        "Use subagents to review each of these 4 files in parallel, then sum up.",
++        "Run 3 agents in parallel: one fixes the tests, one updates the docs, one checks the API.",
++        "Start a background agent to profile the build while we keep going.",
++        "Use an agent in its own worktree to try the refactor, so main stays clean.",
++        "Have an Explore agent find every place we call the payments API.",
++    ]
++
++    var body: some View {
++        VStack(alignment: .leading, spacing: 12) {
++            section("What an agent is",
++                    "A helper Claude starts to do part of a job (Claude Code's Agent tool). It gets its own "
++                    + "fresh context, does its piece, and reports back a summary, so the session's own "
++                    + "context stays small. Several can run at once, in the background or each in its own "
++                    + "git worktree. A session working alone is not an agent, so it does not show here.")
++            VStack(alignment: .leading, spacing: 6) {
++                title("Getting Claude to use them")
++                Text("Ask for it in the prompt: say subagents or agents, parallel, background, or worktree. "
++                     + "It suits work that splits into independent pieces, or a wide search.")
++                    .font(.callout).foregroundStyle(DockPalette.grey)
++                    .fixedSize(horizontal: false, vertical: true)
++                ForEach(prompts, id: \.self) { p in
++                    HStack(alignment: .top, spacing: 6) {
++                        Text("›").foregroundStyle(DockPalette.blue)
++                        Text(p).font(.system(.callout, design: .monospaced)).foregroundStyle(DockPalette.text)
++                            .textSelection(.enabled)
++                            .fixedSize(horizontal: false, vertical: true)
++                    }
++                }
++            }
++            section("Making your own",
++                    "Type /agents in Claude Code, or add a Markdown file to .claude/agents/ (this project) "
++                    + "or ~/.claude/agents/ (all projects): a name, a description of when to use it, the "
++                    + "tools it may use and its model, then its instructions. Claude picks one when its "
++                    + "description fits the task, or when you name it: \"use the reviewer agent\".")
++        }
++        .multilineTextAlignment(.leading)
++        .frame(maxWidth: .infinity, alignment: .leading)
++    }
++
++    private func title(_ t: String) -> some View {
++        Text(t).font(.callout.weight(.semibold)).foregroundStyle(DockPalette.text)
++    }
++
++    private func section(_ t: String, _ body: String) -> some View {
++        VStack(alignment: .leading, spacing: 4) {
++            title(t)
++            Text(body).font(.callout).foregroundStyle(DockPalette.grey)
++                .fixedSize(horizontal: false, vertical: true)
++        }
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockCost.swift b/macos/Sources/Features/Dock/DockCost.swift
@@ -3526,10 +3631,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..8567a97
+index 0000000..d1cf11b
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,804 @@
+@@ -0,0 +1,841 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -3595,6 +3700,8 @@ index 0000000..8567a97
 +    @ObservedObject var updates = DockUpdates.shared
 +    @ObservedObject var notices = DockNotices.shared
 +    @State private var showNotices = false
++    /// What the header button under the pointer does, shown under the header.
++    @State private var headerTip: String?
 +    @AppStorage(DockSettings.showSidebarKey) private var show = true
 +    @AppStorage(DockSettings.themeKey) private var themeName = ""
 +    @AppStorage(DockSettings.sidebarWidthKey) private var width = Double(Self.width)
@@ -3613,7 +3720,7 @@ index 0000000..8567a97
 +
 +    private var sidebar: some View {
 +        VStack(spacing: 0) {
-+            header
++            header.zIndex(1)
 +            if !model.missing.isEmpty { missingBanner }
 +            ScrollView {
 +                LazyVStack(spacing: 2) {
@@ -3729,6 +3836,23 @@ index 0000000..8567a97
 +    private var header: some View {
 +        VStack(alignment: .leading, spacing: 7) {
 +            headerButtons
++                .overlay(alignment: .bottomTrailing) {
++                    if let headerTip {
++                        Text(headerTip)
++                            .font(.system(size: 11, weight: .medium))
++                            .foregroundStyle(DockPalette.text)
++                            .multilineTextAlignment(.trailing)
++                            .padding(.horizontal, 7)
++                            .padding(.vertical, 3)
++                            .background(RoundedRectangle(cornerRadius: 5).fill(DockPalette.surface))
++                            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(DockPalette.greyLine, lineWidth: 1))
++                            .fixedSize(horizontal: false, vertical: true)
++                            .alignmentGuide(.bottom) { $0[.top] - 4 }
++                            .allowsHitTesting(false)
++                            .transition(.opacity)
++                    }
++                }
++                .zIndex(1)
 +            counters
 +        }
 +        .padding(.horizontal, 12)
@@ -3760,7 +3884,7 @@ index 0000000..8567a97
 +    }
 +
 +    private var headerButtons: some View {
-+        HStack(spacing: 6) {
++        HStack(spacing: 2) {
 +            Text("Sessions").font(.system(size: 12, weight: .semibold)).foregroundStyle(DockPalette.text)
 +            Spacer()
 +            if updates.restartPending && updates.state != .installing {
@@ -3773,8 +3897,11 @@ index 0000000..8567a97
 +                }
 +                .buttonStyle(.plain)
 +                .disabled(updates.restarting)
-+                .dockTip(updates.restarting ? "Restarting once sessions are quiet…"
-+                         : "Restart: a newer build is installed; restarts once sessions are quiet")
++                .onHover { inside in
++                    let tip = updates.restarting ? "Restarting once sessions are quiet…"
++                        : "Restart to load the new build (waits till sessions are quiet)"
++                    if inside { headerTip = tip } else if headerTip == tip { headerTip = nil }
++                }
 +            }
 +            if updates.available || updates.state == .installing {
 +                Button(action: updates.confirmInstall) {
@@ -3787,54 +3914,68 @@ index 0000000..8567a97
 +                }
 +                .buttonStyle(.plain)
 +                .disabled(updates.state == .installing)
-+                .dockTip(updates.latest.map { "Install \($0) from GitHub" } ?? "Install the latest version")
++                .onHover { inside in
++                    let tip = updates.latest.map { "Update: install \($0) from GitHub" } ?? "Install the latest version"
++                    if inside { headerTip = tip } else if headerTip == tip { headerTip = nil }
++                }
 +            }
-+            Button(action: { DockSearchPanel.shared.show(below: NSEvent.mouseLocation) }) {
-+                Image(systemName: "magnifyingglass").font(.system(size: 12, weight: .semibold))
++            DockHeaderButton(symbol: "magnifyingglass", color: DockPalette.blue,
++                             tip: "Find a session (⌘P)", shownTip: $headerTip) {
++                DockSearchPanel.shared.show(below: NSEvent.mouseLocation)
 +            }
-+            .buttonStyle(.plain)
-+            .foregroundStyle(DockPalette.text)
-+            .help("Find a session (⌘P)")
-+            Button(action: { DockAgentsWindow.shared.show(near: NSEvent.mouseLocation) }) {
-+                Image(systemName: "person.3").font(.system(size: 11, weight: .semibold))
++            DockHeaderButton(symbol: "person.3", size: 11, color: DockPalette.mauve,
++                             tip: "Agents: every subagent, its tokens and spend (⌘⇧A)", shownTip: $headerTip) {
++                DockAgentsWindow.shared.show(near: NSEvent.mouseLocation)
 +            }
-+            .buttonStyle(.plain)
-+            .foregroundStyle(DockPalette.text)
-+            .help("Agents: every subagent across your sessions, with tokens, cost and tool calls (⌘⇧A)")
-+            Button(action: { showNotices.toggle() }) {
-+                Image(systemName: notices.unread > 0 ? "bell.badge" : "bell")
-+                    .font(.system(size: 12, weight: .semibold))
-+                    .foregroundStyle(DockPalette.text)
++            DockHeaderButton(symbol: notices.unread > 0 ? "bell.badge.fill" : "bell",
++                             color: DockPalette.color(DockTag.orange),
++                             tip: notices.unread > 0 ? "Notifications: \(notices.unread) unread" : "Notifications",
++                             shownTip: $headerTip) {
++                showNotices.toggle()
 +            }
-+            .buttonStyle(.plain)
-+            .help(notices.unread > 0 ? "\(notices.unread) unread notifications" : "Notifications")
 +            .popover(isPresented: $showNotices, arrowEdge: .bottom) {
 +                DockNoticeList { showNotices = false }
 +            }
-+            Button(action: onNewTab) {
-+                Image(systemName: "plus").font(.system(size: 12, weight: .semibold))
++            DockHeaderButton(symbol: "plus", color: DockPalette.green, tip: "New tab (⌘T)",
++                             shownTip: $headerTip, action: onNewTab)
++            DockHeaderButton(symbol: "arrow.down.to.line", color: DockPalette.peach,
++                             tip: "Jump to the next session that needs you (⌃⌥J)",
++                             shownTip: $headerTip, action: model.jumpToNextWaiting)
++            DockHeaderButton(symbol: "gearshape", color: DockPalette.text, tip: "Settings (⌘,)",
++                             shownTip: $headerTip) {
++                DockSettingsWindow.shared.show(near: NSEvent.mouseLocation)
 +            }
-+            .buttonStyle(.plain)
-+            .foregroundStyle(DockPalette.text)
-+            .help("New tab")
-+            Button(action: model.jumpToNextWaiting) {
-+                Image(systemName: "arrow.down.to.line").font(.system(size: 12, weight: .semibold))
++            DockHeaderButton(symbol: "info.circle", color: DockPalette.teal, tip: "About Ghostty Dock and updates",
++                             shownTip: $headerTip) {
++                DockAboutWindow.shared.show(near: NSEvent.mouseLocation)
 +            }
-+            .buttonStyle(.plain)
-+            .foregroundStyle(DockPalette.text)
-+            .help("Next session that needs you (⌃⌥J)")
-+            Button(action: { DockSettingsWindow.shared.show(near: NSEvent.mouseLocation) }) {
-+                Image(systemName: "gearshape").font(.system(size: 12, weight: .semibold))
-+            }
-+            .buttonStyle(.plain)
-+            .foregroundStyle(DockPalette.text)
-+            .help("Ghostty Dock Settings (⌘,)")
-+            Button(action: { DockAboutWindow.shared.show(near: NSEvent.mouseLocation) }) {
-+                Image(systemName: "info.circle").font(.system(size: 12, weight: .semibold))
-+            }
-+            .buttonStyle(.plain)
-+            .foregroundStyle(DockPalette.text)
-+            .help("About Ghostty Dock and updates")
++        }
++    }
++}
++
++/// A header button: its icon in its own colour, brighter on hover, with a
++/// tooltip under it saying what it does.
++struct DockHeaderButton: View {
++    var symbol: String
++    var size: CGFloat = 12
++    var color: Color
++    var tip: String
++    @Binding var shownTip: String?
++    var action: () -> Void
++    @State private var hover = false
++
++    var body: some View {
++        Button(action: action) {
++            Image(systemName: symbol)
++                .font(.system(size: size, weight: .semibold))
++                .foregroundStyle(color)
++                .padding(3)
++                .background(Circle().fill(color.opacity(hover ? 0.2 : 0)))
++        }
++        .buttonStyle(.plain)
++        .onHover { inside in
++            hover = inside
++            if inside { shownTip = tip } else if shownTip == tip { shownTip = nil }
 +        }
 +    }
 +}
@@ -4247,6 +4388,7 @@ index 0000000..8567a97
 +
 +extension View {
 +    func dockTip(_ text: String) -> some View { modifier(DockTip(text: text)) }
++
 +}
 +
 +/// A session in a Ghostty app of its own: grey, in a dashed outline, with a

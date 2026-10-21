@@ -60,6 +60,8 @@ reports each session's status.
   looking at it. Click one to go to its tab. Each can be turned off. The 🔔 in
   the header lists the last 200; going to a session marks its ones read.
 - **Running sessions** have a gold glint running round their row.
+- **Header buttons** each have their own colour and say what they do under
+  the header when you point at them.
 - **Loading screen** at startup: a turning gold ring and "Loading…" with how many sessions are back, until they all are (Skip to dismiss).
 - **Filter by state**: click a counter under the header (needs you, running,
   finished, idle, shell) to show only those sessions; click it again to show
@@ -73,6 +75,10 @@ reports each session's status.
   the sessions waiting on you are listed on the right. Click a card to go to
   its session. (An agent is a helper a session starts with Claude Code's
   Agent tool: its own context, often in the background or its own worktree.)
+  Sessions busy without agents are listed at the top, and **How to use
+  agents** explains how to prompt for them (say subagents, parallel,
+  background or worktree) and how to make your own (/agents or
+  .claude/agents/*.md).
   A **Spend** line shows how fast money is going across every open session,
   agents included: $/hr now (last 10 minutes), last hour, today's average
   $/hr, today, and tokens a minute.
