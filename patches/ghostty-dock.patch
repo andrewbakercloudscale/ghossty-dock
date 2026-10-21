@@ -121,6 +121,179 @@ index ade9bf3..dfbd82b 100644
  // Initialize Ghostty global state. We do this once right away because the
  // CLI APIs require it and it lets us ensure it is done immediately for the
  // rest of the app.
+diff --git a/macos/Sources/Features/Dock/DockAPI.swift b/macos/Sources/Features/Dock/DockAPI.swift
+new file mode 100644
+index 0000000..3af6440
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockAPI.swift
+@@ -0,0 +1,167 @@
++import AppKit
++
++/// The app's side of the `ghostty-dock` command: requests are JSON files
++/// dropped in ~/.local/state/ghostty-dock/api (a folder only you can open),
++/// answered with a file next to them.
++///
++/// Request:  req-<id>.json  {"op": "list" | "focus" | "send" | "keys" | "read" | "notify", ...}
++/// Answer:   res-<id>.json  {"ok": true, ...} or {"ok": false, "error": "..."}
++@MainActor
++final class DockAPI {
++    static let shared = DockAPI()
++
++    static let dir = FileManager.default.homeDirectoryForCurrentUser
++        .appendingPathComponent(".local/state/ghostty-dock/api")
++    private var watcher: DispatchSourceFileSystemObject?
++
++    func start() {
++        guard watcher == nil else { return }
++        let fm = FileManager.default
++        try? fm.createDirectory(at: Self.dir, withIntermediateDirectories: true,
++                                attributes: [.posixPermissions: 0o700])
++        try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: Self.dir.path)
++        let fd = open(Self.dir.path, O_EVTONLY)
++        guard fd >= 0 else { return }
++        let src = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .rename],
++                                                            queue: .main)
++        src.setEventHandler { MainActor.assumeIsolated { DockAPI.shared.drain() } }
++        src.setCancelHandler { close(fd) }
++        src.resume()
++        watcher = src
++        drain()
++    }
++
++    private func drain() {
++        let fm = FileManager.default
++        let files = (try? fm.contentsOfDirectory(at: Self.dir, includingPropertiesForKeys: nil)) ?? []
++        for url in files where url.lastPathComponent.hasPrefix("req-") && url.pathExtension == "json" {
++            let id = url.deletingPathExtension().lastPathComponent.dropFirst(4)
++            let request = (try? Data(contentsOf: url))
++                .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
++            try? fm.removeItem(at: url)
++            let answer = request.map(handle) ?? ["ok": false, "error": "unreadable request"]
++            guard let data = try? JSONSerialization.data(withJSONObject: answer, options: [.sortedKeys]) else { continue }
++            let tmp = Self.dir.appendingPathComponent(".res-\(id).json")
++            try? data.write(to: tmp)
++            try? fm.moveItem(at: tmp, to: Self.dir.appendingPathComponent("res-\(id).json"))
++        }
++        // Answers nobody collected, after a minute.
++        for url in files where url.lastPathComponent.hasPrefix("res-") {
++            if let made = (try? url.resourceValues(forKeys: [.creationDateKey]))?.creationDate,
++               Date().timeIntervalSince(made) > 60 {
++                try? fm.removeItem(at: url)
++            }
++        }
++    }
++
++    private func handle(_ r: [String: Any]) -> [String: Any] {
++        let model = DockSessions.shared
++        let op = r["op"] as? String ?? ""
++        if op == "list" {
++            return ["ok": true, "sessions": model.rows.map(describe)]
++        }
++        if op == "notify" {
++            let title = r["title"] as? String ?? "Ghostty Dock"
++            let body = r["body"] as? String ?? ""
++            DockNotices.shared.add(title: title, body: body, sessionId: nil, waiting: r["urgent"] as? Bool ?? false)
++            model.postExternal(title: title, body: body)
++            return ["ok": true]
++        }
++        guard let target = r["target"] as? String, !target.isEmpty else {
++            return ["ok": false, "error": "say which session: a name, a session id or a folder"]
++        }
++        let matches = find(target, in: model.rows)
++        guard matches.count == 1, let row = matches.first else {
++            return ["ok": false, "error": matches.isEmpty ? "no session matches \(target)"
++                    : "\(target) matches \(matches.map(\.name).joined(separator: ", "))"]
++        }
++        let surfaceView = row.controller.flatMap { $0.focusedSurface ?? $0.surfaceTree.first }
++        switch op {
++        case "focus":
++            model.select(row)
++            return ["ok": true, "session": describe(row)]
++        case "send":
++            guard let surface = surfaceView?.surfaceModel else { return ["ok": false, "error": "that tab has no terminal"] }
++            if let text = r["text"] as? String, !text.isEmpty { surface.sendText(text) }
++            if r["enter"] as? Bool == true { press(surface, .enter) }
++            return ["ok": true]
++        case "keys":
++            guard let surface = surfaceView?.surfaceModel else { return ["ok": false, "error": "that tab has no terminal"] }
++            for name in r["keys"] as? [String] ?? [] {
++                guard press(surface, name) else { return ["ok": false, "error": "unknown key \(name)"] }
++            }
++            return ["ok": true]
++        case "read":
++            guard let view = surfaceView else { return ["ok": false, "error": "that tab has no terminal"] }
++            let all = r["scrollback"] as? Bool == true
++            var text = all ? view.cachedScreenContents.get() : view.cachedVisibleContents.get()
++            if let n = r["lines"] as? Int, n > 0 {
++                let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
++                // Trailing blank lines are the empty screen below the prompt.
++                let trimmed = lines.reversed().drop { $0.trimmingCharacters(in: .whitespaces).isEmpty }.reversed()
++                text = trimmed.suffix(n).joined(separator: "\n")
++            }
++            return ["ok": true, "text": text]
++        default:
++            return ["ok": false, "error": "unknown op \(op)"]
++        }
++    }
++
++    private func describe(_ row: DockSessions.Row) -> [String: Any] {
++        var d: [String: Any] = ["name": row.name, "status": row.status.word, "folder": row.detail,
++                                "selected": row.selected]
++        if let sid = row.sessionId { d["session_id"] = sid }
++        if let p = row.prompt { d["prompt"] = p }
++        if let w = DockSessions.shared.workspaces[row.key] {
++            if let b = w.branch { d["branch"] = b }
++            if !w.ports.isEmpty { d["ports"] = w.ports }
++            if let pr = w.pr { d["pr"] = pr.number }
++        }
++        if let sid = row.sessionId, let c = DockSessions.shared.costs[sid] { d["cost"] = c }
++        if let sid = row.sessionId, let c = DockSessions.shared.contexts[sid] { d["context"] = c }
++        return d
++    }
++
++    /// By session id, then exact name, then folder, then the start of a name.
++    private func find(_ target: String, in rows: [DockSessions.Row]) -> [DockSessions.Row] {
++        let t = target.lowercased()
++        for test in [{ (r: DockSessions.Row) in r.sessionId?.lowercased() == t },
++                     { $0.name.lowercased() == t },
++                     { ($0.detail as NSString).standardizingPath == (target as NSString).expandingTildeInPath },
++                     { $0.name.lowercased().hasPrefix(t) || ($0.sessionId?.hasPrefix(t) ?? false) }] {
++            let hits = rows.filter(test)
++            if !hits.isEmpty { return hits }
++        }
++        return []
++    }
++
++    /// enter, esc, tab, backspace, up, down, left, right, or ctrl-<letter>.
++    @discardableResult
++    private func press(_ surface: Ghostty.Surface, _ name: String) -> Bool {
++        let named: [String: Ghostty.Input.Key] = [
++            "enter": .enter, "return": .enter, "esc": .escape, "escape": .escape, "tab": .tab,
++            "backspace": .backspace, "up": .arrowUp, "down": .arrowDown, "left": .arrowLeft, "right": .arrowRight,
++        ]
++        var mods: Ghostty.Input.Mods = []
++        var codepoint: UInt32 = 0
++        let key: Ghostty.Input.Key
++        if let k = named[name.lowercased()] {
++            key = k
++        } else if name.lowercased().hasPrefix("ctrl-"), name.count == 6,
++                  let letter = name.lowercased().last, let k = Ghostty.Input.Key(rawValue: String(letter)) {
++            key = k
++            mods = .ctrl
++            codepoint = letter.unicodeScalars.first!.value
++        } else {
++            return false
++        }
++        press(surface, key, mods: mods, codepoint: codepoint)
++        return true
++    }
++
++    private func press(_ surface: Ghostty.Surface, _ key: Ghostty.Input.Key,
++                       mods: Ghostty.Input.Mods = [], codepoint: UInt32 = 0) {
++        surface.sendKeyEvent(.init(key: key, action: .press, mods: mods, unshiftedCodepoint: codepoint))
++        surface.sendKeyEvent(.init(key: key, action: .release, mods: mods, unshiftedCodepoint: codepoint))
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockAbout.swift b/macos/Sources/Features/Dock/DockAbout.swift
 new file mode 100644
 index 0000000..3b654b9
@@ -627,12 +800,188 @@ index 0000000..4b8472f
 +        }, 1, &spec, nil, nil)
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockNotices.swift b/macos/Sources/Features/Dock/DockNotices.swift
+new file mode 100644
+index 0000000..3359e04
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockNotices.swift
+@@ -0,0 +1,170 @@
++import AppKit
++import Combine
++import SwiftUI
++
++/// Everything Ghostty Dock told you about, newest first, for the bell in the
++/// sidebar's header; and the same news sent to your phone through ntfy.
++///
++/// Kept in ~/.local/state/ghostty-dock/notices.json (the last 200), so it
++/// survives a restart.
++final class DockNotices: ObservableObject {
++    static let shared = DockNotices()
++
++    struct Notice: Codable, Identifiable, Equatable {
++        var id = UUID()
++        var date: Date
++        var title: String
++        var body: String
++        /// The session it is about, to go to its tab.
++        var sessionId: String?
++        var waiting: Bool
++        var read = false
++    }
++
++    @Published private(set) var items: [Notice] = []
++    var unread: Int { items.filter { !$0.read }.count }
++
++    private let file = FileManager.default.homeDirectoryForCurrentUser
++        .appendingPathComponent(".local/state/ghostty-dock/notices.json")
++    private static let keep = 200
++
++    private init() {
++        if let data = try? Data(contentsOf: file),
++           let saved = try? JSONDecoder().decode([Notice].self, from: data) {
++            items = saved
++        }
++    }
++
++    func add(title: String, body: String, sessionId: String?, waiting: Bool) {
++        items.insert(Notice(date: Date(), title: title, body: body, sessionId: sessionId, waiting: waiting), at: 0)
++        if items.count > Self.keep { items.removeLast(items.count - Self.keep) }
++        save()
++        if waiting ? DockSettings.phoneWaiting : DockSettings.phoneFinished {
++            push(title: title, body: body, urgent: waiting)
++        }
++    }
++
++    func open(_ notice: Notice) {
++        markRead { $0.id == notice.id }
++        if let sid = notice.sessionId { DockSessions.shared.select(sessionId: sid) }
++    }
++
++    /// Going to a session reads what was said about it.
++    func readAll(sessionId sid: String) {
++        guard items.contains(where: { $0.sessionId == sid && !$0.read }) else { return }
++        markRead { $0.sessionId == sid }
++    }
++
++    func markAllRead() { markRead { _ in true } }
++
++    func clear() {
++        items = []
++        save()
++    }
++
++    private func markRead(_ match: (Notice) -> Bool) {
++        for i in items.indices where match(items[i]) { items[i].read = true }
++        save()
++    }
++
++    private func save() {
++        guard let data = try? JSONEncoder().encode(items) else { return }
++        try? data.write(to: file, options: .atomic)
++    }
++
++    // MARK: Phone
++
++    /// The ntfy topic, as a full URL: a bare name goes to ntfy.sh.
++    static func topicURL(_ topic: String) -> URL? {
++        let t = topic.trimmingCharacters(in: .whitespaces)
++        guard !t.isEmpty else { return nil }
++        return URL(string: t.contains("://") ? t : "https://ntfy.sh/" + t)
++    }
++
++    /// Posts to ntfy; the ntfy app on the phone shows it.
++    func push(title: String, body: String, urgent: Bool, done: ((Bool) -> Void)? = nil) {
++        guard let url = Self.topicURL(DockSettings.phoneTopic) else { done?(false); return }
++        var req = URLRequest(url: url)
++        req.httpMethod = "POST"
++        req.setValue(title, forHTTPHeaderField: "Title")
++        req.setValue(urgent ? "high" : "default", forHTTPHeaderField: "Priority")
++        req.setValue(urgent ? "question" : "white_check_mark", forHTTPHeaderField: "Tags")
++        req.httpBody = Data(body.utf8)
++        URLSession.shared.dataTask(with: req) { _, resp, error in
++            let ok = error == nil && ((resp as? HTTPURLResponse)?.statusCode ?? 0) < 300
++            DispatchQueue.main.async { done?(ok) }
++        }.resume()
++    }
++}
++
++/// The bell's popover: the notices, newest first.
++struct DockNoticeList: View {
++    @ObservedObject var notices = DockNotices.shared
++    var onClose: () -> Void
++
++    var body: some View {
++        VStack(spacing: 0) {
++            HStack {
++                Text("Notifications").font(.system(size: 13, weight: .semibold))
++                Spacer()
++                Button("Mark All Read") { notices.markAllRead() }.disabled(notices.unread == 0)
++                Button("Clear") { notices.clear() }.disabled(notices.items.isEmpty)
++            }
++            .buttonStyle(.borderless)
++            .font(.system(size: 11))
++            .padding(10)
++            Divider()
++            if notices.items.isEmpty {
++                Text("Nothing yet. Sessions that need you or finish show up here.")
++                    .font(.system(size: 12))
++                    .multilineTextAlignment(.center)
++                    .padding(24)
++            } else {
++                ScrollView {
++                    LazyVStack(alignment: .leading, spacing: 0) {
++                        ForEach(notices.items) { n in
++                            Button {
++                                notices.open(n)
++                                onClose()
++                            } label: {
++                                row(n)
++                            }
++                            .buttonStyle(.plain)
++                            Divider()
++                        }
++                    }
++                }
++            }
++        }
++        .frame(width: 320, height: notices.items.isEmpty ? 120 : 380)
++        .foregroundStyle(DockPalette.text)
++        .background(DockPalette.mantle)
++        .environment(\.colorScheme, DockPalette.scheme)
++    }
++
++    private static let ago: RelativeDateTimeFormatter = {
++        let f = RelativeDateTimeFormatter()
++        f.unitsStyle = .abbreviated
++        return f
++    }()
++
++    private func row(_ n: DockNotices.Notice) -> some View {
++        HStack(alignment: .top, spacing: 8) {
++            Circle().fill(n.read ? Color.clear : DockPalette.blue).frame(width: 7, height: 7).padding(.top, 5)
++            Image(systemName: n.waiting ? "questionmark.circle.fill" : "checkmark.circle.fill")
++                .foregroundStyle(n.waiting ? DockPalette.peach : DockPalette.blue)
++                .padding(.top, 1)
++            VStack(alignment: .leading, spacing: 2) {
++                HStack {
++                    Text(n.title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
++                    Spacer()
++                    Text(Self.ago.localizedString(for: n.date, relativeTo: Date())).font(.system(size: 10))
++                }
++                Text(n.body).font(.system(size: 11)).lineLimit(2)
++            }
++        }
++        .padding(.horizontal, 10)
++        .padding(.vertical, 7)
++        .contentShape(Rectangle())
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockOrdering.swift b/macos/Sources/Features/Dock/DockOrdering.swift
 new file mode 100644
-index 0000000..fbba1d2
+index 0000000..389299c
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockOrdering.swift
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,180 @@
 +import Foundation
 +
 +/// What a tab is doing. Raw values are the urgency order: needs you first.
@@ -640,6 +989,17 @@ index 0000000..fbba1d2
 +    case waiting = 0, running, unread, idle, shell
 +
 +    static func < (a: DockStatus, b: DockStatus) -> Bool { a.rawValue < b.rawValue }
++
++    /// For scripts: waiting, running, finished, idle or shell.
++    var word: String {
++        switch self {
++        case .waiting: "waiting"
++        case .running: "running"
++        case .unread: "finished"
++        case .idle: "idle"
++        case .shell: "shell"
++        }
++    }
 +}
 +
 +/// A colour you give a row, to mark it or to group by.
@@ -1040,10 +1400,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..38418c0
+index 0000000..06ac0df
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,831 @@
+@@ -0,0 +1,874 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -1086,6 +1446,8 @@ index 0000000..38418c0
 +        var renamed = false
 +        /// Its terminal failed to start (the screen was off, usually).
 +        var failed = false
++        /// The claude process, for the ports it listens on.
++        var pid: Int32?
 +        weak var controller: TerminalController?
 +
 +        static func == (a: Row, b: Row) -> Bool {
@@ -1093,7 +1455,7 @@ index 0000000..38418c0
 +                && a.since == b.since && a.selected == b.selected && a.sessionId == b.sessionId
 +                && a.started == b.started && a.project == b.project && a.prompt == b.prompt
 +                && a.pinned == b.pinned && a.tag == b.tag && a.renamed == b.renamed
-+                && a.failed == b.failed
++                && a.failed == b.failed && a.pid == b.pid
 +        }
 +    }
 +
@@ -1131,6 +1493,9 @@ index 0000000..38418c0
 +    @Published private(set) var costs: [String: Double] = [:]
 +    /// Session id to how many tokens its context holds now.
 +    @Published private(set) var contexts: [String: Int] = [:]
++    /// Row key to its folder's git branch, pull request and ports.
++    @Published private(set) var workspaces: [String: DockWorkspace] = [:]
++    private let workspaceMeter = DockWorkspaces()
 +    /// Sessions sent /compact-async a moment ago.
 +    @Published private(set) var compacting: Set<String> = []
 +    @Published private(set) var meta: [String: Meta] = [:]
@@ -1157,6 +1522,9 @@ index 0000000..38418c0
 +    private let stateDir = FileManager.default.homeDirectoryForCurrentUser
 +        .appendingPathComponent(".local/state/ghostty-dock")
 +    private var seen: [String: Int] = [:]
++    /// Each tab's key last time, so a tab whose session changes (a restart,
++    /// claude --continue, claude quitting) keeps its place, name, pin and colour.
++    private var tabKeys: [ObjectIdentifier: String] = [:]
 +    /// Session id to its transcript's creation date; nil while not found.
 +    private var startedCache: [String: Date] = [:]
 +    /// When a session's transcript was last looked for and not found.
@@ -1198,7 +1566,10 @@ index 0000000..38418c0
 +        refreshMovable()
 +        startSessionRestore()
 +        watchSessions()
-+        MainActor.assumeIsolated { DockSurfaceRetry.start() }
++        MainActor.assumeIsolated {
++            DockSurfaceRetry.start()
++            DockAPI.shared.start()
++        }
 +        costTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in self?.refreshCosts() }
 +        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.refreshCosts() }
 +        NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil,
@@ -1452,9 +1823,14 @@ index 0000000..38418c0
 +    /// thread: the first read of a long transcript takes a moment.
 +    private func refreshCosts() {
 +        let files = rows.compactMap { r in r.sessionId.flatMap { sid in transcript(sid).map { (sid, $0) } } }
-+        guard !files.isEmpty else { return }
++        var folders: [String: (dir: String, pid: Int32?)] = [:]
++        if DockSettings.showWorkspace {
++            for r in rows where !r.detail.isEmpty { folders[r.key] = (r.detail, r.pid) }
++        }
 +        costQueue.async { [weak self] in
 +            guard let self else { return }
++            let spaces = self.workspaceMeter.gather(folders)
++            DispatchQueue.main.async { if spaces != self.workspaces { self.workspaces = spaces } }
 +            var found: [String: Double] = [:]
 +            var sizes: [String: Int] = [:]
 +            for (sid, url) in files {
@@ -1497,7 +1873,7 @@ index 0000000..38418c0
 +
 +            // A tab with splits is one row: its most urgent session.
 +            var best: (status: Status, since: Int, name: String, key: String, sid: String?,
-+                       project: String?, prompt: String?)?
++                       project: String?, prompt: String?, pid: Int32?)?
 +            for surface in controller.surfaceTree {
 +                let key = surface.id.uuidString
 +                guard let s = sessions[key] else { continue }
@@ -1517,7 +1893,7 @@ index 0000000..38418c0
 +                }
 +                if best == nil || status < best!.status {
 +                    best = (status, s.since, s.name, key, s.session_id.flatMap { $0.isEmpty ? nil : $0 },
-+                            s.project, s.prompt)
++                            s.project, s.prompt, s.claude_pid)
 +                }
 +            }
 +
@@ -1529,6 +1905,8 @@ index 0000000..38418c0
 +                : !title.isEmpty ? title
 +                : (pwd as NSString).lastPathComponent
 +            let key = best?.sid ?? "dir:" + pwd
++            if let old = tabKeys[id], old != key { carry(from: old, to: key) }
++            tabKeys[id] = key
 +            let m = meta[key]
 +            built.append(Row(id: id, key: key,
 +                             name: m?.name ?? (name.isEmpty ? "shell" : name), detail: pwd,
@@ -1543,9 +1921,11 @@ index 0000000..38418c0
 +                             tag: m?.tag,
 +                             renamed: m?.name != nil,
 +                             failed: failed,
++                             pid: best?.pid,
 +                             controller: controller))
 +        }
 +        order.removeAll { id in !built.contains { $0.id == id } }
++        tabKeys = tabKeys.filter { id, _ in built.contains { $0.id == id } }
 +        // Tab order: windows in the order first seen, tabs as in each window.
 +        func place(_ r: Row) -> (Int, Int) {
 +            guard let w = r.controller?.window else { return (0, 0) }
@@ -1588,6 +1968,7 @@ index 0000000..38418c0
 +
 +    func select(_ row: Row) {
 +        guard let controller = row.controller, let window = controller.window else { return }
++        if let sid = row.sessionId { DockNotices.shared.readAll(sessionId: sid) }
 +        window.makeKeyAndOrderFront(nil)
 +        NSApp.activate(ignoringOtherApps: true)
 +        if let surface = controller.focusedSurface ?? controller.surfaceTree.first {
@@ -1625,6 +2006,23 @@ index 0000000..38418c0
 +            UserDefaults.standard.set(data, forKey: DockSettings.rowMetaKey)
 +        }
 +        refresh()
++    }
++
++    /// Hands a tab's place in the dragged order, and its name, pin and
++    /// colour, to the key it has now.
++    private func carry(from old: String, to new: String) {
++        var order = DockSettings.manualOrder
++        if let i = order.firstIndex(of: old), !order.contains(new) {
++            order[i] = new
++            UserDefaults.standard.set(order, forKey: DockSettings.manualOrderKey)
++        }
++        if let m = meta[old], meta[new] == nil {
++            meta[new] = m
++            meta[old] = nil
++            if let data = try? JSONEncoder().encode(meta) {
++                UserDefaults.standard.set(data, forKey: DockSettings.rowMetaKey)
++            }
++        }
 +    }
 +
 +    func togglePinned(_ row: Row) { setMeta(row) { $0.pinned.toggle() } }
@@ -1800,16 +2198,16 @@ index 0000000..38418c0
 +            guard !first, let before = lastStatus[row.key], before != row.status,
 +                  !(looking && row.selected), let sid = row.sessionId else { continue }
 +            if row.status == .waiting {
++                DockNotices.shared.add(title: row.name, body: row.prompt ?? "Needs you", sessionId: sid, waiting: true)
 +                if DockSettings.notifyWaiting { post(sid: sid, title: row.name, body: row.prompt ?? "Needs you") }
 +                // Only from another app: never switches tabs under you.
 +                if DockSettings.raiseWaiting && !looking {
 +                    DispatchQueue.main.async { [weak self] in self?.bringToFront(sid) }
 +                }
 +            } else if row.status == .unread, before == .running || before == .waiting {
-+                if DockSettings.notifyFinished {
-+                    post(sid: sid, title: row.name,
-+                         body: "Finished" + (costs[sid].map { " · " + DockCost.format($0) + " so far" } ?? ""))
-+                }
++                let body = "Finished" + (costs[sid].map { " · " + DockCost.format($0) + " so far" } ?? "")
++                DockNotices.shared.add(title: row.name, body: body, sessionId: sid, waiting: false)
++                if DockSettings.notifyFinished { post(sid: sid, title: row.name, body: body) }
 +                if DockSettings.raiseFinished && !looking {
 +                    DispatchQueue.main.async { [weak self] in self?.bringToFront(sid) }
 +                }
@@ -1831,6 +2229,11 @@ index 0000000..38418c0
 +    }
 +
 +    static let notificationSessionKey = "ghosttyDockSession"
++
++    /// From `ghostty-dock notify`.
++    func postExternal(title: String, body: String) {
++        postNotice(id: "ghostty-dock-cli-" + UUID().uuidString, title: title, body: body)
++    }
 +
 +    private func post(sid: String, title: String, body: String) {
 +        postNotice(id: "ghostty-dock-" + sid, title: title, body: body, sid: sid)
@@ -1877,10 +2280,10 @@ index 0000000..38418c0
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..62ee6ea
+index 0000000..ed66b9e
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,255 @@
+@@ -0,0 +1,288 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -1903,6 +2306,10 @@ index 0000000..62ee6ea
 +    static let showCostKey = "dock.showCost"
 +    static let notifyWaitingKey = "dock.notifyWaiting"
 +    static let raiseWaitingKey = "dock.raiseWaiting"
++    static let showWorkspaceKey = "dock.showWorkspace"
++    static let phoneTopicKey = "dock.phoneTopic"
++    static let phoneWaitingKey = "dock.phoneWaiting"
++    static let phoneFinishedKey = "dock.phoneFinished"
 +    static let raiseFinishedKey = "dock.raiseFinished"
 +    static let notifyFinishedKey = "dock.notifyFinished"
 +
@@ -1917,6 +2324,9 @@ index 0000000..62ee6ea
 +            groupingKey: Grouping.none.rawValue,
 +            showCostKey: true,
 +            notifyWaitingKey: true,
++            showWorkspaceKey: true,
++            phoneWaitingKey: true,
++            phoneFinishedKey: false,
 +            notifyFinishedKey: true,
 +        ])
 +    }
@@ -1933,6 +2343,10 @@ index 0000000..62ee6ea
 +    static var showCost: Bool { UserDefaults.standard.bool(forKey: showCostKey) }
 +    static var notifyWaiting: Bool { UserDefaults.standard.bool(forKey: notifyWaitingKey) }
 +    static var raiseWaiting: Bool { UserDefaults.standard.bool(forKey: raiseWaitingKey) }
++    static var showWorkspace: Bool { UserDefaults.standard.bool(forKey: showWorkspaceKey) }
++    static var phoneTopic: String { UserDefaults.standard.string(forKey: phoneTopicKey) ?? "" }
++    static var phoneWaiting: Bool { UserDefaults.standard.bool(forKey: phoneWaitingKey) }
++    static var phoneFinished: Bool { UserDefaults.standard.bool(forKey: phoneFinishedKey) }
 +    static var raiseFinished: Bool { UserDefaults.standard.bool(forKey: raiseFinishedKey) }
 +    static var notifyFinished: Bool { UserDefaults.standard.bool(forKey: notifyFinishedKey) }
 +    static var showTabBar: Bool { UserDefaults.standard.bool(forKey: showTabBarKey) }
@@ -1951,6 +2365,11 @@ index 0000000..62ee6ea
 +    @AppStorage(DockSettings.themeKey) private var theme = ""
 +    @AppStorage(DockSettings.groupingKey) private var grouping = DockSettings.Grouping.none
 +    @AppStorage(DockSettings.showCostKey) private var showCost = true
++    @AppStorage(DockSettings.showWorkspaceKey) private var showWorkspace = true
++    @AppStorage(DockSettings.phoneTopicKey) private var phoneTopic = ""
++    @AppStorage(DockSettings.phoneWaitingKey) private var phoneWaiting = true
++    @AppStorage(DockSettings.phoneFinishedKey) private var phoneFinished = false
++    @State private var phoneTest: String?
 +    @AppStorage(DockSettings.notifyWaitingKey) private var notifyWaiting = true
 +    @AppStorage(DockSettings.raiseWaitingKey) private var raiseWaiting = false
 +    @AppStorage(DockSettings.raiseFinishedKey) private var raiseFinished = false
@@ -1990,6 +2409,7 @@ index 0000000..62ee6ea
 +                    ForEach(DockSettings.Grouping.allCases, id: \.self) { Text($0.label).tag($0) }
 +                }
 +                Toggle("Show what each session has cost", isOn: $showCost)
++                Toggle("Show git branch, pull request and ports", isOn: $showWorkspace)
 +                Text("Drag a row by its grip (⋮⋮ on the right) to move it, or right-click → Move Up/Down; the sort becomes “As you drag them”. Right-click also renames, pins or colours it.")
 +                    .font(.callout)
 +                Toggle("Also show Ghostty's tab bar", isOn: $showTabBar)
@@ -2018,10 +2438,26 @@ index 0000000..62ee6ea
 +                    .font(.callout)
 +                Toggle("Dock icon shows how many sessions need you", isOn: $dockBadge)
 +                Toggle("Notify me when a session needs me", isOn: $notifyWaiting)
++                Toggle("Notify me when a session finishes", isOn: $notifyFinished)
 +                Toggle("Bring the window to the front when a session needs me", isOn: $raiseWaiting)
 +                Toggle("Bring the window to the front when a session finishes", isOn: $raiseFinished)
-+                Toggle("Notify me when a session finishes", isOn: $notifyFinished)
-+                Text("Not for the session on screen. Click a notification to go to its tab. The window only comes forward while you are in another app or it is minimised, so it never switches tabs as you type.")
++                Text("Not for the session on screen. Click a notification to go to its tab. The window only comes forward while you are in another app or it is minimised, so it never switches tabs as you type. The 🔔 in the sidebar keeps the last 200.")
++                    .font(.callout)
++            }
++            Section("Phone") {
++                TextField("ntfy topic", text: $phoneTopic, prompt: Text("e.g. my-dock-7f3k2"))
++                Toggle("Send when a session needs me", isOn: $phoneWaiting)
++                Toggle("Send when a session finishes", isOn: $phoneFinished)
++                LabeledContent(phoneTest ?? "") {
++                    Button("Send a Test") {
++                        phoneTest = "Sending…"
++                        DockNotices.shared.push(title: "Ghostty Dock", body: "Test from your Mac", urgent: false) { ok in
++                            phoneTest = ok ? "Sent" : "Failed: check the topic"
++                        }
++                    }
++                    .disabled(DockNotices.topicURL(phoneTopic) == nil)
++                }
++                Text("Install the free ntfy app on your phone and subscribe to the same topic. Pick a long, hard-to-guess name: anyone who knows it can read it. A full URL works for your own ntfy server.")
 +                    .font(.callout)
 +            }
 +    }
@@ -2246,10 +2682,10 @@ index 0000000..291ee5e
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..57391a7
+index 0000000..a09d208
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,712 @@
+@@ -0,0 +1,759 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -2313,10 +2749,13 @@ index 0000000..57391a7
 +struct DockSidebarView: View {
 +    @ObservedObject var model = DockSessions.shared
 +    @ObservedObject var updates = DockUpdates.shared
++    @ObservedObject var notices = DockNotices.shared
++    @State private var showNotices = false
 +    @AppStorage(DockSettings.showSidebarKey) private var show = true
 +    @AppStorage(DockSettings.themeKey) private var themeName = ""
 +    @AppStorage(DockSettings.sidebarWidthKey) private var width = Double(Self.width)
 +    @AppStorage(DockSettings.showCostKey) private var showCost = true
++    @AppStorage(DockSettings.showWorkspaceKey) private var showWorkspace = true
 +    @State private var dragStart: Double?
 +    @State private var dropTarget: String?
 +    var onNewTab: () -> Void
@@ -2404,6 +2843,7 @@ index 0000000..57391a7
 +                    undocking: row.sessionId.map(model.undocking.contains) ?? false,
 +                    restarting: row.sessionId.map(model.restarting.contains) ?? false,
 +                    context: row.sessionId.flatMap { model.contexts[$0] },
++                    workspace: showWorkspace ? model.workspaces[row.key] : nil,
 +                    compacting: row.sessionId.map(model.compacting.contains) ?? false,
 +                    canCompact: model.canCompact(row),
 +                    onCompact: { model.compact(row) },
@@ -2505,6 +2945,16 @@ index 0000000..57391a7
 +            .buttonStyle(.plain)
 +            .foregroundStyle(DockPalette.text)
 +            .help("Find a session (⌘P)")
++            Button(action: { showNotices.toggle() }) {
++                Image(systemName: notices.unread > 0 ? "bell.badge" : "bell")
++                    .font(.system(size: 12, weight: .semibold))
++                    .foregroundStyle(DockPalette.text)
++            }
++            .buttonStyle(.plain)
++            .help(notices.unread > 0 ? "\(notices.unread) unread notifications" : "Notifications")
++            .popover(isPresented: $showNotices, arrowEdge: .bottom) {
++                DockNoticeList { showNotices = false }
++            }
 +            Button(action: onNewTab) {
 +                Image(systemName: "plus").font(.system(size: 12, weight: .semibold))
 +            }
@@ -2572,6 +3022,7 @@ index 0000000..57391a7
 +    var undocking: Bool
 +    var restarting: Bool
 +    var context: Int?
++    var workspace: DockWorkspace?
 +    var compacting: Bool
 +    var canCompact: Bool
 +    var onCompact: () -> Void
@@ -2604,6 +3055,13 @@ index 0000000..57391a7
 +                        .font(.system(size: 10.5))
 +                        .foregroundStyle(row.failed ? DockPalette.color(DockTag.red) : DockPalette.color(row.status))
 +                        .lineLimit(1)
++                }
++                if let line = workspace?.summary {
++                    Text(line)
++                        .font(.system(size: 10, design: .monospaced))
++                        .foregroundStyle(DockPalette.text.opacity(0.75))
++                        .lineLimit(1)
++                        .truncationMode(.middle)
 +                }
 +                // What it is waiting on, so you know before you switch.
 +                if let prompt = row.prompt {
@@ -2670,6 +3128,8 @@ index 0000000..57391a7
 +        .overlay {
 +            if row.selected {
 +                RoundedRectangle(cornerRadius: 7).strokeBorder(DockPalette.blue.opacity(0.8), lineWidth: 1.5)
++            } else if row.status == .waiting {
++                DockAttentionRing()
 +            }
 +        }
 +        .overlay(alignment: .leading) {
@@ -2685,6 +3145,14 @@ index 0000000..57391a7
 +            let model = DockSessions.shared
 +            Button("Rename…") { model.rename(row) }
 +            Button(row.pinned ? "Unpin" : "Pin to the Top") { model.togglePinned(row) }
++            if let url = workspace?.pr?.url.flatMap(URL.init(string:)) {
++                Button("Open Pull Request #\(workspace!.pr!.number)") { NSWorkspace.shared.open(url) }
++            }
++            ForEach(workspace?.ports.prefix(3).map { $0 } ?? [], id: \.self) { port in
++                Button("Open localhost:\(port)") {
++                    NSWorkspace.shared.open(URL(string: "http://localhost:\(port)")!)
++                }
++            }
 +            Button("Move Up") { model.move(row, by: -1) }
 +                .disabled(model.visibleRows.first?.key == row.key)
 +            Button("Move Down") { model.move(row, by: 1) }
@@ -2771,6 +3239,21 @@ index 0000000..57391a7
 +}
 +
 +/// Dropping a dragged row: it goes just before the row it lands on.
++/// A glowing, breathing ring around a row that needs you.
++struct DockAttentionRing: View {
++    @State private var bright = false
++
++    var body: some View {
++        RoundedRectangle(cornerRadius: 7)
++            .strokeBorder(DockPalette.peach.opacity(bright ? 0.95 : 0.4), lineWidth: 1.5)
++            .shadow(color: DockPalette.peach.opacity(bright ? 0.7 : 0.15), radius: bright ? 6 : 2)
++            .allowsHitTesting(false)
++            .onAppear {
++                withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) { bright = true }
++            }
++    }
++}
++
 +/// Six dots, the usual sign that a row can be dragged.
 +struct DockGrip: View {
 +    var body: some View {
@@ -3450,6 +3933,183 @@ index 0000000..26108e0
 +        let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
 +        p.waitUntilExit()
 +        return (p.terminationStatus, text)
++    }
++}
+diff --git a/macos/Sources/Features/Dock/DockWorkspace.swift b/macos/Sources/Features/Dock/DockWorkspace.swift
+new file mode 100644
+index 0000000..86cd02b
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockWorkspace.swift
+@@ -0,0 +1,171 @@
++import Foundation
++
++/// What each row's folder is up to: its git branch, commits not pushed,
++/// uncommitted files, its pull request, and the ports its session listens on.
++///
++/// Foundation only, so the parsing can be tested on its own.
++struct DockWorkspace: Equatable {
++    var branch: String?
++    /// Commits on the branch not on its upstream.
++    var ahead = 0
++    /// Files changed and not committed.
++    var dirty = 0
++    var pr: PullRequest?
++    var ports: [Int] = []
++
++    struct PullRequest: Equatable {
++        var number: Int
++        /// OPEN, MERGED or CLOSED.
++        var state: String
++        var draft = false
++        var url: String?
++    }
++
++    /// "main ↑2 ●3 · #42 · :3000", or nil when there is nothing to say.
++    var summary: String? {
++        var parts: [String] = []
++        if let branch {
++            var b = branch
++            if ahead > 0 { b += " ↑\(ahead)" }
++            if dirty > 0 { b += " ●\(dirty)" }
++            parts.append(b)
++        }
++        if let pr { parts.append("#\(pr.number)" + (pr.draft ? " draft" : pr.state == "OPEN" ? "" : " " + pr.state.lowercased())) }
++        if !ports.isEmpty { parts.append(ports.prefix(3).map { ":\($0)" }.joined(separator: " ")) }
++        return parts.isEmpty ? nil : parts.joined(separator: " · ")
++    }
++
++    // MARK: Parsing
++
++    /// Branch, ahead and dirty from `git status --porcelain=v2 --branch`.
++    static func parseStatus(_ text: String) -> DockWorkspace {
++        var w = DockWorkspace()
++        var oid: String?
++        for line in text.split(separator: "\n") {
++            if line.hasPrefix("# branch.head ") {
++                let head = String(line.dropFirst(14))
++                w.branch = head == "(detached)" ? nil : head
++            } else if line.hasPrefix("# branch.oid ") {
++                oid = String(line.dropFirst(13).prefix(7))
++            } else if line.hasPrefix("# branch.ab ") {
++                let ab = line.dropFirst(12).split(separator: " ")
++                if let a = ab.first, a.hasPrefix("+") { w.ahead = Int(a.dropFirst()) ?? 0 }
++            } else if !line.hasPrefix("#") {
++                w.dirty += 1
++            }
++        }
++        if w.branch == nil, let oid, oid != "(initial" { w.branch = oid }
++        return w
++    }
++
++    /// From `gh pr view --json number,state,isDraft,url`.
++    static func parsePullRequest(_ data: Data) -> PullRequest? {
++        guard let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
++              let number = o["number"] as? Int, let state = o["state"] as? String else { return nil }
++        return PullRequest(number: number, state: state, draft: o["isDraft"] as? Bool ?? false,
++                           url: o["url"] as? String)
++    }
++
++    /// Pid to the TCP ports it listens on, from `lsof -nP -iTCP -sTCP:LISTEN -Fpn`.
++    static func parseListening(_ text: String) -> [Int32: [Int]] {
++        var out: [Int32: Set<Int>] = [:]
++        var pid: Int32?
++        for line in text.split(separator: "\n") {
++            if line.hasPrefix("p") {
++                pid = Int32(line.dropFirst())
++            } else if line.hasPrefix("n"), let pid, let colon = line.lastIndex(of: ":"),
++                      let port = Int(line[line.index(after: colon)...]) {
++                out[pid, default: []].insert(port)
++            }
++        }
++        return out.mapValues { $0.sorted() }
++    }
++
++    /// Pid to parent, from `ps -axo pid=,ppid=`.
++    static func parseParents(_ text: String) -> [Int32: Int32] {
++        var out: [Int32: Int32] = [:]
++        for line in text.split(separator: "\n") {
++            let f = line.split(separator: " ")
++            if f.count >= 2, let p = Int32(f[0]), let pp = Int32(f[1]) { out[p] = pp }
++        }
++        return out
++    }
++
++    /// Ports listened on by `root` or anything it started.
++    static func ports(under root: Int32, listening: [Int32: [Int]], parents: [Int32: Int32]) -> [Int] {
++        var found = Set<Int>()
++        for (pid, ports) in listening {
++            var p = pid
++            var hops = 0
++            while p > 1, hops < 64 {
++                if p == root { found.formUnion(ports); break }
++                guard let next = parents[p] else { break }
++                p = next
++                hops += 1
++            }
++        }
++        return found.sorted()
++    }
++
++    // MARK: Gathering
++
++    /// Runs a tool and returns its output, or nil when it fails.
++    static func run(_ tool: String, _ args: [String], in dir: String? = nil) -> Data? {
++        let p = Process()
++        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
++        p.arguments = [tool] + args
++        if let dir { p.currentDirectoryURL = URL(fileURLWithPath: dir) }
++        var env = ProcessInfo.processInfo.environment
++        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (env["PATH"] ?? "")
++        env["GIT_OPTIONAL_LOCKS"] = "0"
++        p.environment = env
++        let out = Pipe()
++        p.standardOutput = out
++        p.standardError = FileHandle.nullDevice
++        guard (try? p.run()) != nil else { return nil }
++        let data = out.fileHandleForReading.readDataToEndOfFile()
++        p.waitUntilExit()
++        return p.terminationStatus == 0 ? data : nil
++    }
++}
++
++/// Keeps DockWorkspace facts for each folder, refreshed off the main thread.
++/// Pull requests are looked up at most every 2 minutes per branch.
++final class DockWorkspaces {
++    private var prCache: [String: (at: Date, pr: DockWorkspace.PullRequest?)] = [:]
++    private let ghAvailable = DockWorkspace.run("gh", ["--version"]) != nil
++
++    /// `folders` maps a row's key to its folder and its claude pid.
++    func gather(_ folders: [String: (dir: String, pid: Int32?)]) -> [String: DockWorkspace] {
++        let listening = DockWorkspace.run("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn"])
++            .map { DockWorkspace.parseListening(String(decoding: $0, as: UTF8.self)) } ?? [:]
++        let parents = listening.isEmpty ? [:] : DockWorkspace.run("ps", ["-axo", "pid=,ppid="])
++            .map { DockWorkspace.parseParents(String(decoding: $0, as: UTF8.self)) } ?? [:]
++        var out: [String: DockWorkspace] = [:]
++        var byDir: [String: DockWorkspace] = [:]
++        for (key, f) in folders where !f.dir.isEmpty {
++            var w: DockWorkspace
++            if let known = byDir[f.dir] {
++                w = known
++            } else {
++                w = DockWorkspace.run("git", ["status", "--porcelain=v2", "--branch"], in: f.dir)
++                    .map { DockWorkspace.parseStatus(String(decoding: $0, as: UTF8.self)) } ?? DockWorkspace()
++                if let branch = w.branch { w.pr = pullRequest(dir: f.dir, branch: branch) }
++                byDir[f.dir] = w
++            }
++            if let pid = f.pid { w.ports = DockWorkspace.ports(under: pid, listening: listening, parents: parents) }
++            out[key] = w
++        }
++        return out
++    }
++
++    private func pullRequest(dir: String, branch: String) -> DockWorkspace.PullRequest? {
++        guard ghAvailable, branch != "main", branch != "master" else { return nil }
++        let key = dir + "\n" + branch
++        if let c = prCache[key], Date().timeIntervalSince(c.at) < 120 { return c.pr }
++        let pr = DockWorkspace.run("gh", ["pr", "view", "--json", "number,state,isDraft,url"], in: dir)
++            .flatMap(DockWorkspace.parsePullRequest)
++        prCache[key] = (Date(), pr)
++        return pr
 +    }
 +}
 diff --git a/macos/Sources/Features/Terminal/TerminalView.swift b/macos/Sources/Features/Terminal/TerminalView.swift
