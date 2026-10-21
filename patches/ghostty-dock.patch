@@ -802,16 +802,16 @@ index 0000000..4b8472f
 +}
 diff --git a/macos/Sources/Features/Dock/DockNotices.swift b/macos/Sources/Features/Dock/DockNotices.swift
 new file mode 100644
-index 0000000..3359e04
+index 0000000..9a04d08
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockNotices.swift
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,143 @@
 +import AppKit
 +import Combine
 +import SwiftUI
 +
 +/// Everything Ghostty Dock told you about, newest first, for the bell in the
-+/// sidebar's header; and the same news sent to your phone through ntfy.
++/// sidebar's header.
 +///
 +/// Kept in ~/.local/state/ghostty-dock/notices.json (the last 200), so it
 +/// survives a restart.
@@ -847,9 +847,6 @@ index 0000000..3359e04
 +        items.insert(Notice(date: Date(), title: title, body: body, sessionId: sessionId, waiting: waiting), at: 0)
 +        if items.count > Self.keep { items.removeLast(items.count - Self.keep) }
 +        save()
-+        if waiting ? DockSettings.phoneWaiting : DockSettings.phoneFinished {
-+            push(title: title, body: body, urgent: waiting)
-+        }
 +    }
 +
 +    func open(_ notice: Notice) {
@@ -878,30 +875,6 @@ index 0000000..3359e04
 +    private func save() {
 +        guard let data = try? JSONEncoder().encode(items) else { return }
 +        try? data.write(to: file, options: .atomic)
-+    }
-+
-+    // MARK: Phone
-+
-+    /// The ntfy topic, as a full URL: a bare name goes to ntfy.sh.
-+    static func topicURL(_ topic: String) -> URL? {
-+        let t = topic.trimmingCharacters(in: .whitespaces)
-+        guard !t.isEmpty else { return nil }
-+        return URL(string: t.contains("://") ? t : "https://ntfy.sh/" + t)
-+    }
-+
-+    /// Posts to ntfy; the ntfy app on the phone shows it.
-+    func push(title: String, body: String, urgent: Bool, done: ((Bool) -> Void)? = nil) {
-+        guard let url = Self.topicURL(DockSettings.phoneTopic) else { done?(false); return }
-+        var req = URLRequest(url: url)
-+        req.httpMethod = "POST"
-+        req.setValue(title, forHTTPHeaderField: "Title")
-+        req.setValue(urgent ? "high" : "default", forHTTPHeaderField: "Priority")
-+        req.setValue(urgent ? "question" : "white_check_mark", forHTTPHeaderField: "Tags")
-+        req.httpBody = Data(body.utf8)
-+        URLSession.shared.dataTask(with: req) { _, resp, error in
-+            let ok = error == nil && ((resp as? HTTPURLResponse)?.statusCode ?? 0) < 300
-+            DispatchQueue.main.async { done?(ok) }
-+        }.resume()
 +    }
 +}
 +
@@ -2280,10 +2253,10 @@ index 0000000..06ac0df
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..ed66b9e
+index 0000000..6fcffed
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,288 @@
+@@ -0,0 +1,260 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -2307,9 +2280,6 @@ index 0000000..ed66b9e
 +    static let notifyWaitingKey = "dock.notifyWaiting"
 +    static let raiseWaitingKey = "dock.raiseWaiting"
 +    static let showWorkspaceKey = "dock.showWorkspace"
-+    static let phoneTopicKey = "dock.phoneTopic"
-+    static let phoneWaitingKey = "dock.phoneWaiting"
-+    static let phoneFinishedKey = "dock.phoneFinished"
 +    static let raiseFinishedKey = "dock.raiseFinished"
 +    static let notifyFinishedKey = "dock.notifyFinished"
 +
@@ -2325,8 +2295,6 @@ index 0000000..ed66b9e
 +            showCostKey: true,
 +            notifyWaitingKey: true,
 +            showWorkspaceKey: true,
-+            phoneWaitingKey: true,
-+            phoneFinishedKey: false,
 +            notifyFinishedKey: true,
 +        ])
 +    }
@@ -2344,9 +2312,6 @@ index 0000000..ed66b9e
 +    static var notifyWaiting: Bool { UserDefaults.standard.bool(forKey: notifyWaitingKey) }
 +    static var raiseWaiting: Bool { UserDefaults.standard.bool(forKey: raiseWaitingKey) }
 +    static var showWorkspace: Bool { UserDefaults.standard.bool(forKey: showWorkspaceKey) }
-+    static var phoneTopic: String { UserDefaults.standard.string(forKey: phoneTopicKey) ?? "" }
-+    static var phoneWaiting: Bool { UserDefaults.standard.bool(forKey: phoneWaitingKey) }
-+    static var phoneFinished: Bool { UserDefaults.standard.bool(forKey: phoneFinishedKey) }
 +    static var raiseFinished: Bool { UserDefaults.standard.bool(forKey: raiseFinishedKey) }
 +    static var notifyFinished: Bool { UserDefaults.standard.bool(forKey: notifyFinishedKey) }
 +    static var showTabBar: Bool { UserDefaults.standard.bool(forKey: showTabBarKey) }
@@ -2366,10 +2331,6 @@ index 0000000..ed66b9e
 +    @AppStorage(DockSettings.groupingKey) private var grouping = DockSettings.Grouping.none
 +    @AppStorage(DockSettings.showCostKey) private var showCost = true
 +    @AppStorage(DockSettings.showWorkspaceKey) private var showWorkspace = true
-+    @AppStorage(DockSettings.phoneTopicKey) private var phoneTopic = ""
-+    @AppStorage(DockSettings.phoneWaitingKey) private var phoneWaiting = true
-+    @AppStorage(DockSettings.phoneFinishedKey) private var phoneFinished = false
-+    @State private var phoneTest: String?
 +    @AppStorage(DockSettings.notifyWaitingKey) private var notifyWaiting = true
 +    @AppStorage(DockSettings.raiseWaitingKey) private var raiseWaiting = false
 +    @AppStorage(DockSettings.raiseFinishedKey) private var raiseFinished = false
@@ -2442,22 +2403,6 @@ index 0000000..ed66b9e
 +                Toggle("Bring the window to the front when a session needs me", isOn: $raiseWaiting)
 +                Toggle("Bring the window to the front when a session finishes", isOn: $raiseFinished)
 +                Text("Not for the session on screen. Click a notification to go to its tab. The window only comes forward while you are in another app or it is minimised, so it never switches tabs as you type. The 🔔 in the sidebar keeps the last 200.")
-+                    .font(.callout)
-+            }
-+            Section("Phone") {
-+                TextField("ntfy topic", text: $phoneTopic, prompt: Text("e.g. my-dock-7f3k2"))
-+                Toggle("Send when a session needs me", isOn: $phoneWaiting)
-+                Toggle("Send when a session finishes", isOn: $phoneFinished)
-+                LabeledContent(phoneTest ?? "") {
-+                    Button("Send a Test") {
-+                        phoneTest = "Sending…"
-+                        DockNotices.shared.push(title: "Ghostty Dock", body: "Test from your Mac", urgent: false) { ok in
-+                            phoneTest = ok ? "Sent" : "Failed: check the topic"
-+                        }
-+                    }
-+                    .disabled(DockNotices.topicURL(phoneTopic) == nil)
-+                }
-+                Text("Install the free ntfy app on your phone and subscribe to the same topic. Pick a long, hard-to-guess name: anyone who knows it can read it. A full URL works for your own ntfy server.")
 +                    .font(.callout)
 +            }
 +    }
