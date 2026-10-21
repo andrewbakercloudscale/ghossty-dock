@@ -3057,10 +3057,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..b4093dd
+index 0000000..5998c58
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,954 @@
+@@ -0,0 +1,986 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -3920,18 +3920,50 @@ index 0000000..b4093dd
 +                if DockSettings.notifyWaiting { post(sid: sid, title: row.name, body: row.prompt ?? "Needs you") }
 +                // Only from another app: never switches tabs under you.
 +                if DockSettings.raiseWaiting && !looking {
-+                    DispatchQueue.main.async { [weak self] in self?.bringToFront(sid, finished: false) }
++                    DispatchQueue.main.async { [weak self] in self?.bringToFrontWhenIdle(sid, finished: false) }
 +                }
 +            } else if row.status == .unread, before == .running || before == .waiting {
 +                let body = "Finished" + (costs[sid].map { " · " + DockCost.format($0) + " so far" } ?? "")
 +                DockNotices.shared.add(title: row.name, body: body, sessionId: sid, waiting: false)
 +                if DockSettings.notifyFinished { post(sid: sid, title: row.name, body: body) }
 +                if DockSettings.raiseFinished && !looking {
-+                    DispatchQueue.main.async { [weak self] in self?.bringToFront(sid, finished: true) }
++                    DispatchQueue.main.async { [weak self] in self?.bringToFrontWhenIdle(sid, finished: true) }
 +                }
 +            }
 +        }
 +        lastStatus = next
++    }
++
++    /// Sessions waiting to come to the front until you stop typing.
++    private var raisePending: Set<String> = []
++    static let raiseIdleSecs = 10.0
++
++    /// Seconds since your last key press, click or mouse move, in any app.
++    static var inputIdleSecs: Double {
++        CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
++    }
++
++    /// Brings the session up once you have not typed or moved the mouse for
++    /// ten seconds, so it never grabs keys meant for another window. Drops
++    /// it if the session no longer needs you by then, or you came to it.
++    private func bringToFrontWhenIdle(_ sid: String, finished: Bool) {
++        guard raisePending.insert(sid).inserted else { return }
++        func check() {
++            let want: Status = finished ? .unread : .waiting
++            guard let row = rows.first(where: { $0.sessionId == sid }), row.status == want,
++                  !(NSApp.isActive && row.selected) else {
++                raisePending.remove(sid)
++                return
++            }
++            let idle = Self.inputIdleSecs
++            if idle >= Self.raiseIdleSecs {
++                raisePending.remove(sid)
++                bringToFront(sid, finished: finished)
++            } else {
++                DispatchQueue.main.asyncAfter(deadline: .now() + max(0.5, Self.raiseIdleSecs - idle)) { check() }
++            }
++        }
++        check()
 +    }
 +
 +    /// Un-minimises the window and shows session <sid>'s tab, over other
