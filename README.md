@@ -59,8 +59,6 @@ reports each session's status.
 - **Notifications** when a session needs you or finishes, unless you are
   looking at it. Click one to go to its tab. Each can be turned off. The 🔔 in
   the header lists the last 200; going to a session marks its ones read.
-- **Phone**: the same news on your phone through the free ntfy app
-  (Settings → Notifications → Phone).
 - **Find (⌘P or the magnifier)**: type part of a name, folder or question;
   ↑↓ and Return. Closed sessions are in the list too.
 - **Reopen closed (⌘⇧T)**: within a few seconds Ghostty brings the tab back as
@@ -137,7 +135,6 @@ Five tabs: **Sidebar** (with Compaction), **Theme**, **Notifications**,
 | ⌃⌥J jumps to the next session that needs you | on | A global hotkey, from any app. With none waiting it goes to the next finished one. |
 | Dock icon shows how many sessions need you | on | The red badge on the Dock icon. |
 | Notify me when a session needs me / finishes | on | macOS notifications, not for the session on screen. If Claude Code already notifies you through the terminal, turn one off. |
-| Phone: ntfy topic, send when needs me / finishes | empty, on, off | Pushes through [ntfy](https://ntfy.sh): subscribe to the same topic in the ntfy phone app. Use a long, hard-to-guess topic, or a full URL for your own server. **Send a Test** checks it. |
 | Bring the window to the front when a session needs me / finishes | off | Un-minimises Ghostty Dock and shows that session's tab, over whatever app you are in. Never while you are already looking at Ghostty Dock, so it can't switch tabs as you type. |
 | Reopen Claude sessions when Ghostty Dock starts | on | The app records its open sessions every 10 seconds; after a quit, crash or update they come back as tabs with `claude --resume`. Sessions already running elsewhere are skipped. |
 | Open Ghostty Dock at login | off | Adds it to macOS Login Items. |
