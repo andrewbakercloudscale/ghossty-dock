@@ -1040,10 +1040,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..17e93df
+index 0000000..38418c0
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,822 @@
+@@ -0,0 +1,831 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -1659,6 +1659,15 @@ index 0000000..17e93df
 +        refresh()
 +    }
 +
++    /// Move Up / Move Down from the row's menu: one place in the sidebar.
++    func move(_ row: Row, by step: Int) {
++        let keys = visibleRows.map(\.key)
++        guard let i = keys.firstIndex(of: row.key) else { return }
++        let to = i + step
++        guard keys.indices.contains(to) else { return }
++        move(row.key, before: step < 0 ? keys[to] : (to + 1 < keys.count ? keys[to + 1] : nil))
++    }
++
 +    func toggleCollapsed(_ groupId: String) {
 +        if collapsed.contains(groupId) { collapsed.remove(groupId) } else { collapsed.insert(groupId) }
 +        UserDefaults.standard.set(collapsed.sorted().joined(separator: "\n"), forKey: DockSettings.collapsedKey)
@@ -1868,7 +1877,7 @@ index 0000000..17e93df
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..0d7a702
+index 0000000..62ee6ea
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
 @@ -0,0 +1,255 @@
@@ -1981,7 +1990,7 @@ index 0000000..0d7a702
 +                    ForEach(DockSettings.Grouping.allCases, id: \.self) { Text($0.label).tag($0) }
 +                }
 +                Toggle("Show what each session has cost", isOn: $showCost)
-+                Text("Drag a row to move it; the sort becomes “As you drag them”. Right-click a row to rename, pin or colour it.")
++                Text("Drag a row by its grip (⋮⋮ on the right) to move it, or right-click → Move Up/Down; the sort becomes “As you drag them”. Right-click also renames, pins or colours it.")
 +                    .font(.callout)
 +                Toggle("Also show Ghostty's tab bar", isOn: $showTabBar)
 +            }
@@ -2237,10 +2246,10 @@ index 0000000..291ee5e
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..13dde54
+index 0000000..57391a7
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,683 @@
+@@ -0,0 +1,712 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -2642,6 +2651,15 @@ index 0000000..13dde54
 +                }
 +            }
 +            }
++            // Says the row can be dragged; brighter while the pointer is on the row.
++            DockGrip()
++                .opacity(hover ? 1 : 0.4)
++                .frame(width: 8, height: 32)
++                .contentShape(Rectangle())
++                .onHover { inside in
++                    if inside { NSCursor.openHand.push() } else { NSCursor.pop() }
++                }
++                .dockTip("Drag to reorder")
 +        }
 +        .padding(.horizontal, 8)
 +        .padding(.vertical, 6)
@@ -2661,11 +2679,16 @@ index 0000000..13dde54
 +        }
 +        .contentShape(Rectangle())
 +        .onHover { hover = $0 }
-+        .help([row.detail.isEmpty ? row.name : row.detail, row.prompt].compactMap { $0 }.joined(separator: "\n"))
++        .help([row.detail.isEmpty ? row.name : row.detail, row.prompt, "Drag to reorder · right-click for more"]
++            .compactMap { $0 }.joined(separator: "\n"))
 +        .contextMenu {
 +            let model = DockSessions.shared
 +            Button("Rename…") { model.rename(row) }
 +            Button(row.pinned ? "Unpin" : "Pin to the Top") { model.togglePinned(row) }
++            Button("Move Up") { model.move(row, by: -1) }
++                .disabled(model.visibleRows.first?.key == row.key)
++            Button("Move Down") { model.move(row, by: 1) }
++                .disabled(model.visibleRows.last?.key == row.key)
 +            Menu("Colour") {
 +                ForEach(DockTag.allCases, id: \.self) { tag in
 +                    Button {
@@ -2748,6 +2771,21 @@ index 0000000..13dde54
 +}
 +
 +/// Dropping a dragged row: it goes just before the row it lands on.
++/// Six dots, the usual sign that a row can be dragged.
++struct DockGrip: View {
++    var body: some View {
++        VStack(spacing: 2) {
++            ForEach(0..<3, id: \.self) { _ in
++                HStack(spacing: 2) {
++                    Circle().frame(width: 2.5, height: 2.5)
++                    Circle().frame(width: 2.5, height: 2.5)
++                }
++            }
++        }
++        .foregroundStyle(DockPalette.text.opacity(0.7))
++    }
++}
++
 +struct DockRowDrop: DropDelegate {
 +    var target: String?
 +    @Binding var hovered: String?

@@ -59,8 +59,8 @@ reports each session's status.
   it was; after that, the session is resumed in a new tab with its old flags.
 - **Right-click a row** to rename it, pin it to the top or give it a colour.
   These stick to the session, across restarts.
-- **Drag rows** to put them in your own order (the sort becomes "As you drag
-  them").
+- **Drag rows** by the ⋮⋮ grip on their right to put them in your own order
+  (the sort becomes "As you drag them"), or right-click → Move Up / Move Down.
 - **Groups** (Settings): fold rows under their folder (the project's parent
   folder) or their colour. Click a heading to fold it; a folded group still
   shows how many need you.
