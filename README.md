@@ -59,6 +59,9 @@ reports each session's status.
 - **Notifications** when a session needs you or finishes, unless you are
   looking at it. Click one to go to its tab. Each can be turned off. The 🔔 in
   the header lists the last 200; going to a session marks its ones read.
+- **Filter by state**: click a counter under the header (needs you, running,
+  finished, idle, shell) to show only those sessions; click it again to show
+  all.
 - **Find (⌘P or the magnifier)**: type part of a name, folder or question;
   ↑↓ and Return. Closed sessions are in the list too.
 - **Agents (⌘⇧A or the 👥 button)**: every subagent your sessions have

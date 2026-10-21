@@ -306,10 +306,10 @@ index 0000000..3af6440
 +}
 diff --git a/macos/Sources/Features/Dock/DockAbout.swift b/macos/Sources/Features/Dock/DockAbout.swift
 new file mode 100644
-index 0000000..1e1b5d5
+index 0000000..ff0ba69
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAbout.swift
-@@ -0,0 +1,338 @@
+@@ -0,0 +1,339 @@
 +import AppKit
 +import SwiftUI
 +
@@ -633,7 +633,7 @@ index 0000000..1e1b5d5
 +    static let shared = DockAboutWindow()
 +    private var window: NSWindow?
 +
-+    func show() {
++    func show(near point: NSPoint? = nil) {
 +        if window == nil {
 +            let w = NSWindow(contentViewController: NSHostingController(rootView: DockAboutView()))
 +            w.title = "About Ghostty Dock"
@@ -643,6 +643,7 @@ index 0000000..1e1b5d5
 +            w.center()
 +            window = w
 +        }
++        if let point, window?.isVisible == false { window?.place(near: point) }
 +        NSApp.activate(ignoringOtherApps: true)
 +        window?.makeKeyAndOrderFront(nil)
 +        if DockUpdates.shared.lastCheck == nil { DockUpdates.shared.check() }
@@ -845,10 +846,10 @@ index 0000000..1468a67
 +}
 diff --git a/macos/Sources/Features/Dock/DockAgentsView.swift b/macos/Sources/Features/Dock/DockAgentsView.swift
 new file mode 100644
-index 0000000..0b42d7c
+index 0000000..ced32b7
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAgentsView.swift
-@@ -0,0 +1,406 @@
+@@ -0,0 +1,407 @@
 +import AppKit
 +import SwiftUI
 +
@@ -1240,7 +1241,7 @@ index 0000000..0b42d7c
 +    static let shared = DockAgentsWindow()
 +    private var window: NSWindow?
 +
-+    func show() {
++    func show(near point: NSPoint? = nil) {
 +        if window == nil {
 +            let w = NSWindow(contentViewController: NSHostingController(rootView: DockAgentsView()))
 +            w.title = "Agents"
@@ -1251,6 +1252,7 @@ index 0000000..0b42d7c
 +            if !w.setFrameUsingName("GhosttyDockAgents") { w.center() }
 +            window = w
 +        }
++        if let point, window?.isVisible == false { window?.place(near: point) }
 +        NSApp.activate(ignoringOtherApps: true)
 +        window?.makeKeyAndOrderFront(nil)
 +    }
@@ -2005,10 +2007,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..5fc326e
+index 0000000..604fdd5
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,877 @@
+@@ -0,0 +1,892 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -2110,9 +2112,24 @@ index 0000000..5fc326e
 +    /// missing-sessions.tsv, less any running again.
 +    @Published private(set) var missing: [Closed] = []
 +
-+    /// The rows you can see: not in a folded group.
++    /// Only rows in this state, from clicking its counter; nil shows all.
++    @Published var statusFilter: Status?
++
++    /// The rows you can see: not in a folded group, and in the state
++    /// filtered on.
 +    var visibleRows: [Row] {
-+        groups.filter { !collapsed.contains($0.id) || $0.title.isEmpty }.flatMap(\.items)
++        groups.filter { !collapsed.contains($0.id) || $0.title.isEmpty }.flatMap { shown($0.items) }
++    }
++
++    /// The rows of a group that pass the state filter.
++    func shown(_ items: [Row]) -> [Row] {
++        guard let statusFilter else { return items }
++        return items.filter { $0.status == statusFilter }
++    }
++
++    /// Filters on this state; again turns the filter off.
++    func toggleFilter(_ status: Status) {
++        statusFilter = statusFilter == status ? nil : status
 +    }
 +
 +    /// Claude Code sessions in their own stock Ghostty app, from
@@ -2336,7 +2353,7 @@ index 0000000..5fc326e
 +        alert.addButton(withTitle: "Set Up Claude Burst")
 +        alert.addButton(withTitle: "Learn More")
 +        alert.addButton(withTitle: "Cancel")
-+        switch alert.runModal() {
++        switch alert.runModalNearPointer() {
 +        case .alertFirstButtonReturn:
 +            let opener = FileManager.default.homeDirectoryForCurrentUser
 +                .appendingPathComponent(".local/bin/ghostty-dock-open").path
@@ -2648,7 +2665,7 @@ index 0000000..5fc326e
 +        alert.addButton(withTitle: "Rename")
 +        alert.addButton(withTitle: "Cancel")
 +        alert.window.initialFirstResponder = field
-+        guard alert.runModal() == .alertFirstButtonReturn else { return }
++        guard alert.runModalNearPointer() == .alertFirstButtonReturn else { return }
 +        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
 +        setMeta(row) { $0.name = name.isEmpty ? nil : name }
 +    }
@@ -2888,10 +2905,10 @@ index 0000000..5fc326e
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..6fcffed
+index 0000000..2a5e9b4
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,260 @@
+@@ -0,0 +1,289 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -3135,11 +3152,39 @@ index 0000000..6fcffed
 +    }
 +}
 +
++extension NSWindow {
++    /// Puts the window just below and right of a point (a button you
++    /// clicked), kept on that point's screen.
++    func place(near point: NSPoint) {
++        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(point, $0.frame, false) }) ?? NSScreen.main
++        else { return }
++        let area = screen.visibleFrame
++        let size = frame.size
++        var x = point.x - 24
++        var y = point.y - 14 - size.height
++        x = min(max(x, area.minX + 8), area.maxX - size.width - 8)
++        y = min(max(y, area.minY + 8), area.maxY - size.height)
++        setFrameOrigin(NSPoint(x: x, y: y))
++    }
++}
++
++extension NSAlert {
++    /// runModal, but beside the pointer (the button or menu that asked)
++    /// rather than in the middle of the screen.
++    func runModalNearPointer() -> NSApplication.ModalResponse {
++        let point = NSEvent.mouseLocation
++        // Runs once the modal loop has shown and centred the alert.
++        RunLoop.main.perform(inModes: [.modalPanel]) { [weak self] in self?.window.place(near: point) }
++        return runModal()
++    }
++}
++
 +final class DockSettingsWindow {
 +    static let shared = DockSettingsWindow()
 +    private var window: NSWindow?
 +
-+    func show() {
++    /// `near`: the button it was opened from; it opens beside it.
++    func show(near point: NSPoint? = nil) {
 +        if window == nil {
 +            let w = NSWindow(contentViewController: NSHostingController(rootView: DockSettingsView()))
 +            w.title = "Ghostty Dock Settings"
@@ -3148,6 +3193,7 @@ index 0000000..6fcffed
 +            w.center()
 +            window = w
 +        }
++        if let point, window?.isVisible == false { window?.place(near: point) }
 +        NSApp.activate(ignoringOtherApps: true)
 +        window?.makeKeyAndOrderFront(nil)
 +    }
@@ -3265,10 +3311,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..0f2b290
+index 0000000..f39e5db
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,765 @@
+@@ -0,0 +1,776 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -3357,13 +3403,13 @@ index 0000000..0f2b290
 +            ScrollView {
 +                LazyVStack(spacing: 2) {
 +                    ForEach(model.groups, id: \.id) { group in
-+                        if !group.title.isEmpty {
++                        if !group.title.isEmpty && !model.shown(group.items).isEmpty {
 +                            DockGroupHeader(group: group, collapsed: model.collapsed.contains(group.id)) {
 +                                withAnimation(.easeOut(duration: 0.15)) { model.toggleCollapsed(group.id) }
 +                            }
 +                        }
 +                        if group.title.isEmpty || !model.collapsed.contains(group.id) {
-+                            ForEach(group.items) { row in rowView(row) }
++                            ForEach(model.shown(group.items)) { row in rowView(row) }
 +                        }
 +                    }
 +                    // Drop here to move a row to the end.
@@ -3481,8 +3527,14 @@ index 0000000..0f2b290
 +        HStack(spacing: 4) {
 +            ForEach([DockSessions.Status.waiting, .running, .unread, .idle, .shell], id: \.self) { status in
 +                let n = model.rows.filter { $0.status == status }.count
-+                DockCounter(symbol: DockStatusDot.symbol(status), count: n, color: DockPalette.color(status))
-+                    .help("\(n) \(DockPalette.label(status).lowercased())")
++                let on = model.statusFilter == status
++                Button { withAnimation(.easeOut(duration: 0.15)) { model.toggleFilter(status) } } label: {
++                    DockCounter(symbol: DockStatusDot.symbol(status), count: n, color: DockPalette.color(status),
++                                selected: on, dimmed: model.statusFilter != nil && !on)
++                }
++                .buttonStyle(.plain)
++                .help(on ? "Showing only \(DockPalette.label(status).lowercased()); click to show all"
++                         : "\(n) \(DockPalette.label(status).lowercased()): click to show only these")
 +            }
 +            if !model.undocked.isEmpty {
 +                DockCounter(symbol: "macwindow", count: model.undocked.count, color: DockPalette.grey)
@@ -3528,7 +3580,7 @@ index 0000000..0f2b290
 +            .buttonStyle(.plain)
 +            .foregroundStyle(DockPalette.text)
 +            .help("Find a session (⌘P)")
-+            Button(action: { DockAgentsWindow.shared.show() }) {
++            Button(action: { DockAgentsWindow.shared.show(near: NSEvent.mouseLocation) }) {
 +                Image(systemName: "person.3").font(.system(size: 11, weight: .semibold))
 +            }
 +            .buttonStyle(.plain)
@@ -3556,13 +3608,13 @@ index 0000000..0f2b290
 +            .buttonStyle(.plain)
 +            .foregroundStyle(DockPalette.text)
 +            .help("Next session that needs you (⌃⌥J)")
-+            Button(action: { DockSettingsWindow.shared.show() }) {
++            Button(action: { DockSettingsWindow.shared.show(near: NSEvent.mouseLocation) }) {
 +                Image(systemName: "gearshape").font(.system(size: 12, weight: .semibold))
 +            }
 +            .buttonStyle(.plain)
 +            .foregroundStyle(DockPalette.text)
 +            .help("Ghostty Dock Settings (⌘,)")
-+            Button(action: { DockAboutWindow.shared.show() }) {
++            Button(action: { DockAboutWindow.shared.show(near: NSEvent.mouseLocation) }) {
 +                Image(systemName: "info.circle").font(.system(size: 12, weight: .semibold))
 +            }
 +            .buttonStyle(.plain)
@@ -3577,6 +3629,10 @@ index 0000000..0f2b290
 +    var symbol: String
 +    var count: Int
 +    var color: Color
++    /// The sidebar is filtered on it.
++    var selected = false
++    /// Another counter is the filter.
++    var dimmed = false
 +
 +    var body: some View {
 +        HStack(spacing: 2.5) {
@@ -3586,8 +3642,9 @@ index 0000000..0f2b290
 +        .foregroundStyle(color)
 +        .padding(.horizontal, 5)
 +        .padding(.vertical, 2)
-+        .background(Capsule().fill(color.opacity(0.16)))
-+        .opacity(count == 0 ? 0.4 : 1)
++        .background(Capsule().fill(color.opacity(selected ? 0.32 : 0.16)))
++        .overlay(Capsule().strokeBorder(color, lineWidth: selected ? 1.5 : 0))
++        .opacity(selected ? 1 : dimmed ? 0.35 : count == 0 ? 0.4 : 1)
 +    }
 +}
 +
@@ -4341,7 +4398,7 @@ index 0000000..c3d922c
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..c0e9418
+index 0000000..6f3d77c
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
 @@ -0,0 +1,247 @@
@@ -4455,7 +4512,7 @@ index 0000000..c0e9418
 +            """ + (notes.isEmpty ? "" : "\n\n" + notes.joined(separator: "\n\n"))
 +        alert.addButton(withTitle: "Restart When Quiet")
 +        alert.addButton(withTitle: "Cancel")
-+        guard alert.runModal() == .alertFirstButtonReturn else { return }
++        guard alert.runModalNearPointer() == .alertFirstButtonReturn else { return }
 +        let restarter = FileManager.default.homeDirectoryForCurrentUser
 +            .appendingPathComponent(".local/bin/ghostty-dock-restart").path
 +        guard FileManager.default.isExecutableFile(atPath: restarter) else {
@@ -4521,7 +4578,7 @@ index 0000000..c0e9418
 +            """
 +        alert.addButton(withTitle: "Update")
 +        alert.addButton(withTitle: "Cancel")
-+        guard alert.runModal() == .alertFirstButtonReturn else { return }
++        guard alert.runModalNearPointer() == .alertFirstButtonReturn else { return }
 +        install()
 +    }
 +
