@@ -68,6 +68,8 @@ function claudes_under() {
         END {
             for (p in cmd) {
                 if (cmd[p] !~ /^ *[0-9]+ +[0-9]+ +([^ ]*\/)?claude( |$)/) continue
+                # A headless claude -p (a git hook or build script) belongs to no tab.
+                if (cmd[p] ~ / (-p|--print)( |$)/) continue
                 q = p
                 while (q > 1) { q = parent[q]; if (q == root) { print p; break } }
             }
