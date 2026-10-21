@@ -3174,10 +3174,10 @@ index 0000000..29d7386
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..a03c91a
+index 0000000..26108e0
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,213 @@
 +import AppKit
 +import Combine
 +
@@ -3263,10 +3263,23 @@ index 0000000..a03c91a
 +    /// Asks first, then restarts once sessions are quiet; they come back as tabs.
 +    func confirmRestart() {
 +        let alert = NSAlert()
++        let rows = DockSessions.shared.rows
++        let running = rows.filter { $0.status == .running }.map(\.name)
++        let waiting = rows.filter { $0.status == .waiting }.map(\.name)
++        var notes: [String] = []
++        if !running.isEmpty {
++            notes.append("Running now, so it waits for them to finish: " + running.joined(separator: ", ") + ".")
++        }
++        if !waiting.isEmpty {
++            notes.append("Waiting on you; the question is dropped and they come back at their prompt: "
++                         + waiting.joined(separator: ", ") + ".")
++        }
 +        alert.messageText = "Restart Ghostty Dock?"
 +        alert.informativeText = """
-+            A newer build is installed. Ghostty Dock restarts once your sessions are quiet             (none running or waiting on you), and reopens each one as a tab with claude --resume.
-+            """
++            A newer build is installed. Ghostty Dock restarts once no session has been busy \
++            for 45 seconds, and reopens each Claude session as a tab with claude --resume \
++            (plain shell tabs are not reopened).
++            """ + (notes.isEmpty ? "" : "\n\n" + notes.joined(separator: "\n\n"))
 +        alert.addButton(withTitle: "Restart When Quiet")
 +        alert.addButton(withTitle: "Cancel")
 +        guard alert.runModal() == .alertFirstButtonReturn else { return }
