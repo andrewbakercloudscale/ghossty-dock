@@ -30,7 +30,9 @@ function main() {
     state=$(mktemp -d)
     trap 'rm -rf "$state"' EXIT
     export GHOSTTY_DOCK_STATE="$state"
-    export GHOSTTY_DOCK_TEST_LINEAGE="111 222 ttys009"
+    # A ghostty pid above any pid_max, so no real process (one that is not
+    # Ghostty Dock would make the hook drop the Dock ids).
+    export GHOSTTY_DOCK_TEST_LINEAGE="111 4999999 ttys009"
     unset DOCK_TAB_ID GHOSTTY_DOCK_SURFACE
 
     local f="$state/sessions/tty-ttys009.json"
@@ -38,7 +40,7 @@ function main() {
     fire '{"hook_event_name":"SessionStart","session_id":"s1","cwd":"/x/my-proj","source":"startup"}'
     check "start is idle" "$f" '.status' "idle"
     check "name from folder" "$f" '.name' "my-proj"
-    check "pids recorded" "$f" '"\(.claude_pid) \(.ghostty_pid) \(.tty)"' "111 222 ttys009"
+    check "pids recorded" "$f" '"\(.claude_pid) \(.ghostty_pid) \(.tty)"' "111 4999999 ttys009"
 
     fire '{"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":"/x/my-proj"}'
     check "prompt is running" "$f" '.status' "running"
