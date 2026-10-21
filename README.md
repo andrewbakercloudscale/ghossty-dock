@@ -68,16 +68,16 @@ reports each session's status.
   all.
 - **Find (⌘P or the magnifier)**: type part of a name, folder or question;
   ↑↓ and Return. Closed sessions are in the list too.
-- **Agents (⌘⇧A or the 👥 button)**: every subagent your sessions have
-  started, grouped by session: live or finished, how long it ran, tokens
-  (input, output, cache), context, cost, tool calls and failures, files it
-  edited, its latest tool call and its worktree branch. Live, Today or All;
-  the sessions waiting on you are listed on the right. Click a card to go to
-  its session. (An agent is a helper a session starts with Claude Code's
-  Agent tool: its own context, often in the background or its own worktree.)
-  Sessions busy without agents are listed at the top, and **How to use
-  agents** explains how to prompt for them (say subagents, parallel,
-  background or worktree) and how to make your own (/agents or
+- **Agents (⌘⇧A or the 👥 button)**: four tiles at the top (spending now,
+  today, agents running, sessions that need you; click that one to go to
+  it), then every subagent your sessions have started, one row each, grouped
+  by session: what it is doing, type, model, tool calls, tokens, cost and how
+  long ago. Busy sessions without agents show as "working on its own". Live,
+  Today or All at the top right; point at a row for the token breakdown,
+  click it to go to its session. (An agent is a helper a session starts with
+  Claude Code's Agent tool: its own context, often in the background or its
+  own worktree.) The **?** explains how to prompt for them (say subagents,
+  parallel, background or worktree) and how to make your own (/agents or
   .claude/agents/*.md).
   **Set Up** lists every agent Claude Code can start (yours in
   ~/.claude/agents, each open project's .claude/agents, the plugins' and the
