@@ -48,6 +48,10 @@ function main() {
     lineage=$(find_lineage)
     read -r claude_pid ghostty_pid tty <<<"$lineage"
 
+    # A headless `claude -p` (a build script or git hook run from a tab)
+    # inherits the tab's ids; recording it would take over the tab's row.
+    [ "$claude_pid" = "headless" ] && exit 0
+
     local key
     key=$(session_key "$tty" "$input" "$ghostty_pid")
     [ -n "$key" ] || exit 0
@@ -81,6 +85,12 @@ function find_lineage() {
                 echo "$cached"
                 return
             fi
+            if is_headless "$claude"; then
+                mkdir -p "$STATE_DIR/lineage" 2>/dev/null &&
+                    echo "headless - -" >"$STATE_DIR/lineage/$claude" 2>/dev/null
+                echo "headless - -"
+                return
+            fi
         fi
         if [ "$comm" = "ghostty" ]; then
             ghostty="$pid"
@@ -94,6 +104,14 @@ function find_lineage() {
         echo "$result" >"$STATE_DIR/lineage/$claude" 2>/dev/null
     fi
     echo "$result"
+}
+
+# True when this claude was started with -p/--print: it answers once and
+# exits, with no one at its prompt.
+function is_headless() {
+    local args
+    args=" $(ps -o args= -p "$1" 2>/dev/null | head -1) "
+    [[ "$args" == *" -p "* || "$args" == *" --print "* ]]
 }
 
 # One file per terminal: the surface id Ghostty Dock gives every terminal,

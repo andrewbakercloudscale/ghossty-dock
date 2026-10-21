@@ -100,6 +100,14 @@ function main() {
     GHOSTTY_DOCK_TEST_LINEAGE="- - -" fire '{"hook_event_name":"Stop","session_id":"s4","cwd":"/z"}'
     check "no terminal falls back to session id" "$state/sessions/sid-s4.json" '.status' "done"
 
+    GHOSTTY_DOCK_TEST_LINEAGE="headless - -" GHOSTTY_DOCK_SURFACE="0A1B-2C3D" \
+        fire '{"hook_event_name":"SessionStart","session_id":"headless-1","cwd":"/elsewhere"}'
+    if grep -q 'headless-1' "$state"/sessions/*.json 2>/dev/null; then
+        fail "a headless claude -p leaves the tab's row alone"
+    else
+        pass "a headless claude -p leaves the tab's row alone"
+    fi
+
     local out
     out=$(echo 'not json' | "$HOOK"; echo "rc=$?")
     if [ "$out" = "rc=0" ]; then pass "bad input is silent and exits 0"; else fail "bad input is silent and exits 0 (got: $out)"; fi
