@@ -71,7 +71,11 @@ reports each session's status.
   (input, output, cache), context, cost, tool calls and failures, files it
   edited, its latest tool call and its worktree branch. Live, Today or All;
   the sessions waiting on you are listed on the right. Click a card to go to
-  its session.
+  its session. (An agent is a helper a session starts with Claude Code's
+  Agent tool: its own context, often in the background or its own worktree.)
+  A **Spend** line shows how fast money is going across every open session,
+  agents included: $/hr now (last 10 minutes), last hour, today's average
+  $/hr, today, and tokens a minute.
 - **Reopen closed (⌘⇧T)**: within a few seconds Ghostty brings the tab back as
   it was; after that, the session is resumed in a new tab with its old flags.
 - **Right-click a row** to rename it, pin it to the top or give it a colour.

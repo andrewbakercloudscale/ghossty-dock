@@ -306,10 +306,10 @@ index 0000000..3af6440
 +}
 diff --git a/macos/Sources/Features/Dock/DockAbout.swift b/macos/Sources/Features/Dock/DockAbout.swift
 new file mode 100644
-index 0000000..ff0ba69
+index 0000000..eff4a1a
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAbout.swift
-@@ -0,0 +1,339 @@
+@@ -0,0 +1,350 @@
 +import AppKit
 +import SwiftUI
 +
@@ -527,9 +527,20 @@ index 0000000..ff0ba69
 +
 +    /// "New  1.0.56 (119aac5) · 21 Oct 17:14", the same layout for both.
 +    private func versionLine(_ label: String, _ value: String, _ color: Color) -> some View {
-+        HStack(spacing: 6) {
++        // "1.0.61 (244db98) · 21 Oct 17:36": the date goes on a line of its own.
++        let parts = value.components(separatedBy: " · ")
++        return HStack(alignment: .firstTextBaseline, spacing: 6) {
 +            Text(label).frame(width: 66, alignment: .leading)
-+            Text(value).monospacedDigit()
++            VStack(alignment: .leading, spacing: 1) {
++                Text(parts[0]).monospacedDigit()
++                if parts.count > 1 {
++                    Text(parts.dropFirst().joined(separator: " · "))
++                        .font(.callout)
++                        .monospacedDigit()
++                        .opacity(0.75)
++                }
++            }
++            .fixedSize()
 +        }
 +        .font(.body.weight(.semibold))
 +        .foregroundStyle(color)
@@ -846,10 +857,10 @@ index 0000000..1468a67
 +}
 diff --git a/macos/Sources/Features/Dock/DockAgentsView.swift b/macos/Sources/Features/Dock/DockAgentsView.swift
 new file mode 100644
-index 0000000..fd766b4
+index 0000000..93aeebc
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAgentsView.swift
-@@ -0,0 +1,408 @@
+@@ -0,0 +1,437 @@
 +import AppKit
 +import SwiftUI
 +
@@ -994,6 +1005,12 @@ index 0000000..fd766b4
 +                .help("Live: running now. Today: started or active today. All: every agent of the open sessions.")
 +                Spacer()
 +            }
++            Text("An agent is a helper a session starts to do part of its work (Claude Code's Agent tool): "
++                 + "it has its own context, often runs in the background or its own git worktree, "
++                 + "and reports back to the session that started it.")
++                .font(.callout)
++                .foregroundStyle(DockPalette.grey)
++                .fixedSize(horizontal: false, vertical: true)
 +            HStack(spacing: 22) {
 +                DockAgentStat(value: "\(agents.count)", label: "agents")
 +                DockAgentStat(value: "\(withAgents)", label: "sessions")
@@ -1004,9 +1021,32 @@ index 0000000..fd766b4
 +                DockAgentStat(value: DockCost.format(agents.map(\.dollars).reduce(0, +)), label: "agent cost")
 +                Spacer()
 +            }
++            velocity
 +        }
 +        .padding(16)
 +        .background(DockPalette.mantle)
++    }
++
++    /// How fast every open session is spending, agents included, as the
++    /// cost panel's burn rate shows it.
++    private var velocity: some View {
++        let v = sessions.velocity
++        return HStack(spacing: 22) {
++            Label("Spend", systemImage: "flame.fill")
++                .font(.callout.weight(.semibold))
++                .foregroundStyle(DockPalette.peach)
++            DockAgentStat(value: DockCost.format(v.nowPerHour) + "/hr", label: "now")
++                .help("Spent in the last 10 minutes, as an hourly rate")
++            DockAgentStat(value: DockCost.format(v.lastHour), label: "last hour")
++                .help("Spent in the last 60 minutes")
++            DockAgentStat(value: DockCost.format(v.averagePerHour) + "/hr", label: "today's average")
++                .help("Today's spend over the hours since the first reply today")
++            DockAgentStat(value: DockCost.format(v.today), label: "today")
++                .help("Spent since midnight by the sessions open in the Dock, agents included")
++            DockAgentStat(value: DockCost.formatTokens(v.tokensPerMinute), label: "tokens/min")
++                .help("Tokens a minute over the last 10 minutes, cache reads included")
++            Spacer()
++        }
 +    }
 +
 +    private var empty: some View {
@@ -1260,10 +1300,10 @@ index 0000000..fd766b4
 +}
 diff --git a/macos/Sources/Features/Dock/DockCost.swift b/macos/Sources/Features/Dock/DockCost.swift
 new file mode 100644
-index 0000000..c536f32
+index 0000000..d4c0224
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockCost.swift
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,186 @@
 +import Foundation
 +
 +/// What a Claude Code session has cost so far, from its transcript, priced as
@@ -1329,6 +1369,57 @@ index 0000000..c536f32
 +        var offset: UInt64 = 0
 +        var dollars: Double = 0
 +        var context: Int?
++        /// Today's replies, for how fast money is going.
++        var spends: [Spend] = []
++    }
++
++    /// One reply's cost and tokens, and when it came.
++    struct Spend: Equatable {
++        var date: Date
++        var dollars: Double
++        var tokens: Int
++    }
++
++    /// How fast the open sessions are spending, subagents included.
++    struct Velocity: Equatable {
++        /// Spent in the last 10 minutes, as an hourly rate.
++        var nowPerHour: Double = 0
++        /// Spent in the last 60 minutes.
++        var lastHour: Double = 0
++        /// Spent since midnight.
++        var today: Double = 0
++        /// Tokens a minute over the last 10 minutes.
++        var tokensPerMinute: Int = 0
++        /// Today's spend over the hours since the first reply today.
++        var averagePerHour: Double = 0
++    }
++
++    private static let iso: ISO8601DateFormatter = {
++        let f = ISO8601DateFormatter()
++        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
++        return f
++    }()
++
++    static func tokens(of d: [String: Any]) -> Int {
++        guard let usage = (d["message"] as? [String: Any])?["usage"] as? [String: Any] else { return 0 }
++        return ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]
++            .reduce(0) { $0 + ((usage[$1] as? NSNumber)?.intValue ?? 0) }
++    }
++
++    /// The spending of every transcript read so far, as of `now`.
++    func velocity(now: Date = Date()) -> Velocity {
++        let midnight = Calendar.current.startOfDay(for: now)
++        let all = files.values.flatMap(\.spends).filter { $0.date >= midnight && $0.date <= now }
++        let tenMin = all.filter { now.timeIntervalSince($0.date) < 600 }
++        var v = Velocity()
++        v.today = all.reduce(0) { $0 + $1.dollars }
++        v.lastHour = all.filter { now.timeIntervalSince($0.date) < 3600 }.reduce(0) { $0 + $1.dollars }
++        v.nowPerHour = tenMin.reduce(0) { $0 + $1.dollars } * 6
++        v.tokensPerMinute = tenMin.reduce(0) { $0 + $1.tokens } / 10
++        if let first = all.map(\.date).min() {
++            v.averagePerHour = v.today / max(1, now.timeIntervalSince(first) / 3600)
++        }
++        return v
 +    }
 +
 +    private var files: [String: FileState] = [:]
@@ -1365,12 +1456,20 @@ index 0000000..c536f32
 +            let line = data[start..<stop]
 +            if line.range(of: usage) != nil,
 +               let d = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] {
-+                if let (key, dollars) = Self.cost(of: d), counted.insert(key).inserted { state.dollars += dollars }
++                if let (key, dollars) = Self.cost(of: d), counted.insert(key).inserted {
++                    state.dollars += dollars
++                    if let t = (d["timestamp"] as? String).flatMap({ Self.iso.date(from: $0) }),
++                       t >= Calendar.current.startOfDay(for: Date()) {
++                        state.spends.append(Spend(date: t, dollars: dollars, tokens: Self.tokens(of: d)))
++                    }
++                }
 +                if let c = Self.context(of: d) { state.context = c }
 +            }
 +            start = stop + 1
 +        }
 +        state.offset += UInt64(lastNewline - data.startIndex + 1)
++        let midnight = Calendar.current.startOfDay(for: Date())
++        state.spends.removeAll { $0.date < midnight }
 +        files[url.path] = state
 +        return state.dollars
 +    }
@@ -2080,10 +2179,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..6521353
+index 0000000..489f72c
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,931 @@
+@@ -0,0 +1,935 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -2173,6 +2272,8 @@ index 0000000..6521353
 +    @Published private(set) var costs: [String: Double] = [:]
 +    /// Session id to how many tokens its context holds now.
 +    @Published private(set) var contexts: [String: Int] = [:]
++    /// How fast the open sessions are spending.
++    @Published private(set) var velocity = DockCost.Velocity()
 +    /// Row key to its folder's git branch, pull request and ports.
 +    @Published private(set) var workspaces: [String: DockWorkspace] = [:]
 +    private let workspaceMeter = DockWorkspaces()
@@ -2573,9 +2674,11 @@ index 0000000..6521353
 +                found[sid] = self.costMeter.dollars(transcript: url)
 +                sizes[sid] = self.costMeter.context(transcript: url)
 +            }
++            let velocity = self.costMeter.velocity()
 +            DispatchQueue.main.async {
 +                let merged = self.costs.merging(found) { _, new in new }
 +                if merged != self.costs { self.costs = merged }
++                if velocity != self.velocity { self.velocity = velocity }
 +                let ctx = self.contexts.merging(sizes) { _, new in new }
 +                if ctx != self.contexts { self.contexts = ctx }
 +            }
