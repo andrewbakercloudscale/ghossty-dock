@@ -3057,7 +3057,7 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..5998c58
+index 0000000..16d7fcf
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
 @@ -0,0 +1,986 @@
@@ -3988,7 +3988,7 @@ index 0000000..5998c58
 +        }
 +        let reason = finished
 +            ? DockRaiseBanner.Reason(symbol: "checkmark.circle.fill", color: DockPalette.blue,
-+                                     title: "\(row.name) has finished",
++                                     title: "\(row.name) is idle",
 +                                     detail: costs[sid].map { "Ready for your next step · " + DockCost.format($0) + " so far" }
 +                                         ?? "Ready for your next step")
 +            : DockRaiseBanner.Reason(symbol: "questionmark.bubble.fill", color: DockPalette.peach,
