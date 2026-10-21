@@ -51,8 +51,16 @@ reports each session's status.
   tool call to allow ("Allow Bash: npm test"), so you know before you switch.
 - **Cost**: each row ends with what the session has cost so far, subagents
   included, priced like the Cost Sidebar below. Off in Settings.
+- **Branch, pull request and ports**: a line under each row like
+  `main ↑2 ●3 · #42 · :3000` (commits not pushed, files changed, the open PR
+  via `gh`, ports the session's processes listen on). Right-click to open
+  the PR or the port. Off in Settings.
+- **A glowing ring** around a row that needs you.
 - **Notifications** when a session needs you or finishes, unless you are
-  looking at it. Click one to go to its tab. Each can be turned off.
+  looking at it. Click one to go to its tab. Each can be turned off. The 🔔 in
+  the header lists the last 200; going to a session marks its ones read.
+- **Phone**: the same news on your phone through the free ntfy app
+  (Settings → Notifications → Phone).
 - **Find (⌘P or the magnifier)**: type part of a name, folder or question;
   ↑↓ and Return. Closed sessions are in the list too.
 - **Reopen closed (⌘⇧T)**: within a few seconds Ghostty brings the tab back as
@@ -81,6 +89,25 @@ reports each session's status.
 While the sidebar is hidden, ⌘1–9 and the next/previous keys are Ghostty's
 own again (tab order). Everything else in Ghostty (⌘T, ⌘W, splits) is unchanged.
 
+## Command line and scripting
+
+`ghostty-dock` drives the running app, for scripts and other agents:
+
+```bash
+ghostty-dock list                                 # status, name, branch, ports, cost, id
+ghostty-dock focus aws-cli                        # go to its tab
+ghostty-dock send aws-cli "run the tests" --enter # type into it
+ghostty-dock keys aws-cli esc ctrl-c              # press keys
+ghostty-dock read aws-cli --lines 20              # what is on its screen
+ghostty-dock wait aws-cli 'passed|failed' --timeout 600
+ghostty-dock notify "Deploy done" "prod is on 1.4.2"
+ghostty-dock open ~/code/repo --command claude    # a new tab
+```
+
+A session is named by its session id, its name in the sidebar, its folder or
+the start of its name. Requests go through files in
+`~/.local/state/ghostty-dock/api`, a folder only you can open.
+
 ## Themes
 
 Settings → Theme picks one of 20 (Catppuccin Mocha, Macchiato, Frappe and
@@ -105,10 +132,12 @@ Five tabs: **Sidebar** (with Compaction), **Theme**, **Notifications**,
 | Sort | Alphabetical | **Alphabetical**: by name, rows never move. **Needs you first**: needs you, then most recently idle, running last. **Running first**: running, then needs you, then idle. **Tab order**: as the tabs are arranged. **As you drag them**: your own order; dragging a row switches to it. |
 | Groups | No groups | Fold rows under their **folder** (the project's parent folder) or their **colour**. Pinned rows get a group at the top. |
 | Show what each session has cost | on | The $ figure at the end of each row's status line. |
+| Show git branch, pull request and ports | on | The line under each row's status. |
 | Also show Ghostty's tab bar | off | Ghostty's own tab strip along the top, as well as the sidebar. |
 | ⌃⌥J jumps to the next session that needs you | on | A global hotkey, from any app. With none waiting it goes to the next finished one. |
 | Dock icon shows how many sessions need you | on | The red badge on the Dock icon. |
 | Notify me when a session needs me / finishes | on | macOS notifications, not for the session on screen. If Claude Code already notifies you through the terminal, turn one off. |
+| Phone: ntfy topic, send when needs me / finishes | empty, on, off | Pushes through [ntfy](https://ntfy.sh): subscribe to the same topic in the ntfy phone app. Use a long, hard-to-guess topic, or a full URL for your own server. **Send a Test** checks it. |
 | Bring the window to the front when a session needs me / finishes | off | Un-minimises Ghostty Dock and shows that session's tab, over whatever app you are in. Never while you are already looking at Ghostty Dock, so it can't switch tabs as you type. |
 | Reopen Claude sessions when Ghostty Dock starts | on | The app records its open sessions every 10 seconds; after a quit, crash or update they come back as tabs with `claude --resume`. Sessions already running elsewhere are skipped. |
 | Open Ghostty Dock at login | off | Adds it to macOS Login Items. |

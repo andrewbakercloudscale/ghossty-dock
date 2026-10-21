@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+
+# Drives Ghostty Dock from a script or another agent: list the sessions,
+# go to one, type into it, press keys, read its screen, wait for text on it,
+# post a notification, open a new tab.
+#
+# Talks to the running app through request files in
+# ~/.local/state/ghostty-dock/api (a folder only you can open): the app
+# answers each one with a file next to it.
+
+DEPENDENCIES=(jq uuidgen)
+SCRIPT_NAME=$(basename "$0")
+STATE_DIR="${GHOSTTY_DOCK_STATE:-$HOME/.local/state/ghostty-dock}"
+API_DIR="$STATE_DIR/api"
+OPENER="$HOME/.local/bin/ghostty-dock-open"
+TIMEOUT_SECS=5
+
+function usage() {
+    cat <<EOM
+
+Drives Ghostty Dock: its sessions, their screens and keys.
+
+usage: ${SCRIPT_NAME} <command> [arguments]
+
+commands:
+    list [--json]                        The sessions, as the sidebar shows them
+    focus  <session>                     Go to its tab
+    send   <session> <text> [--enter]    Type text into it (--enter presses Return after)
+    keys   <session> <key>...            Press keys: enter esc tab backspace up down
+                                         left right ctrl-<letter>
+    read   <session> [--lines N] [--scrollback]
+                                         Print what is on its screen
+    wait   <session> <regex> [--timeout S]
+                                         Wait until its screen matches (default 300s)
+    notify <title> [body] [--urgent]     Post a notification (and a phone push)
+    open   <folder> [--command <cmd>]    Open a folder as a new tab (a shell, or cmd)
+
+<session> is a session id, a name as in the sidebar, a folder, or the start
+of a name.
+
+dependencies: ${DEPENDENCIES[@]}
+
+examples:
+    ${SCRIPT_NAME} list
+    ${SCRIPT_NAME} send aws-cli "run the tests" --enter
+    ${SCRIPT_NAME} wait aws-cli 'passed|failed' --timeout 600 && ${SCRIPT_NAME} read aws-cli --lines 20
+    ${SCRIPT_NAME} notify "Deploy done" "prod is on 1.4.2"
+
+EOM
+    exit 1
+}
+
+function check_dependencies() {
+    local dep
+    for dep in "${DEPENDENCIES[@]}"; do
+        command -v "$dep" >/dev/null 2>&1 || { echo "error: $dep is required" >&2; exit 1; }
+    done
+}
+
+function die() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+# Sends one request (a JSON object) and prints the app's answer.
+function call() {
+    local request="$1"
+    [ -d "$API_DIR" ] || die "Ghostty Dock is not running (or is older than this command)"
+    local id
+    id=$(uuidgen)
+    local tmp="$API_DIR/.req-$id.json"
+    printf '%s' "$request" >"$tmp" && mv "$tmp" "$API_DIR/req-$id.json" || die "could not write to $API_DIR"
+    local answer="$API_DIR/res-$id.json"
+    local tries=$((TIMEOUT_SECS * 20))
+    while [ ! -f "$answer" ] && [ "$tries" -gt 0 ]; do
+        sleep 0.05
+        tries=$((tries - 1))
+    done
+    if [ ! -f "$answer" ]; then
+        rm -f "$API_DIR/req-$id.json"
+        die "no answer from Ghostty Dock in ${TIMEOUT_SECS}s: is it running?"
+    fi
+    local out
+    out=$(cat "$answer")
+    rm -f "$answer"
+    if [ "$(jq -r '.ok' <<<"$out")" != "true" ]; then
+        die "$(jq -r '.error // "failed"' <<<"$out")"
+    fi
+    printf '%s\n' "$out"
+}
+
+function cmd_list() {
+    local out
+    out=$(call '{"op":"list"}') || exit 1
+    if [ "${1:-}" = "--json" ]; then
+        jq '.sessions' <<<"$out"
+        return
+    fi
+    jq -r '.sessions[] | [
+            .status,
+            .name,
+            ((.branch // "") + (if .pr then " #\(.pr)" else "" end)),
+            (if .ports then (.ports | map(":\(.)") | join(" ")) else "" end),
+            (if .cost then "$\(.cost * 100 | round / 100)" else "" end),
+            (.session_id // "")
+        ] | @tsv' <<<"$out" | column -t -s $'\t'
+}
+
+function cmd_read() {
+    local target="$1"
+    shift
+    local lines=0
+    local scrollback=false
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --lines) lines="${2:-}"; shift 2 ;;
+            --scrollback) scrollback=true; shift ;;
+            *) usage ;;
+        esac
+    done
+    [[ "$lines" =~ ^[0-9]+$ ]] || die "--lines takes a number"
+    call "$(jq -nc --arg t "$target" --argjson n "$lines" --argjson s "$scrollback" \
+        '{op:"read", target:$t, lines:$n, scrollback:$s}')" | jq -r '.text'
+}
+
+function cmd_wait() {
+    local target="$1"
+    local regex="$2"
+    shift 2
+    local timeout=300
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --timeout) timeout="${2:-}"; shift 2 ;;
+            *) usage ;;
+        esac
+    done
+    [[ "$timeout" =~ ^[0-9]+$ ]] || die "--timeout takes seconds"
+    local request
+    request=$(jq -nc --arg t "$target" '{op:"read", target:$t}')
+    local deadline=$(($(date +%s) + timeout))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        local text
+        text=$(call "$request" | jq -r '.text') || exit 1
+        local hit
+        hit=$(grep -E -m1 -- "$regex" <<<"$text")
+        if [ -n "$hit" ]; then
+            printf '%s\n' "$hit"
+            return 0
+        fi
+        sleep 1
+    done
+    die "timed out after ${timeout}s waiting for /$regex/"
+}
+
+function main() {
+    check_dependencies
+    local command="${1:-}"
+    [ -n "$command" ] || usage
+    shift
+    case "$command" in
+        list)
+            cmd_list "$@"
+            ;;
+        focus)
+            [ $# -eq 1 ] || usage
+            call "$(jq -nc --arg t "$1" '{op:"focus", target:$t}')" >/dev/null
+            ;;
+        send)
+            [ $# -ge 2 ] || usage
+            local enter=false
+            [ "${3:-}" = "--enter" ] && enter=true
+            call "$(jq -nc --arg t "$1" --arg x "$2" --argjson e "$enter" \
+                '{op:"send", target:$t, text:$x, enter:$e}')" >/dev/null
+            ;;
+        keys)
+            [ $# -ge 2 ] || usage
+            local target="$1"
+            shift
+            call "$(jq -nc --arg t "$target" '{op:"keys", target:$t, keys:$ARGS.positional}' --args "$@")" >/dev/null
+            ;;
+        read)
+            [ $# -ge 1 ] || usage
+            cmd_read "$@"
+            ;;
+        wait)
+            [ $# -ge 2 ] || usage
+            cmd_wait "$@"
+            ;;
+        notify)
+            [ $# -ge 1 ] || usage
+            local urgent=false
+            local args=()
+            local a
+            for a in "$@"; do
+                if [ "$a" = "--urgent" ]; then urgent=true; else args+=("$a"); fi
+            done
+            call "$(jq -nc --arg t "${args[0]}" --arg b "${args[1]:-}" --argjson u "$urgent" \
+                '{op:"notify", title:$t, body:$b, urgent:$u}')" >/dev/null
+            ;;
+        open)
+            [ $# -ge 1 ] || usage
+            [ -x "$OPENER" ] || die "ghostty-dock-open is not installed"
+            local folder="$1"
+            shift
+            if [ "${1:-}" = "--command" ]; then
+                [ -n "${2:-}" ] || usage
+                exec "$OPENER" --command "$2" "$folder"
+            fi
+            exec "$OPENER" --shell "$folder"
+            ;;
+        -h | --help | help)
+            usage
+            ;;
+        *)
+            echo "error: unknown command $command" >&2
+            usage
+            ;;
+    esac
+}
+
+main "$@"
