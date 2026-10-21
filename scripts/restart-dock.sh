@@ -76,7 +76,7 @@ function claudes_under() {
 function hook_session() {
     local cpid="$1"
     local file
-    file=$(grep -l "\"claude_pid\":$cpid[,}]" "$STATE_DIR"/sessions/*.json 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
+    file=$(grep -l "\"claude_pid\":${cpid}[,}]" "$STATE_DIR"/sessions/*.json 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
     [ -n "$file" ] && sed -nE 's/.*"session_id":"([^"]+)".*/\1/p' "$file"
 }
 
