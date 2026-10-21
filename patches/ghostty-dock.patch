@@ -1031,10 +1031,10 @@ index 0000000..dfd8ad5
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..cbb0fce
+index 0000000..17e93df
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,812 @@
+@@ -0,0 +1,822 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -1774,20 +1774,27 @@ index 0000000..cbb0fce
 +    /// are looking at it.
 +    private func notify(_ now: [Row], appActive: Bool) {
 +        let first = lastStatus.isEmpty && !now.isEmpty
++        // Active with every window minimised or hidden is not looking.
++        let looking = appActive && NSApp.keyWindow.map { $0.isVisible && !$0.isMiniaturized } == true
 +        var next: [String: Status] = [:]
 +        for row in now {
 +            next[row.key] = row.status
 +            guard !first, let before = lastStatus[row.key], before != row.status,
-+                  !(appActive && row.selected), let sid = row.sessionId else { continue }
++                  !(looking && row.selected), let sid = row.sessionId else { continue }
 +            if row.status == .waiting {
 +                if DockSettings.notifyWaiting { post(sid: sid, title: row.name, body: row.prompt ?? "Needs you") }
 +                // Only from another app: never switches tabs under you.
-+                if DockSettings.raiseWaiting && !appActive {
++                if DockSettings.raiseWaiting && !looking {
 +                    DispatchQueue.main.async { [weak self] in self?.bringToFront(sid) }
 +                }
-+            } else if row.status == .unread, before == .running || before == .waiting, DockSettings.notifyFinished {
-+                post(sid: sid, title: row.name,
-+                     body: "Finished" + (costs[sid].map { " · " + DockCost.format($0) + " so far" } ?? ""))
++            } else if row.status == .unread, before == .running || before == .waiting {
++                if DockSettings.notifyFinished {
++                    post(sid: sid, title: row.name,
++                         body: "Finished" + (costs[sid].map { " · " + DockCost.format($0) + " so far" } ?? ""))
++                }
++                if DockSettings.raiseFinished && !looking {
++                    DispatchQueue.main.async { [weak self] in self?.bringToFront(sid) }
++                }
 +            }
 +        }
 +        lastStatus = next
@@ -1800,6 +1807,9 @@ index 0000000..cbb0fce
 +        if NSApp.isHidden { NSApp.unhide(nil) }
 +        if window.isMiniaturized { window.deminiaturize(nil) }
 +        select(row)
++        // macOS may refuse to activate an app the user isn't in; this still
++        // puts the window above the others.
++        window.orderFrontRegardless()
 +    }
 +
 +    static let notificationSessionKey = "ghosttyDockSession"
@@ -1849,10 +1859,10 @@ index 0000000..cbb0fce
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..e309796
+index 0000000..0d7a702
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,251 @@
+@@ -0,0 +1,255 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -1875,6 +1885,7 @@ index 0000000..e309796
 +    static let showCostKey = "dock.showCost"
 +    static let notifyWaitingKey = "dock.notifyWaiting"
 +    static let raiseWaitingKey = "dock.raiseWaiting"
++    static let raiseFinishedKey = "dock.raiseFinished"
 +    static let notifyFinishedKey = "dock.notifyFinished"
 +
 +    static func register() {
@@ -1904,6 +1915,7 @@ index 0000000..e309796
 +    static var showCost: Bool { UserDefaults.standard.bool(forKey: showCostKey) }
 +    static var notifyWaiting: Bool { UserDefaults.standard.bool(forKey: notifyWaitingKey) }
 +    static var raiseWaiting: Bool { UserDefaults.standard.bool(forKey: raiseWaitingKey) }
++    static var raiseFinished: Bool { UserDefaults.standard.bool(forKey: raiseFinishedKey) }
 +    static var notifyFinished: Bool { UserDefaults.standard.bool(forKey: notifyFinishedKey) }
 +    static var showTabBar: Bool { UserDefaults.standard.bool(forKey: showTabBarKey) }
 +    static var jumpHotKey: Bool { UserDefaults.standard.bool(forKey: jumpHotKeyKey) }
@@ -1923,6 +1935,7 @@ index 0000000..e309796
 +    @AppStorage(DockSettings.showCostKey) private var showCost = true
 +    @AppStorage(DockSettings.notifyWaitingKey) private var notifyWaiting = true
 +    @AppStorage(DockSettings.raiseWaitingKey) private var raiseWaiting = false
++    @AppStorage(DockSettings.raiseFinishedKey) private var raiseFinished = false
 +    @AppStorage(DockSettings.notifyFinishedKey) private var notifyFinished = true
 +    @ObservedObject private var updates = DockUpdates.shared
 +    @State private var startAtLogin = SMAppService.mainApp.status == .enabled
@@ -1988,8 +2001,9 @@ index 0000000..e309796
 +                Toggle("Dock icon shows how many sessions need you", isOn: $dockBadge)
 +                Toggle("Notify me when a session needs me", isOn: $notifyWaiting)
 +                Toggle("Bring the window to the front when a session needs me", isOn: $raiseWaiting)
++                Toggle("Bring the window to the front when a session finishes", isOn: $raiseFinished)
 +                Toggle("Notify me when a session finishes", isOn: $notifyFinished)
-+                Text("Not for the session on screen. Click a notification to go to its tab. The window only comes forward while you are in another app, so it never switches tabs as you type.")
++                Text("Not for the session on screen. Click a notification to go to its tab. The window only comes forward while you are in another app or it is minimised, so it never switches tabs as you type.")
 +                    .font(.callout)
 +            }
 +    }
