@@ -846,10 +846,10 @@ index 0000000..1468a67
 +}
 diff --git a/macos/Sources/Features/Dock/DockAgentsView.swift b/macos/Sources/Features/Dock/DockAgentsView.swift
 new file mode 100644
-index 0000000..ced32b7
+index 0000000..fd766b4
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAgentsView.swift
-@@ -0,0 +1,407 @@
+@@ -0,0 +1,408 @@
 +import AppKit
 +import SwiftUI
 +
@@ -985,13 +985,14 @@ index 0000000..ced32b7
 +                .foregroundStyle(live > 0 ? DockPalette.green : DockPalette.grey)
 +                .padding(.horizontal, 9).padding(.vertical, 3)
 +                .background(Capsule().fill((live > 0 ? DockPalette.green : DockPalette.grey).opacity(0.15)))
-+                Spacer()
 +                Picker("", selection: $model.scope) {
 +                    ForEach(DockAgentsModel.Scope.allCases) { Text($0.rawValue).tag($0) }
 +                }
 +                .pickerStyle(.segmented)
 +                .frame(width: 200)
++                .padding(.leading, 8)
 +                .help("Live: running now. Today: started or active today. All: every agent of the open sessions.")
++                Spacer()
 +            }
 +            HStack(spacing: 22) {
 +                DockAgentStat(value: "\(agents.count)", label: "agents")
@@ -1259,7 +1260,7 @@ index 0000000..ced32b7
 +}
 diff --git a/macos/Sources/Features/Dock/DockCost.swift b/macos/Sources/Features/Dock/DockCost.swift
 new file mode 100644
-index 0000000..de04b7e
+index 0000000..c536f32
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockCost.swift
 @@ -0,0 +1,127 @@
@@ -1382,7 +1383,7 @@ index 0000000..de04b7e
 +
 +    /// "8k", "168k", "1.2M".
 +    static func formatTokens(_ n: Int) -> String {
-+        n >= 1_000_000 ? String(format: "%.1fM", Double(n) / 1e6) : "\(max(1, (n + 500) / 1000))k"
++        n == 0 ? "0" : n >= 1_000_000 ? String(format: "%.1fM", Double(n) / 1e6) : "\(max(1, (n + 500) / 1000))k"
 +    }
 +
 +    /// "$0.42", "$3.10", "$128".
