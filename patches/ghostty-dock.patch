@@ -1031,10 +1031,10 @@ index 0000000..dfd8ad5
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..71dd9c7
+index 0000000..cbb0fce
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,799 @@
+@@ -0,0 +1,812 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -1779,14 +1779,27 @@ index 0000000..71dd9c7
 +            next[row.key] = row.status
 +            guard !first, let before = lastStatus[row.key], before != row.status,
 +                  !(appActive && row.selected), let sid = row.sessionId else { continue }
-+            if row.status == .waiting, DockSettings.notifyWaiting {
-+                post(sid: sid, title: row.name, body: row.prompt ?? "Needs you")
++            if row.status == .waiting {
++                if DockSettings.notifyWaiting { post(sid: sid, title: row.name, body: row.prompt ?? "Needs you") }
++                // Only from another app: never switches tabs under you.
++                if DockSettings.raiseWaiting && !appActive {
++                    DispatchQueue.main.async { [weak self] in self?.bringToFront(sid) }
++                }
 +            } else if row.status == .unread, before == .running || before == .waiting, DockSettings.notifyFinished {
 +                post(sid: sid, title: row.name,
 +                     body: "Finished" + (costs[sid].map { " · " + DockCost.format($0) + " so far" } ?? ""))
 +            }
 +        }
 +        lastStatus = next
++    }
++
++    /// Un-minimises the window and shows session <sid>'s tab, over other apps.
++    private func bringToFront(_ sid: String) {
++        guard let row = rows.first(where: { $0.sessionId == sid }),
++              let window = row.controller?.window else { return }
++        if NSApp.isHidden { NSApp.unhide(nil) }
++        if window.isMiniaturized { window.deminiaturize(nil) }
++        select(row)
 +    }
 +
 +    static let notificationSessionKey = "ghosttyDockSession"
@@ -1836,10 +1849,10 @@ index 0000000..71dd9c7
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..36914ae
+index 0000000..e309796
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,251 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -1861,6 +1874,7 @@ index 0000000..36914ae
 +    static let collapsedKey = "dock.collapsed"
 +    static let showCostKey = "dock.showCost"
 +    static let notifyWaitingKey = "dock.notifyWaiting"
++    static let raiseWaitingKey = "dock.raiseWaiting"
 +    static let notifyFinishedKey = "dock.notifyFinished"
 +
 +    static func register() {
@@ -1889,6 +1903,7 @@ index 0000000..36914ae
 +    static var manualOrder: [String] { UserDefaults.standard.stringArray(forKey: manualOrderKey) ?? [] }
 +    static var showCost: Bool { UserDefaults.standard.bool(forKey: showCostKey) }
 +    static var notifyWaiting: Bool { UserDefaults.standard.bool(forKey: notifyWaitingKey) }
++    static var raiseWaiting: Bool { UserDefaults.standard.bool(forKey: raiseWaitingKey) }
 +    static var notifyFinished: Bool { UserDefaults.standard.bool(forKey: notifyFinishedKey) }
 +    static var showTabBar: Bool { UserDefaults.standard.bool(forKey: showTabBarKey) }
 +    static var jumpHotKey: Bool { UserDefaults.standard.bool(forKey: jumpHotKeyKey) }
@@ -1907,14 +1922,35 @@ index 0000000..36914ae
 +    @AppStorage(DockSettings.groupingKey) private var grouping = DockSettings.Grouping.none
 +    @AppStorage(DockSettings.showCostKey) private var showCost = true
 +    @AppStorage(DockSettings.notifyWaitingKey) private var notifyWaiting = true
++    @AppStorage(DockSettings.raiseWaitingKey) private var raiseWaiting = false
 +    @AppStorage(DockSettings.notifyFinishedKey) private var notifyFinished = true
 +    @ObservedObject private var updates = DockUpdates.shared
 +    @State private var startAtLogin = SMAppService.mainApp.status == .enabled
 +    @State private var loginError: String?
++    @AppStorage("dock.settingsTab") private var tab = "sidebar"
 +
++    /// One short page per tab, so nothing needs scrolling.
 +    var body: some View {
-+        Form {
-+            Section("Sidebar") {
++        TabView(selection: $tab) {
++            page { sidebar }.tabItem { Label("Sidebar", systemImage: "sidebar.left") }.tag("sidebar")
++            page { themePage }.tabItem { Label("Theme", systemImage: "paintpalette") }.tag("theme")
++            page { notifications }.tabItem { Label("Notifications", systemImage: "bell.badge") }.tag("notifications")
++            page { shortcuts }.tabItem { Label("Shortcuts", systemImage: "keyboard") }.tag("shortcuts")
++            page { app }.tabItem { Label("App", systemImage: "gearshape") }.tag("app")
++        }
++        .padding(.top, 8)
++        .frame(width: 500)
++        .fixedSize(horizontal: false, vertical: true)
++    }
++
++    private func page<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
++        Form { content() }
++            .formStyle(.grouped)
++            .fixedSize(horizontal: false, vertical: true)
++    }
++
++    @ViewBuilder private var sidebar: some View {
++            Section {
 +                Toggle("Show the sessions sidebar", isOn: $showSidebar)
 +                Picker("Sort", selection: $order) {
 +                    ForEach(DockSettings.Order.allCases, id: \.self) { Text($0.label).tag($0) }
@@ -1927,7 +1963,11 @@ index 0000000..36914ae
 +                    .font(.callout)
 +                Toggle("Also show Ghostty's tab bar", isOn: $showTabBar)
 +            }
-+            Section("Theme") {
++            compaction
++    }
++
++    @ViewBuilder private var themePage: some View {
++            Section {
 +                Picker("Theme", selection: $theme) {
 +                    Text("As in the Ghostty config (\(DockTheme.configTheme ?? "Ghostty's default"))").tag("")
 +                    Divider()
@@ -1938,16 +1978,23 @@ index 0000000..36914ae
 +                Text("The terminal and the sidebar both change, in every window. Ghostty's own config file is left as it is.")
 +                    .font(.callout)
 +            }
-+            Section("Getting your attention") {
++    }
++
++    @ViewBuilder private var notifications: some View {
++            Section {
 +                Toggle("⌃⌥J jumps to the next session that needs you", isOn: $jumpHotKey)
 +                Text("Works from any app. With none waiting, it goes to the next finished one.")
 +                    .font(.callout)
 +                Toggle("Dock icon shows how many sessions need you", isOn: $dockBadge)
 +                Toggle("Notify me when a session needs me", isOn: $notifyWaiting)
++                Toggle("Bring the window to the front when a session needs me", isOn: $raiseWaiting)
 +                Toggle("Notify me when a session finishes", isOn: $notifyFinished)
-+                Text("Not for the session on screen. Click a notification to go to its tab.")
++                Text("Not for the session on screen. Click a notification to go to its tab. The window only comes forward while you are in another app, so it never switches tabs as you type.")
 +                    .font(.callout)
 +            }
++    }
++
++    @ViewBuilder private var compaction: some View {
 +            Section("Compaction") {
 +                if DockSessions.burstInstalled {
 +                    LabeledContent("Pauseless Compaction") { Text("Claude Burst is set up") }
@@ -1961,14 +2008,20 @@ index 0000000..36914ae
 +                        .font(.callout)
 +                }
 +            }
-+            Section("Keyboard shortcuts") {
++    }
++
++    @ViewBuilder private var shortcuts: some View {
++            Section {
 +                ForEach(DockShortcuts.summary, id: \.0) { title, keys in
 +                    LabeledContent(title) { Text(keys).monospaced() }
 +                }
 +                Text("⌘1–9 and the next/previous keys follow the sidebar's order while it is showing.")
 +                    .font(.callout)
 +            }
-+            Section("App") {
++    }
++
++    @ViewBuilder private var app: some View {
++            Section {
 +                Toggle("Reopen Claude sessions when Ghostty Dock starts", isOn: $restoreSessions)
 +                Text("After a quit or crash, every session that was open comes back as a tab with claude --resume.")
 +                    .font(.callout)
@@ -1993,10 +2046,6 @@ index 0000000..36914ae
 +                    Button("Edit Ghostty Config…") { Ghostty.App.openConfig() }
 +                }
 +            }
-+        }
-+        .formStyle(.grouped)
-+        .frame(width: 480)
-+        .fixedSize(horizontal: false, vertical: true)
 +    }
 +
 +    private func setLogin(_ on: Bool) {
