@@ -100,7 +100,7 @@ function reopen() {
     fi
     # One --command argument: with -e, Ghostty also opened "/bin/zsh" as a tab.
     open -na "$GHOSTTY_APP" --args --window-save-state=never --quit-after-last-window-closed=true \
-        --working-directory="$cwd" --command="$cmd" || {
+        --working-directory="$cwd" --command="/usr/bin/env $(shell_quote "PATH=$(command_path)") $cmd" || {
         print_error "$name: Ghostty did not start"
         return
     }
@@ -125,6 +125,22 @@ function restore_quick_actions() {
         [ -d "$SERVICES/$name/Contents" ] || continue
         cp "$backup" "$SERVICES/$name/Contents/document.wflow" && print_success "Quick Action restored: ${name%.workflow}"
     done
+}
+
+# Ghostty runs --command under a bare login shell (--noprofile --norc), and
+# the app may have been started from Finder with PATH=/usr/bin:/bin, so the
+# command carries a PATH that finds claude.
+function command_path() {
+    local dir out=""
+    local IFS=:
+    for dir in "$HOME/.local/bin" /opt/homebrew/bin /usr/local/bin $PATH; do
+        case ":$out:" in *":$dir:"*) ;; *) out="${out:+$out:}$dir" ;; esac
+    done
+    echo "$out"
+}
+
+function shell_quote() {
+    printf "'%s'" "${1//\'/\'\\\'\'}"
 }
 
 function main() {

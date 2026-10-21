@@ -17,6 +17,9 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 STATE_DIR="$HOME/.local/state/ghostty-dock"
 LOG="$STATE_DIR/restart-dock.log"
 SAVED="$STATE_DIR/open-sessions.tsv"
+# Sessions a restart or restore could not bring back: the app offers to
+# reopen them (--reopen-missing) until they run again.
+MISSING="$STATE_DIR/missing-sessions.tsv"
 OPENER="$HOME/.local/bin/ghostty-dock-open"
 APP_BIN="$HOME/Applications/Ghostty Dock.app/Contents/MacOS/ghostty"
 QUIET_SECS=45
@@ -36,6 +39,9 @@ options:
     --save         Record the open sessions (for --restore) and stop
     --restore      Reopen the sessions recorded by --save that are not
                    running anywhere, then stop
+    --reopen-missing
+                   Reopen the sessions a restart or restore could not
+                   bring back (listed in missing-sessions.tsv), then stop
     -h|--help      Show this help message
 
 EOM
@@ -139,14 +145,37 @@ function restore() {
     local sessions
     sessions=$(cat "$SAVED")
     rm -f "$SAVED"
-    local cwd sid flags
+    log "restore: $(conditions)"
+    reopen_all "$sessions"
+}
+
+# Reopens what missing-sessions.tsv lists.
+function reopen_missing() {
+    [ -s "$MISSING" ] || { log "nothing missing"; return 0; }
+    local sessions
+    sessions=$(cat "$MISSING")
+    rm -f "$MISSING"
+    log "reopen missing: $(conditions)"
+    reopen_all "$sessions"
+}
+
+# Opens the sessions not already running, then checks they started.
+function reopen_all() {
+    local sessions="$1"
+    local cwd sid flags todo=""
     while IFS=$'\t' read -r cwd sid flags; do
         [ -z "$sid" ] && continue
         running_anywhere "$sid" && continue
-        log "reopening $(basename "$cwd")"
-        "$OPENER" --command "caffeinate -i claude --resume $sid $flags" "$cwd" >>"$LOG" 2>&1 \
-            || log "$(basename "$cwd"): opening the tab failed"
+        todo+="$cwd"$'\t'"$sid"$'\t'"$flags"$'\n'
     done <<<"$sessions"
+    [ -n "$todo" ] && resume_all "$todo"
+}
+
+# What a failed reopen usually comes down to, for the log.
+function conditions() {
+    local screen=on
+    display_on || screen=off
+    echo "screen $screen, app pid ${1:-$(app_pid)}, PATH=$PATH"
 }
 
 # Terminals opened while the screen is off fail to start (Metal cannot make
@@ -164,8 +193,8 @@ function wait_for_display() {
     sleep 5
 }
 
-# Opens a tab resuming each session, then checks they started and tries the
-# missing ones once more.
+# Opens a tab resuming each session, then checks they started, tries the
+# missing ones once more and records any still missing in $MISSING.
 function resume_all() {
     local sessions="$1"
     local cwd sid flags
@@ -179,11 +208,28 @@ function resume_all() {
     while IFS=$'\t' read -r cwd sid flags; do
         [ -z "$sid" ] && continue
         running_anywhere "$sid" && continue
-        log "$(basename "$cwd") did not start; trying again"
+        log "$(basename "$cwd") did not start; trying again ($(conditions))"
         wait_for_display
         "$OPENER" --command "caffeinate -i claude --resume $sid $flags" "$cwd" >>"$LOG" 2>&1 \
             || log "$(basename "$cwd"): opening the tab failed"
     done <<<"$sessions"
+    sleep 20
+    while IFS=$'\t' read -r cwd sid flags; do
+        [ -z "$sid" ] && continue
+        running_anywhere "$sid" && continue
+        log "$(basename "$cwd") still not running; recorded in $(basename "$MISSING")"
+        record_missing "$cwd" "$sid" "$flags"
+    done <<<"$sessions"
+}
+
+function record_missing() {
+    local cwd="$1"
+    local sid="$2"
+    local flags="$3"
+    touch "$MISSING"
+    grep -v $'\t'"$sid"$'\t' "$MISSING" >"$MISSING.tmp"
+    printf '%s\t%s\t%s\n' "$cwd" "$sid" "$flags" >>"$MISSING.tmp"
+    mv "$MISSING.tmp" "$MISSING"
 }
 
 function restart() {
@@ -195,7 +241,7 @@ function restart() {
 
     local sessions cpid
     sessions=$(open_sessions "$pid")
-    log "$(grep -c . <<<"$sessions") session(s) to resume"
+    log "$(grep -c . <<<"$sessions") session(s) to resume ($(conditions "$pid"))"
     $dry && { printf '%s' "$sessions"; return 0; }
     $now || wait_until_quiet "$sessions" || return 1
     wait_for_display
@@ -239,6 +285,12 @@ function main() {
         --save)
             mkdir -p "$STATE_DIR" || exit 1
             save
+            exit 0
+            ;;
+        --reopen-missing)
+            mkdir -p "$STATE_DIR" || exit 1
+            [ -x "$OPENER" ] || { echo "Error: $OPENER missing, run install.sh" >&2; exit 1; }
+            reopen_missing
             exit 0
             ;;
         --restore)

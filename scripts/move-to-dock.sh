@@ -51,6 +51,22 @@ EOM
     exit 1
 }
 
+# Ghostty runs --command under a bare login shell (--noprofile --norc), and
+# the app may have been started from Finder with PATH=/usr/bin:/bin, so the
+# command carries a PATH that finds claude.
+function command_path() {
+    local dir out=""
+    local IFS=:
+    for dir in "$HOME/.local/bin" /opt/homebrew/bin /usr/local/bin $PATH; do
+        case ":$out:" in *":$dir:"*) ;; *) out="${out:+$out:}$dir" ;; esac
+    done
+    echo "$out"
+}
+
+function shell_quote() {
+    printf "'%s'" "${1//\'/\'\\\'\'}"
+}
+
 function log() {
     echo "$(date '+%H:%M:%S') $*" | tee -a "$LOG"
 }
@@ -239,7 +255,7 @@ function undock() {
     fi
     # One --command argument: with -e, Ghostty also opens "/bin/zsh" as a tab.
     open -na "$GHOSTTY_APP" --args --window-save-state=never --quit-after-last-window-closed=true \
-        --working-directory="$cwd" --command="$cmd" || log "$(basename "$cwd"): Ghostty did not start"
+        --working-directory="$cwd" --command="/usr/bin/env $(shell_quote "PATH=$(command_path)") $cmd" || log "$(basename "$cwd"): Ghostty did not start"
 }
 
 function remove_hidden_setting() {

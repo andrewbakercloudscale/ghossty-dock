@@ -26,8 +26,15 @@ reports each session's status.
 - Under "Sessions", a counter per state (needs you, running, finished, idle,
   shell, and undocked when there are any) shows how many tabs are in it.
 - Click a row to switch to it; ✕ closes it; + opens a new tab.
-- Each row shows its status, how long it has been in it, and **Age**: how long
-  the session has existed (since its transcript was created, across restarts).
+- Each row shows its status, how long it has been in it, and **context size**
+  (e.g. `168k ctx`: the tokens its last reply read, so you can see which
+  sessions are near compaction).
+- **Compact** (⤡, above Restart; or right-click → Compact (Pauseless)) types
+  `/compact-async` into the session, so [Claude Burst](https://github.com/andrewbakercloudscale/claude-burst)'s
+  Pauseless Compaction summarises it in the background and swaps the summary
+  in with your next prompt. Only while the session is at its prompt (finished
+  or idle), so it never answers a question or queues behind a running turn.
+  Needs Claude Burst's `/compact-async` command.
 - **Restart** (↻, beside Undock; or right-click → Restart Session) stops claude
   and resumes the same session in a fresh tab at once. Same as
   `ghostty-dock-move --restart <session id>`.
@@ -165,6 +172,24 @@ of this repo, so release installs update by downloading the next zip.
 
 GitHub Actions runs all three on every push, and the patch check every Monday
 against the newest Ghostty release.
+
+## When sessions don't come back
+
+- A restart or restore checks every session started; one that didn't is opened
+  once more, and any still missing are listed in
+  `~/.local/state/ghostty-dock/missing-sessions.tsv`. The sidebar then shows
+  **"N sessions didn't come back"** with **Reopen** (same as
+  `ghostty-dock-restart --reopen-missing`) and **Dismiss**, and a macOS
+  notification says so.
+- A restart while the screen is off waits for it to come on: terminals opened
+  with the screen off can't start.
+- A tab whose terminal failed to start says why and offers **Try Again** (same
+  command, folder and environment) or **Close Tab**; its row reads "Didn't
+  start". Failed tabs try again by themselves when the screen wakes, and a
+  session already running again elsewhere only has the dead tab closed, so it
+  never runs twice.
+- Every step, with the screen state, app pid and PATH, is logged in
+  `~/.local/state/ghostty-dock/restart-dock.log`.
 
 ## If it goes wrong: undo
 

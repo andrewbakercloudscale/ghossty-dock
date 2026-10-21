@@ -452,10 +452,10 @@ index 0000000..3b654b9
 +}
 diff --git a/macos/Sources/Features/Dock/DockCost.swift b/macos/Sources/Features/Dock/DockCost.swift
 new file mode 100644
-index 0000000..44da088
+index 0000000..de04b7e
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockCost.swift
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,127 @@
 +import Foundation
 +
 +/// What a Claude Code session has cost so far, from its transcript, priced as
@@ -481,8 +481,11 @@ index 0000000..44da088
 +    /// assistant message. Cache writes are 1.25x input (5 minute) and 2x
 +    /// (1 hour); fast mode is 2x everything.
 +    static func cost(ofLine line: Data) -> (key: String, dollars: Double)? {
-+        guard let d = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-+              d["type"] as? String == "assistant",
++        (try? JSONSerialization.jsonObject(with: line) as? [String: Any]).flatMap(cost(of:))
++    }
++
++    static func cost(of d: [String: Any]) -> (key: String, dollars: Double)? {
++        guard d["type"] as? String == "assistant",
 +              let msg = d["message"] as? [String: Any],
 +              let usage = msg["usage"] as? [String: Any],
 +              let model = msg["model"] as? String,
@@ -500,9 +503,24 @@ index 0000000..44da088
 +        return (key, dollars)
 +    }
 +
++    /// How full the context was at this line: everything the model read
++    /// for one of the main conversation's replies. Nil for other lines.
++    static func context(ofLine line: Data) -> Int? {
++        (try? JSONSerialization.jsonObject(with: line) as? [String: Any]).flatMap(context(of:))
++    }
++
++    static func context(of d: [String: Any]) -> Int? {
++        guard d["type"] as? String == "assistant", d["isSidechain"] as? Bool != true,
++              let usage = (d["message"] as? [String: Any])?["usage"] as? [String: Any] else { return nil }
++        func n(_ k: String) -> Int { (usage[k] as? NSNumber)?.intValue ?? 0 }
++        let total = n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens")
++        return total > 0 ? total : nil
++    }
++
 +    private struct FileState {
 +        var offset: UInt64 = 0
 +        var dollars: Double = 0
++        var context: Int?
 +    }
 +
 +    private var files: [String: FileState] = [:]
@@ -537,15 +555,27 @@ index 0000000..44da088
 +        while start <= lastNewline {
 +            let stop = data[start...lastNewline].firstIndex(of: UInt8(ascii: "\n")) ?? lastNewline
 +            let line = data[start..<stop]
-+            if line.range(of: usage) != nil, let (key, dollars) = Self.cost(ofLine: Data(line)),
-+               counted.insert(key).inserted {
-+                state.dollars += dollars
++            if line.range(of: usage) != nil,
++               let d = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] {
++                if let (key, dollars) = Self.cost(of: d), counted.insert(key).inserted { state.dollars += dollars }
++                if let c = Self.context(of: d) { state.context = c }
 +            }
 +            start = stop + 1
 +        }
 +        state.offset += UInt64(lastNewline - data.startIndex + 1)
 +        files[url.path] = state
 +        return state.dollars
++    }
++
++    /// How full the session's context is now, from its last reply; nil
++    /// before the first. Call after `dollars(transcript:)`, which reads it.
++    func context(transcript: URL) -> Int? {
++        files[transcript.path]?.context
++    }
++
++    /// "8k", "168k", "1.2M".
++    static func formatTokens(_ n: Int) -> String {
++        n >= 1_000_000 ? String(format: "%.1fM", Double(n) / 1e6) : "\(max(1, (n + 500) / 1000))k"
 +    }
 +
 +    /// "$0.42", "$3.10", "$128".
@@ -1001,10 +1031,10 @@ index 0000000..dfd8ad5
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..e42aac4
+index 0000000..9749ee9
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,642 @@
+@@ -0,0 +1,751 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -1045,6 +1075,8 @@ index 0000000..e42aac4
 +        var pinned = false
 +        var tag: DockTag?
 +        var renamed = false
++        /// Its terminal failed to start (the screen was off, usually).
++        var failed = false
 +        weak var controller: TerminalController?
 +
 +        static func == (a: Row, b: Row) -> Bool {
@@ -1052,6 +1084,7 @@ index 0000000..e42aac4
 +                && a.since == b.since && a.selected == b.selected && a.sessionId == b.sessionId
 +                && a.started == b.started && a.project == b.project && a.prompt == b.prompt
 +                && a.pinned == b.pinned && a.tag == b.tag && a.renamed == b.renamed
++                && a.failed == b.failed
 +        }
 +    }
 +
@@ -1087,9 +1120,16 @@ index 0000000..e42aac4
 +    @Published private(set) var groups: [DockOrdering.Group<Row>] = []
 +    /// Session id to what it has cost so far.
 +    @Published private(set) var costs: [String: Double] = [:]
++    /// Session id to how many tokens its context holds now.
++    @Published private(set) var contexts: [String: Int] = [:]
++    /// Sessions sent /compact-async a moment ago.
++    @Published private(set) var compacting: Set<String> = []
 +    @Published private(set) var meta: [String: Meta] = [:]
 +    @Published private(set) var closed: [Closed] = []
 +    @Published var collapsed: Set<String> = []
++    /// Sessions a restart or restore could not bring back, from
++    /// missing-sessions.tsv, less any running again.
++    @Published private(set) var missing: [Closed] = []
 +
 +    /// The rows you can see: not in a folded group.
 +    var visibleRows: [Row] {
@@ -1149,6 +1189,7 @@ index 0000000..e42aac4
 +        refreshMovable()
 +        startSessionRestore()
 +        watchSessions()
++        MainActor.assumeIsolated { DockSurfaceRetry.start() }
 +        costTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in self?.refreshCosts() }
 +        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.refreshCosts() }
 +        NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil,
@@ -1215,8 +1256,10 @@ index 0000000..e42aac4
 +                }
 +            }
 +            windows.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
++            let missing = self?.readMissing() ?? []
 +            DispatchQueue.main.async {
 +                guard let self else { return }
++                self.noticeMissing(missing)
 +                if self.undocked != windows { self.undocked = windows }
 +                if self.undocking != leaving { self.undocking = leaving }
 +                if self.restarting != restarts { self.restarting = restarts }
@@ -1257,6 +1300,29 @@ index 0000000..e42aac4
 +        restarting.insert(sid)
 +        closeWhenEmpty[row.id] = Date()
 +        runMover(["--now", "--restart", sid])
++    }
++
++    /// Whether a row can be compacted now: only while claude sits at its
++    /// prompt, as typing into a busy or asking session would queue or answer.
++    func canCompact(_ row: Row) -> Bool {
++        row.sessionId != nil && (row.status == .idle || row.status == .unread)
++    }
++
++    /// Types /compact-async into the session, so Claude Burst summarises it
++    /// in the background (Pauseless Compaction) and swaps the summary in
++    /// with the next prompt.
++    @MainActor func compact(_ row: Row) {
++        guard canCompact(row), let sid = row.sessionId, let controller = row.controller,
++              let surface = (controller.focusedSurface ?? controller.surfaceTree.first)?.surfaceModel
++        else { NSSound.beep(); return }
++        surface.sendText("/compact-async")
++        surface.sendKeyEvent(Ghostty.Input.KeyEvent(key: .enter, action: .press, mods: []))
++        surface.sendKeyEvent(Ghostty.Input.KeyEvent(key: .enter, action: .release, mods: []))
++        compacting.insert(sid)
++        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
++            self?.compacting.remove(sid)
++            self?.refreshCosts()
++        }
 +    }
 +
 +    /// Brings an undocked session's own Ghostty window to the front.
@@ -1325,19 +1391,24 @@ index 0000000..e42aac4
 +        return nil
 +    }
 +
-+    /// Each session's cost so far, read off the main thread: the first read
-+    /// of a long transcript takes a moment.
++    /// Each session's cost so far and context size, read off the main
++    /// thread: the first read of a long transcript takes a moment.
 +    private func refreshCosts() {
-+        guard DockSettings.showCost else { return }
 +        let files = rows.compactMap { r in r.sessionId.flatMap { sid in transcript(sid).map { (sid, $0) } } }
 +        guard !files.isEmpty else { return }
 +        costQueue.async { [weak self] in
 +            guard let self else { return }
 +            var found: [String: Double] = [:]
-+            for (sid, url) in files { found[sid] = self.costMeter.dollars(transcript: url) }
++            var sizes: [String: Int] = [:]
++            for (sid, url) in files {
++                found[sid] = self.costMeter.dollars(transcript: url)
++                sizes[sid] = self.costMeter.context(transcript: url)
++            }
 +            DispatchQueue.main.async {
 +                let merged = self.costs.merging(found) { _, new in new }
 +                if merged != self.costs { self.costs = merged }
++                let ctx = self.contexts.merging(sizes) { _, new in new }
++                if ctx != self.contexts { self.contexts = ctx }
 +            }
 +        }
 +    }
@@ -1394,8 +1465,9 @@ index 0000000..e42aac4
 +            }
 +
 +            let focused = controller.focusedSurface ?? controller.surfaceTree.first
++            let failed = controller.surfaceTree.contains { $0.error != nil }
 +            let title = cleanTitle(window.title)
-+            let pwd = focused?.pwd ?? ""
++            let pwd = focused?.pwd ?? (failed ? focused?.startConfig?.workingDirectory : nil) ?? ""
 +            let name = best?.name.isEmpty == false ? best!.name
 +                : !title.isEmpty ? title
 +                : (pwd as NSString).lastPathComponent
@@ -1413,6 +1485,7 @@ index 0000000..e42aac4
 +                             pinned: m?.pinned ?? false,
 +                             tag: m?.tag,
 +                             renamed: m?.name != nil,
++                             failed: failed,
 +                             controller: controller))
 +        }
 +        order.removeAll { id in !built.contains { $0.id == id } }
@@ -1444,6 +1517,7 @@ index 0000000..e42aac4
 +        let flat = grouped.flatMap(\.items)
 +        noticeClosed(flat)
 +        notify(flat, appActive: appActive)
++        noticeFailed(flat)
 +        if flat != rows { rows = flat }
 +        if grouped.map(\.id) != groups.map(\.id) || grouped.map(\.items) != groups.map(\.items) { groups = grouped }
 +        let badge = DockSettings.dockBadge && waitingCount > 0 ? "\(waitingCount)" : nil
@@ -1585,6 +1659,67 @@ index 0000000..e42aac4
 +        return (try? p.run()) != nil
 +    }
 +
++    // MARK: Sessions that did not come back
++
++    private var missingFile: URL { stateDir.appendingPathComponent("missing-sessions.tsv") }
++
++    /// missing-sessions.tsv: "<folder>\t<session id>\t<flags>" per line.
++    private func readMissing() -> [Closed] {
++        let file = FileManager.default.homeDirectoryForCurrentUser
++            .appendingPathComponent(".local/state/ghostty-dock/missing-sessions.tsv")
++        let text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
++        return text.split(separator: "\n").compactMap { line in
++            let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
++            guard f.count >= 2, !f[1].isEmpty else { return nil }
++            return Closed(sessionId: f[1], name: (f[0] as NSString).lastPathComponent, folder: f[0],
++                          flags: f.count > 2 ? f[2] : "")
++        }
++    }
++
++    /// Shows what is still missing, and says so once when some go missing.
++    private func noticeMissing(_ listed: [Closed]) {
++        let running = Set(rows.compactMap(\.sessionId))
++        let now = listed.filter { !running.contains($0.sessionId) }
++        if now.isEmpty && !listed.isEmpty { try? FileManager.default.removeItem(at: missingFile) }
++        let fresh = now.filter { c in !missing.contains { $0.sessionId == c.sessionId } }
++        if !fresh.isEmpty {
++            postNotice(id: "ghostty-dock-missing",
++                       title: now.count == 1 ? "\(now[0].name) didn't come back" : "\(now.count) sessions didn't come back",
++                       body: "Open Ghostty Dock and click Reopen at the top of the sidebar.")
++        }
++        if now != missing { missing = now }
++    }
++
++    /// Reopens every missing session, checking each starts.
++    func reopenMissing() {
++        guard FileManager.default.isExecutableFile(atPath: restarter) else { NSSound.beep(); return }
++        let p = Process()
++        p.executableURL = URL(fileURLWithPath: "/bin/bash")
++        p.arguments = [restarter, "--reopen-missing"]
++        p.standardOutput = FileHandle.nullDevice
++        p.standardError = FileHandle.nullDevice
++        try? p.run()
++        missing = []
++    }
++
++    /// Forgets the missing sessions; they can still be resumed by hand.
++    func dismissMissing() {
++        try? FileManager.default.removeItem(at: missingFile)
++        missing = []
++    }
++
++    private var failedCount = 0
++
++    /// Says so when tabs fail to start while you are not looking.
++    private func noticeFailed(_ now: [Row]) {
++        let count = now.filter(\.failed).count
++        defer { failedCount = count }
++        guard count > failedCount, !NSApp.isActive else { return }
++        postNotice(id: "ghostty-dock-failed",
++                   title: count == 1 ? "A tab couldn't start" : "\(count) tabs couldn't start",
++                   body: "Usually the screen was off. They try again when it wakes, or click Try Again.")
++    }
++
 +    // MARK: Notifications
 +
 +    /// A notification when a row starts needing you or finishes, unless you
@@ -1609,6 +1744,10 @@ index 0000000..e42aac4
 +    static let notificationSessionKey = "ghosttyDockSession"
 +
 +    private func post(sid: String, title: String, body: String) {
++        postNotice(id: "ghostty-dock-" + sid, title: title, body: body, sid: sid)
++    }
++
++    private func postNotice(id: String, title: String, body: String, sid: String? = nil) {
 +        let center = UNUserNotificationCenter.current()
 +        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
 +            guard granted else { return }
@@ -1616,9 +1755,9 @@ index 0000000..e42aac4
 +            content.title = title
 +            content.body = body
 +            content.sound = .default
-+            content.userInfo = [Self.notificationSessionKey: sid]
-+            // One per session: a newer one replaces the last.
-+            center.add(UNNotificationRequest(identifier: "ghostty-dock-" + sid, content: content, trigger: nil))
++            if let sid { content.userInfo = [Self.notificationSessionKey: sid] }
++            // One per id: a newer one replaces the last.
++            center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
 +        }
 +    }
 +
@@ -1965,10 +2104,10 @@ index 0000000..291ee5e
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..3ee0db7
+index 0000000..42fb20f
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,625 @@
+@@ -0,0 +1,665 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -2050,6 +2189,7 @@ index 0000000..3ee0db7
 +    private var sidebar: some View {
 +        VStack(spacing: 0) {
 +            header
++            if !model.missing.isEmpty { missingBanner }
 +            ScrollView {
 +                LazyVStack(spacing: 2) {
 +                    ForEach(model.groups, id: \.id) { group in
@@ -2092,11 +2232,39 @@ index 0000000..3ee0db7
 +        .id(themeName)
 +    }
 +
++    /// Sessions a restart or restore could not bring back.
++    private var missingBanner: some View {
++        let names = model.missing.map(\.name).joined(separator: ", ")
++        return VStack(alignment: .leading, spacing: 5) {
++            Text(model.missing.count == 1 ? "1 session didn't come back" : "\(model.missing.count) sessions didn't come back")
++                .font(.system(size: 11.5, weight: .semibold))
++            Text(names).font(.system(size: 10.5)).lineLimit(2).truncationMode(.tail)
++            HStack(spacing: 6) {
++                Button("Reopen") { model.reopenMissing() }
++                Button("Dismiss") { model.dismissMissing() }
++            }
++            .controlSize(.small)
++        }
++        .foregroundStyle(DockPalette.text)
++        .padding(8)
++        .frame(maxWidth: .infinity, alignment: .leading)
++        .background(RoundedRectangle(cornerRadius: 7).fill(DockPalette.peach.opacity(0.18)))
++        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(DockPalette.peach.opacity(0.7), lineWidth: 1))
++        .padding(.horizontal, 6)
++        .padding(.bottom, 4)
++        .help("A restart or restore opened these but they did not start (often the screen was off). "
++              + "Reopen resumes each in a tab. Log: ~/.local/state/ghostty-dock/restart-dock.log")
++    }
++
 +    private func rowView(_ row: DockSessions.Row) -> some View {
 +        DockRowView(row: row,
 +                    cost: showCost ? row.sessionId.flatMap { model.costs[$0] } : nil,
 +                    undocking: row.sessionId.map(model.undocking.contains) ?? false,
 +                    restarting: row.sessionId.map(model.restarting.contains) ?? false,
++                    context: row.sessionId.flatMap { model.contexts[$0] },
++                    compacting: row.sessionId.map(model.compacting.contains) ?? false,
++                    canCompact: model.canCompact(row),
++                    onCompact: { model.compact(row) },
 +                    onClose: { model.closeTab(row) },
 +                    onUndock: { model.undock(row) },
 +                    onRestart: { model.restart(row) })
@@ -2248,6 +2416,10 @@ index 0000000..3ee0db7
 +    var cost: Double?
 +    var undocking: Bool
 +    var restarting: Bool
++    var context: Int?
++    var compacting: Bool
++    var canCompact: Bool
++    var onCompact: () -> Void
 +    var onClose: () -> Void
 +    var onUndock: () -> Void
 +    var onRestart: () -> Void
@@ -2273,9 +2445,9 @@ index 0000000..3ee0db7
 +                    }
 +                }
 +                TimelineView(.periodic(from: .now, by: 30)) { ctx in
-+                    Text(subtitle(now: ctx.date))
++                    Text(row.failed ? "Didn't start · see the tab" : subtitle(now: ctx.date))
 +                        .font(.system(size: 10.5))
-+                        .foregroundStyle(DockPalette.color(row.status))
++                        .foregroundStyle(row.failed ? DockPalette.color(DockTag.red) : DockPalette.color(row.status))
 +                        .lineLimit(1)
 +                }
 +                // What it is waiting on, so you know before you switch.
@@ -2292,9 +2464,17 @@ index 0000000..3ee0db7
 +            // row's width.
 +            HStack(alignment: .bottom, spacing: 2) {
 +                if row.sessionId != nil {
-+                    DockIconButton(symbol: "arrow.clockwise", busy: restarting,
-+                                   help: restarting ? "Restarting…" : "Restart: resume it in a fresh tab",
-+                                   action: onRestart)
++                    VStack(spacing: 0) {
++                        DockIconButton(symbol: "arrow.down.right.and.arrow.up.left", busy: compacting,
++                                       help: compacting ? "Compacting…"
++                                           : canCompact ? "Compact: Claude Burst's Pauseless Compaction (/compact-async)"
++                                           : "Compact: once it is at its prompt",
++                                       action: onCompact)
++                            .opacity(canCompact || compacting ? 1 : 0.35)
++                        DockIconButton(symbol: "arrow.clockwise", busy: restarting,
++                                       help: restarting ? "Restarting…" : "Restart: resume it in a fresh tab",
++                                       action: onRestart)
++                    }
 +                }
 +            VStack(spacing: 0) {
 +                // On every row, so any tab can be closed without hunting for it.
@@ -2352,8 +2532,14 @@ index 0000000..3ee0db7
 +            }
 +            Divider()
 +            if row.sessionId != nil {
++                Button("Compact (Pauseless)", action: onCompact).disabled(!canCompact || compacting)
 +                Button("Restart Session", action: onRestart).disabled(restarting)
 +                Button("Undock to Its Own Window", action: onUndock).disabled(undocking)
++            }
++            if row.failed {
++                Button("Try Again") {
++                    row.controller?.surfaceTree.filter { $0.error != nil }.forEach(DockSurfaceRetry.retry)
++                }
 +            }
 +            Button("Close Tab", action: onClose)
 +        }
@@ -2363,8 +2549,8 @@ index 0000000..3ee0db7
 +        let label = DockPalette.label(row.status)
 +        var parts = [label]
 +        if let since = row.since { parts.append(elapsed(now.timeIntervalSince(since))) }
-+        // How long the session has existed, across restarts.
-+        if let started = row.started { parts.append("Age " + age(now.timeIntervalSince(started))) }
++        // How full its context is: compact before it fills.
++        if let context { parts.append(DockCost.formatTokens(context) + " ctx") }
 +        if let cost { parts.append(DockCost.format(cost)) }
 +        return parts.joined(separator: " · ")
 +    }
@@ -2375,13 +2561,6 @@ index 0000000..3ee0db7
 +        if s < 3600 { return "\(s / 60)m" }
 +        if s < 86_400 { return "\(s / 3600)h" }
 +        return "\(s / 86_400)d"
-+    }
-+
-+    private func age(_ t: TimeInterval) -> String {
-+        let s = max(0, Int(t))
-+        if s < 3600 { return "\(max(1, s / 60))m" }
-+        if s < 86_400 { return "\(s / 3600)h \(s % 3600 / 60)m" }
-+        return "\(s / 86_400)d \(s % 86_400 / 3600)h"
 +    }
 +}
 +
@@ -2592,6 +2771,123 @@ index 0000000..3ee0db7
 +            spin = true
 +        }
 +        .accessibilityLabel(DockPalette.label(status))
++    }
++}
+diff --git a/macos/Sources/Features/Dock/DockSurfaceError.swift b/macos/Sources/Features/Dock/DockSurfaceError.swift
+new file mode 100644
+index 0000000..0735cc8
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockSurfaceError.swift
+@@ -0,0 +1,111 @@
++import AppKit
++import SwiftUI
++
++/// In place of Ghostty's "Oh, no. 😭" when a tab's terminal could not
++/// start: says what usually causes it and offers to open it again with the
++/// same command, folder and environment.
++struct DockSurfaceErrorView: View {
++    @ObservedObject var surfaceView: Ghostty.SurfaceView
++
++    var body: some View {
++        VStack(alignment: .leading, spacing: 10) {
++            Text("This tab couldn't start").font(.title2.weight(.semibold))
++            Text("""
++                macOS could not give its terminal any graphics. That almost always means the \
++                screen was off or asleep when the tab opened (a restart or restore while you \
++                were away). Nothing was lost: the session is still on disk.
++                """)
++                .frame(maxWidth: 420, alignment: .leading)
++            if let command = surfaceView.startConfig?.command {
++                Text(DockSurfaceRetry.shown(command))
++                    .font(.system(size: 11, design: .monospaced))
++                    .lineLimit(2)
++                    .truncationMode(.middle)
++                    .frame(maxWidth: 420, alignment: .leading)
++                    .textSelection(.enabled)
++            }
++            HStack {
++                Button("Try Again") { DockSurfaceRetry.retry(surfaceView) }
++                    .keyboardShortcut(.defaultAction)
++                Button("Close Tab") { DockSurfaceRetry.close(surfaceView) }
++            }
++            Text("It is tried again by itself when the screen wakes.")
++                .font(.system(size: 11))
++        }
++        .padding(24)
++    }
++}
++
++/// Reopening tabs whose terminal failed to start.
++@MainActor
++enum DockSurfaceRetry {
++    private static var wakeObserver: NSObjectProtocol?
++
++    /// Tries every failed tab again a moment after the screen wakes.
++    static func start() {
++        guard wakeObserver == nil else { return }
++        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
++            forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main
++        ) { _ in
++            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { MainActor.assumeIsolated { retryAll() } }
++        }
++    }
++
++    static func failedSurfaces() -> [Ghostty.SurfaceView] {
++        TerminalController.all.flatMap { Array($0.surfaceTree) }.filter { $0.error != nil }
++    }
++
++    static func retryAll() {
++        for surface in failedSurfaces() { retry(surface) }
++    }
++
++    /// Opens a new tab beside the failed one with what it was started with,
++    /// then closes the failed one. A session that is already running again
++    /// (a restart's own retry got there first) only has the dead tab closed,
++    /// so it never runs twice.
++    static func retry(_ surface: Ghostty.SurfaceView) {
++        guard let window = surface.window,
++              let ghostty = (NSApp.delegate as? AppDelegate)?.ghostty else { return }
++        if let sid = resumedSession(surface.startConfig?.command), running(sid) {
++            close(surface)
++            return
++        }
++        guard TerminalController.newTab(ghostty, from: window, withBaseConfig: surface.startConfig) != nil
++        else { return }
++        close(surface)
++    }
++
++    /// Closes the failed tab; only that pane when the tab has splits.
++    static func close(_ surface: Ghostty.SurfaceView) {
++        guard let window = surface.window,
++              let controller = window.windowController as? TerminalController else { return }
++        if Array(controller.surfaceTree).count <= 1 {
++            window.close()
++        } else {
++            controller.closeSurface(surface, withConfirmation: false)
++        }
++    }
++
++    /// The session id in "claude --resume <id>", if the command has one.
++    static func resumedSession(_ command: String?) -> String? {
++        guard let command, let r = command.range(of: #"--resume ([0-9a-f-]{36})"#, options: .regularExpression)
++        else { return nil }
++        return String(command[r].dropFirst("--resume ".count))
++    }
++
++    private static func running(_ sid: String) -> Bool {
++        let p = Process()
++        p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
++        p.arguments = ["-f", "claude .*--(session-id|resume) \(sid)"]
++        p.standardOutput = FileHandle.nullDevice
++        p.standardError = FileHandle.nullDevice
++        guard (try? p.run()) != nil else { return false }
++        p.waitUntilExit()
++        return p.terminationStatus == 0
++    }
++
++    /// The command without the PATH the opener puts in front of it.
++    static func shown(_ command: String) -> String {
++        command.replacingOccurrences(of: #"^/usr/bin/env ('PATH=[^']*'|PATH=[^ ]*) "#, with: "", options: .regularExpression)
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockTheme.swift b/macos/Sources/Features/Dock/DockTheme.swift
@@ -2986,10 +3282,22 @@ index 160894b..0853534 100644
  
              // TODO: we'd probably do some config loading here... for now we'd
 diff --git a/macos/Sources/Ghostty/Surface View/SurfaceView.swift b/macos/Sources/Ghostty/Surface View/SurfaceView.swift
-index 47503dc..31360b6 100644
+index 47503dc..f4efe44 100644
 --- a/macos/Sources/Ghostty/Surface View/SurfaceView.swift	
 +++ b/macos/Sources/Ghostty/Surface View/SurfaceView.swift	
-@@ -730,6 +730,13 @@ extension Ghostty {
+@@ -218,7 +218,11 @@ extension Ghostty {
+                     SurfaceRendererUnhealthyView()
+                 } else if surfaceView.error != nil {
+                     Rectangle().fill(ghostty.config.backgroundColor)
++                    #if canImport(AppKit)
++                    DockSurfaceErrorView(surfaceView: surfaceView)
++                    #else
+                     SurfaceErrorView()
++                    #endif
+                 }
+ 
+                 // If we're part of a split view and don't have focus, we put a semi-transparent
+@@ -730,6 +734,13 @@ extension Ghostty {
                      return try initialInput.withCString { cInput in
                          config.initial_input = cInput
  
@@ -3003,3 +3311,26 @@ index 47503dc..31360b6 100644
                          // Convert dictionary to arrays for easier processing
                          let keys = Array(environmentVariables.keys)
                          let values = Array(environmentVariables.values)
+diff --git a/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift b/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift
+index 3129acf..b271610 100644
+--- a/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift	
++++ b/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift	
+@@ -42,6 +42,10 @@ extension Ghostty {
+         // Any error while initializing the surface.
+         @Published var error: Error?
+ 
++        /// What the surface was made with, so Ghostty Dock can try a tab
++        /// that failed to start again.
++        private(set) var startConfig: SurfaceConfiguration?
++
+         // The hovered URL string
+         @Published var hoverUrl: String?
+ 
+@@ -391,6 +395,7 @@ extension Ghostty {
+ 
+             // Setup our surface. This will also initialize all the terminal IO.
+             let surface_cfg = baseConfig ?? SurfaceConfiguration()
++            self.startConfig = surface_cfg
+             let surface = surface_cfg.withCValue(view: self) { surface_cfg_c in
+                 ghostty_surface_new(app, &surface_cfg_c)
+             }

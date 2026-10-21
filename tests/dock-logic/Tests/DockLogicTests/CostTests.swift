@@ -52,4 +52,26 @@ final class CostTests: XCTestCase {
         XCTAssertEqual(DockCost.format(0.4), "$0.40")
         XCTAssertEqual(DockCost.format(128.4), "$128")
     }
+
+    func testContextIsTheLastMainReply() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("s.jsonl")
+        let first = line("claude-haiku-4-5", id: "a",
+                         usage: #""input_tokens":10,"cache_read_input_tokens":90000,"cache_creation_input_tokens":2000"#)
+        // A subagent's reply in the main file must not count as the context.
+        let side = #"{"type":"assistant","isSidechain":true,"message":{"id":"b","model":"claude-haiku-4-5","usage":{"input_tokens":5}}}"#
+        try (first + "\n" + side + "\n").write(to: file, atomically: true, encoding: .utf8)
+        let meter = DockCost()
+        XCTAssertNil(meter.context(transcript: file))
+        _ = meter.dollars(transcript: file)
+        XCTAssertEqual(meter.context(transcript: file), 92010)
+    }
+
+    func testFormatTokens() {
+        XCTAssertEqual(DockCost.formatTokens(168_466), "168k")
+        XCTAssertEqual(DockCost.formatTokens(200), "1k")
+        XCTAssertEqual(DockCost.formatTokens(1_234_000), "1.2M")
+    }
 }
