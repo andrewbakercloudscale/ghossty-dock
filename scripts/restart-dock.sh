@@ -24,6 +24,9 @@ OPENER="$HOME/.local/bin/ghostty-dock-open"
 APP_BIN="$HOME/Applications/Ghostty Dock.app/Contents/MacOS/ghostty"
 QUIET_SECS=45
 GIVE_UP_SECS=$((4 * 3600))
+# No restart until the keyboard and mouse have been still this long, so it
+# never lands while you are typing.
+INPUT_IDLE_SECS=10
 
 function usage() {
     cat <<EOM
@@ -129,6 +132,21 @@ function wait_until_quiet() {
         fi
         log "waiting for:$busy"
         sleep 15
+    done
+}
+
+# Seconds since the last key press, click or mouse move.
+function input_idle_secs() {
+    ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print int($NF / 1000000000); exit}'
+}
+
+function wait_for_input_idle() {
+    local idle logged=false
+    while true; do
+        idle=$(input_idle_secs)
+        [ "${idle:-$INPUT_IDLE_SECS}" -ge "$INPUT_IDLE_SECS" ] && return 0
+        $logged || { log "waiting for $INPUT_IDLE_SECS s without typing"; logged=true; }
+        sleep 1
     done
 }
 
@@ -258,6 +276,7 @@ function restart() {
     $dry && { printf '%s' "$sessions"; return 0; }
     $now || wait_until_quiet "$sessions" || return 1
     wait_for_display
+    wait_for_input_idle
 
     # What scripts/undo.sh reopens if this goes wrong.
     local c s f
