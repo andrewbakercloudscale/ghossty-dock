@@ -3057,10 +3057,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..16d7fcf
+index 0000000..abd05b9
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,986 @@
+@@ -0,0 +1,992 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -3944,8 +3944,9 @@ index 0000000..16d7fcf
 +    }
 +
 +    /// Brings the session up once you have not typed or moved the mouse for
-+    /// ten seconds, so it never grabs keys meant for another window. Drops
-+    /// it if the session no longer needs you by then, or you came to it.
++    /// ten seconds, so it never grabs keys meant for another window, and
++    /// (by default) once no session is running. Drops it if the session no
++    /// longer needs you by then, or you came to it.
 +    private func bringToFrontWhenIdle(_ sid: String, finished: Bool) {
 +        guard raisePending.insert(sid).inserted else { return }
 +        func check() {
@@ -3953,6 +3954,11 @@ index 0000000..16d7fcf
 +            guard let row = rows.first(where: { $0.sessionId == sid }), row.status == want,
 +                  !(NSApp.isActive && row.selected) else {
 +                raisePending.remove(sid)
++                return
++            }
++            // Held back while another session is still working, if you asked.
++            if DockSettings.raiseWhenAllQuiet, rows.contains(where: { $0.status == .running }) {
++                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { check() }
 +                return
 +            }
 +            let idle = Self.inputIdleSecs
@@ -4049,10 +4055,10 @@ index 0000000..16d7fcf
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..2a5e9b4
+index 0000000..d3c1107
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,289 @@
+@@ -0,0 +1,296 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -4077,6 +4083,8 @@ index 0000000..2a5e9b4
 +    static let raiseWaitingKey = "dock.raiseWaiting"
 +    static let showWorkspaceKey = "dock.showWorkspace"
 +    static let raiseFinishedKey = "dock.raiseFinished"
++    /// Hold the window back while any session is still running.
++    static let raiseWhenAllQuietKey = "dock.raiseWhenAllQuiet"
 +    static let notifyFinishedKey = "dock.notifyFinished"
 +
 +    static func register() {
@@ -4109,6 +4117,7 @@ index 0000000..2a5e9b4
 +    static var raiseWaiting: Bool { UserDefaults.standard.bool(forKey: raiseWaitingKey) }
 +    static var showWorkspace: Bool { UserDefaults.standard.bool(forKey: showWorkspaceKey) }
 +    static var raiseFinished: Bool { UserDefaults.standard.bool(forKey: raiseFinishedKey) }
++    static var raiseWhenAllQuiet: Bool { UserDefaults.standard.object(forKey: raiseWhenAllQuietKey) as? Bool ?? true }
 +    static var notifyFinished: Bool { UserDefaults.standard.bool(forKey: notifyFinishedKey) }
 +    static var showTabBar: Bool { UserDefaults.standard.bool(forKey: showTabBarKey) }
 +    static var jumpHotKey: Bool { UserDefaults.standard.bool(forKey: jumpHotKeyKey) }
@@ -4130,6 +4139,7 @@ index 0000000..2a5e9b4
 +    @AppStorage(DockSettings.notifyWaitingKey) private var notifyWaiting = true
 +    @AppStorage(DockSettings.raiseWaitingKey) private var raiseWaiting = false
 +    @AppStorage(DockSettings.raiseFinishedKey) private var raiseFinished = false
++    @AppStorage(DockSettings.raiseWhenAllQuietKey) private var raiseWhenAllQuiet = true
 +    @AppStorage(DockSettings.notifyFinishedKey) private var notifyFinished = true
 +    @ObservedObject private var updates = DockUpdates.shared
 +    @State private var startAtLogin = SMAppService.mainApp.status == .enabled
@@ -4198,6 +4208,9 @@ index 0000000..2a5e9b4
 +                Toggle("Notify me when a session finishes", isOn: $notifyFinished)
 +                Toggle("Bring the window to the front when a session needs me", isOn: $raiseWaiting)
 +                Toggle("Bring the window to the front when a session finishes", isOn: $raiseFinished)
++                Toggle("…only once no session is running (all idle or waiting on me)", isOn: $raiseWhenAllQuiet)
++                    .disabled(!raiseWaiting && !raiseFinished)
++                    .padding(.leading, 18)
 +                Text("Not for the session on screen. Click a notification to go to its tab. The window only comes forward while you are in another app or it is minimised, so it never switches tabs as you type. The 🔔 in the sidebar keeps the last 200.")
 +                    .font(.callout)
 +            }
