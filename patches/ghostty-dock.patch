@@ -1,5 +1,5 @@
 diff --git a/macos/Sources/App/macOS/AppDelegate.swift b/macos/Sources/App/macOS/AppDelegate.swift
-index b02337e..ebd22f3 100644
+index b02337e..dffc6ff 100644
 --- a/macos/Sources/App/macOS/AppDelegate.swift
 +++ b/macos/Sources/App/macOS/AppDelegate.swift
 @@ -210,6 +210,11 @@ class AppDelegate: NSObject,
@@ -14,7 +14,17 @@ index b02337e..ebd22f3 100644
          // Check if secure input was enabled when we last quit.
          if UserDefaults.ghostty.bool(forKey: "SecureInput") != SecureInput.shared.enabled {
              toggleSecureInput(self)
-@@ -574,6 +579,9 @@ class AppDelegate: NSObject,
+@@ -307,6 +312,9 @@ class AppDelegate: NSObject,
+             }
+ 
+             ghostty_app_set_color_scheme(app, scheme)
++            // A "light:A,dark:B" theme follows the appearance; Claude Code
++            // should too. Also brings it in step at launch.
++            DockTheme.syncClaudeCode()
+         }
+ 
+         // Setup our menu
+@@ -574,6 +582,9 @@ class AppDelegate: NSObject,
      }
  
      private func localEventKeyDown(_ event: NSEvent) -> NSEvent? {
@@ -24,7 +34,7 @@ index b02337e..ebd22f3 100644
          // If the tab overview is visible and escape is pressed, close it.
          // This can't POSSIBLY be right and is probably a FirstResponder problem
          // that we should handle elsewhere in our program. But this works and it
-@@ -796,13 +804,9 @@ class AppDelegate: NSObject,
+@@ -796,13 +807,9 @@ class AppDelegate: NSObject,
          DispatchQueue.main.async { self.syncAppearance(config: config) }
  
          // Decide whether to hide/unhide app from dock and app switcher
@@ -41,7 +51,7 @@ index b02337e..ebd22f3 100644
  
          // If we have configuration errors, we need to show them.
          let c = ConfigurationErrorsController.sharedInstance
-@@ -894,6 +898,12 @@ class AppDelegate: NSObject,
+@@ -894,6 +901,12 @@ class AppDelegate: NSObject,
          didReceive: UNNotificationResponse,
          withCompletionHandler: () -> Void
      ) {
@@ -54,7 +64,7 @@ index b02337e..ebd22f3 100644
          ghostty.handleUserNotification(response: didReceive)
          withCompletionHandler()
      }
-@@ -903,7 +913,8 @@ class AppDelegate: NSObject,
+@@ -903,7 +916,8 @@ class AppDelegate: NSObject,
          willPresent: UNNotification,
          withCompletionHandler: (UNNotificationPresentationOptions) -> Void
      ) {
@@ -64,7 +74,7 @@ index b02337e..ebd22f3 100644
          let options: UNNotificationPresentationOptions = shouldPresent ? [.banner, .sound] : []
          withCompletionHandler(options)
      }
-@@ -941,7 +952,7 @@ class AppDelegate: NSObject,
+@@ -941,7 +955,7 @@ class AppDelegate: NSObject,
      // MARK: - IB Actions
  
      @IBAction func openConfig(_ sender: Any?) {
@@ -73,7 +83,7 @@ index b02337e..ebd22f3 100644
      }
  
      @IBAction func reloadConfig(_ sender: Any?) {
-@@ -949,7 +960,10 @@ class AppDelegate: NSObject,
+@@ -949,7 +963,10 @@ class AppDelegate: NSObject,
      }
  
      @IBAction func checkForUpdates(_ sender: Any?) {
@@ -85,7 +95,7 @@ index b02337e..ebd22f3 100644
          // UpdateSimulator.happyPath.simulate(with: updateViewModel)
      }
  
-@@ -970,7 +984,7 @@ class AppDelegate: NSObject,
+@@ -970,7 +987,7 @@ class AppDelegate: NSObject,
      }
  
      @IBAction func showAbout(_ sender: Any?) {
@@ -94,7 +104,7 @@ index b02337e..ebd22f3 100644
      }
  
      @IBAction func showHelp(_ sender: Any) {
-@@ -1104,6 +1118,7 @@ extension AppDelegate {
+@@ -1104,6 +1121,7 @@ extension AppDelegate {
          // Note: This COULD Be done all in the xib file, but I find it easier to
          // modify this stuff as code.
          self.menuAbout?.setImageIfDesired(systemSymbolName: "info.circle")
@@ -3509,10 +3519,10 @@ index 0000000..0735cc8
 +}
 diff --git a/macos/Sources/Features/Dock/DockTheme.swift b/macos/Sources/Features/Dock/DockTheme.swift
 new file mode 100644
-index 0000000..29d7386
+index 0000000..c3d922c
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockTheme.swift
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,182 @@
 +import AppKit
 +import SwiftUI
 +
@@ -3551,6 +3561,40 @@ index 0000000..29d7386
 +        cache = nil
 +        configCache = nil
 +        (NSApp.delegate as? AppDelegate)?.reloadConfig(nil)
++        syncClaudeCode()
++    }
++
++    /// Claude Code colours its own boxes (the usage sidebar, diffs, dialogs)
++    /// from its theme setting, not the terminal's, so a light theme here left
++    /// them dark on white. Sets its light or dark to match the theme in
++    /// effect, keeping any variant (daltonized, ansi). Run sessions pick it up
++    /// from settings.json.
++    static func syncClaudeCode() {
++        cache = nil
++        configCache = nil
++        let file = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/settings.json")
++        guard let text = try? String(contentsOf: file, encoding: .utf8),
++              let updated = claudeSettings(text, dark: colours.dark) else { return }
++        try? updated.write(to: file, atomically: true, encoding: .utf8)
++    }
++
++    /// settings.json with its theme set to light or dark, edited in place so
++    /// the rest of the file keeps its order and layout; nil when it already
++    /// matches. No theme key means Claude Code's default, dark.
++    static func claudeSettings(_ text: String, dark: Bool) -> String? {
++        let want = dark ? "dark" : "light"
++        let pattern = #""theme"\s*:\s*"(dark|light)([^"]*)""#
++        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
++        let ns = text as NSString
++        if let m = re.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) {
++            let kind = m.range(at: 1)
++            if ns.substring(with: kind) == want { return nil }
++            return ns.replacingCharacters(in: kind, with: want)
++        }
++        guard !dark, let brace = text.firstIndex(of: "{") else { return nil }
++        let rest = text[text.index(after: brace)...]
++        let empty = rest.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("}")
++        return String(text[...brace]) + "\n  \"theme\": \"light\"" + (empty ? "" : ",") + rest
 +    }
 +
 +    /// The theme the config names when not overridden; with "light:A,dark:B"
