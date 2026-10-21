@@ -660,6 +660,652 @@ index 0000000..eff4a1a
 +        if DockUpdates.shared.lastCheck == nil { DockUpdates.shared.check() }
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockAgentConfig.swift b/macos/Sources/Features/Dock/DockAgentConfig.swift
+new file mode 100644
+index 0000000..de1d7b4
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockAgentConfig.swift
+@@ -0,0 +1,224 @@
++import Foundation
++
++/// The agents Claude Code can start, as their Markdown files define them:
++/// yours (~/.claude/agents), each open project's (.claude/agents), the
++/// plugins' and Claude Code's own. Only Foundation, so tests/dock-logic can
++/// run it.
++struct DockAgentDef: Identifiable, Equatable {
++    enum Source: Equatable {
++        case builtIn
++        /// ~/.claude/agents: every project.
++        case user
++        /// <folder>/.claude/agents: that project only.
++        case project(String)
++        /// A plugin's agents, replaced when it updates.
++        case plugin(String)
++    }
++
++    var id: String { path ?? "builtin:" + name }
++    var name: String
++    var description = ""
++    /// Comma-separated; empty means every tool.
++    var tools = ""
++    var disallowedTools = ""
++    /// An alias (opus, sonnet, haiku, inherit) or a model id; empty inherits.
++    var model = ""
++    var color = ""
++    /// The agent's instructions: the file after its front matter.
++    var body = ""
++    /// Front matter lines Dock does not edit, kept as they were.
++    var extra: [String] = []
++    var path: String?
++    var source: Source
++
++    var editable: Bool {
++        switch source {
++        case .user, .project: return path != nil
++        case .builtIn, .plugin: return false
++        }
++    }
++
++    /// The name transcripts record when this agent runs.
++    var agentType: String {
++        if case .plugin(let p) = source { return p + ":" + name }
++        return name
++    }
++}
++
++enum DockAgentConfig {
++    static let colors = ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink"]
++    static let models = ["", "inherit", "opus", "sonnet", "haiku"]
++
++    /// Claude Code's own agents: always there, not files.
++    static let builtIns: [DockAgentDef] = [
++        DockAgentDef(name: "general-purpose",
++                     description: "Claude Code's default agent: researches, searches code and carries out "
++                         + "multi-step tasks with every tool.", source: .builtIn),
++        DockAgentDef(name: "Explore",
++                     description: "Claude Code's fast read-only agent for finding files and code and "
++                         + "answering questions about a codebase.", source: .builtIn),
++        DockAgentDef(name: "Plan",
++                     description: "Claude Code's planning agent: reads the code and designs how to "
++                         + "make a change, without making it.", source: .builtIn),
++    ]
++
++    // MARK: Reading
++
++    /// Front matter fields in order, each key with its value (block and
++    /// list values joined), plus the body and the raw lines of each key.
++    static func parse(_ text: String) -> (fields: [(key: String, value: String, raw: [String])], body: String) {
++        var lines = text.components(separatedBy: "\n")
++        guard lines.first?.trimmingCharacters(in: .whitespaces) == "---",
++              let end = lines.dropFirst().firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "---" })
++        else { return ([], text) }
++        let front = Array(lines[1..<end])
++        lines.removeSubrange(0...end)
++        var body = lines.joined(separator: "\n")
++        while body.hasPrefix("\n") { body.removeFirst() }
++
++        var fields: [(key: String, value: String, raw: [String])] = []
++        for line in front {
++            let indented = line.first == " " || line.first == "\t"
++            if !indented, let colon = line.firstIndex(of: ":"),
++               !line[..<colon].contains(" "), !line.hasPrefix("#") {
++                let key = String(line[..<colon])
++                let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
++                fields.append((key, value, [line]))
++            } else if !fields.isEmpty {
++                fields[fields.count - 1].raw.append(line)
++            }
++        }
++        return (fields.map { f in (f.key, value(f.value, more: Array(f.raw.dropFirst())), f.raw) }, body)
++    }
++
++    /// A front matter value: unquoted, a block (| or >) or list joined.
++    private static func value(_ first: String, more: [String]) -> String {
++        let items = more.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
++        if first.isEmpty, !items.isEmpty, items.allSatisfy({ $0.hasPrefix("- ") }) {
++            return items.map { unquote(String($0.dropFirst(2))) }.joined(separator: ", ")
++        }
++        if first == "|" || first == ">" || first.hasPrefix("|") || first.hasPrefix(">") {
++            return items.joined(separator: first.hasPrefix("|") ? "\n" : " ")
++        }
++        return unquote(([first] + items).joined(separator: " "))
++    }
++
++    private static func unquote(_ s: String) -> String {
++        if s.count >= 2, s.hasPrefix("\""), s.hasSuffix("\""),
++           let data = s.data(using: .utf8), let v = try? JSONDecoder().decode(String.self, from: data) {
++            return v
++        }
++        if s.count >= 2, s.hasPrefix("'"), s.hasSuffix("'") {
++            return String(s.dropFirst().dropLast()).replacingOccurrences(of: "''", with: "'")
++        }
++        return s
++    }
++
++    static func load(_ url: URL, source: DockAgentDef.Source) -> DockAgentDef? {
++        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
++        let (fields, body) = parse(text)
++        var def = DockAgentDef(name: url.deletingPathExtension().lastPathComponent, path: url.path, source: source)
++        for f in fields {
++            switch f.key {
++            case "name": def.name = f.value
++            case "description": def.description = f.value
++            case "tools": def.tools = f.value
++            case "disallowedTools": def.disallowedTools = f.value
++            case "model": def.model = f.value
++            case "color": def.color = f.value
++            default: def.extra += f.raw
++            }
++        }
++        def.body = body
++        return def
++    }
++
++    /// Every agent: yours, then each project's, then the plugins', then
++    /// Claude Code's own. `projects` are the open sessions' folders.
++    static func all(projects: [String], home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [DockAgentDef] {
++        var defs = files(in: home.appendingPathComponent(".claude/agents"), source: .user)
++        for folder in Set(projects.map(projectRoot)).sorted() where folder != home.path {
++            defs += files(in: URL(fileURLWithPath: folder).appendingPathComponent(".claude/agents"),
++                          source: .project(folder))
++        }
++        for (plugin, dir) in plugins(home: home) {
++            defs += files(in: URL(fileURLWithPath: dir).appendingPathComponent("agents"), source: .plugin(plugin))
++        }
++        return defs + builtIns
++    }
++
++    private static func files(in dir: URL, source: DockAgentDef.Source) -> [DockAgentDef] {
++        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
++        return names.filter { $0.hasSuffix(".md") }.sorted()
++            .compactMap { load(dir.appendingPathComponent($0), source: source) }
++    }
++
++    /// The installed plugins and their folders, from installed_plugins.json.
++    static func plugins(home: URL) -> [(String, String)] {
++        let url = home.appendingPathComponent(".claude/plugins/installed_plugins.json")
++        guard let data = try? Data(contentsOf: url),
++              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
++              let plugins = json["plugins"] as? [String: Any] else { return [] }
++        return plugins.keys.sorted().compactMap { key in
++            guard let install = (plugins[key] as? [[String: Any]])?.first?["installPath"] as? String else { return nil }
++            return (String(key.split(separator: "@").first ?? Substring(key)), install)
++        }
++    }
++
++    /// The git root above a folder, or the folder: where .claude/agents lives.
++    static func projectRoot(_ folder: String) -> String {
++        var url = URL(fileURLWithPath: folder)
++        while url.path != "/" {
++            if FileManager.default.fileExists(atPath: url.appendingPathComponent(".git").path) { return url.path }
++            url.deleteLastPathComponent()
++        }
++        return folder
++    }
++
++    // MARK: Writing
++
++    static func render(_ def: DockAgentDef) -> String {
++        var front = ["name: " + yaml(def.name), "description: " + yaml(def.description)]
++        if !def.tools.isEmpty { front.append("tools: " + yaml(def.tools)) }
++        if !def.disallowedTools.isEmpty { front.append("disallowedTools: " + yaml(def.disallowedTools)) }
++        if !def.model.isEmpty { front.append("model: " + yaml(def.model)) }
++        if !def.color.isEmpty { front.append("color: " + yaml(def.color)) }
++        front += def.extra
++        var body = def.body
++        if !body.hasSuffix("\n") { body += "\n" }
++        return (["---"] + front + ["---", ""]).joined(separator: "\n") + body
++    }
++
++    /// A YAML scalar: as is when that is safe, else JSON-quoted (also YAML).
++    static func yaml(_ s: String) -> String {
++        let risky = s.isEmpty || s.contains(": ") || s.contains(" #") || s.contains("\n")
++            || s.hasSuffix(":") || s != s.trimmingCharacters(in: .whitespaces)
++            || "\"'[]{}&*!|>%@`#,?-".contains(s.first!)
++        guard risky, let data = try? JSONEncoder().encode(s), let q = String(data: data, encoding: .utf8) else { return s }
++        return q
++    }
++
++    static func save(_ def: DockAgentDef) throws {
++        guard let path = def.path else { return }
++        let url = URL(fileURLWithPath: path)
++        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
++        try render(def).write(to: url, atomically: true, encoding: .utf8)
++    }
++
++    /// "Code Reviewer!" becomes "code-reviewer", as agent names are written.
++    static func slug(_ name: String) -> String {
++        let s = name.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" }
++        return String(s).split(separator: "-").joined(separator: "-")
++    }
++
++    /// A new agent's file in `dir`, not yet saved.
++    static func new(name: String, in dir: URL, source: DockAgentDef.Source) -> DockAgentDef {
++        let slug = slug(name)
++        return DockAgentDef(
++            name: slug,
++            description: "Use this agent when …",
++            body: "You are \(name). Your job is to …\n\nWhen you finish, report back briefly: what you did "
++                + "and anything the main session needs to know.\n",
++            path: dir.appendingPathComponent(slug + ".md").path, source: source)
++    }
++}
+diff --git a/macos/Sources/Features/Dock/DockAgentConfigView.swift b/macos/Sources/Features/Dock/DockAgentConfigView.swift
+new file mode 100644
+index 0000000..3dc069c
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockAgentConfigView.swift
+@@ -0,0 +1,410 @@
++import AppKit
++import SwiftUI
++
++/// The agents Claude Code can start, how each is set up and how much it
++/// has run, with yours and your projects' editable in place.
++struct DockAgentConfigView: View {
++    @ObservedObject var activity = DockAgentsModel.shared
++    @ObservedObject var sessions = DockSessions.shared
++    @State private var defs: [DockAgentDef] = []
++    @State private var selected: String?
++    @State private var draft: DockAgentDef?
++    @State private var newName = ""
++    @State private var creatingIn: (dir: URL, source: DockAgentDef.Source)?
++    @State private var error: String?
++
++    private var projects: [String] { sessions.rows.map(\.detail).filter { !$0.isEmpty } }
++    private var original: DockAgentDef? { defs.first { $0.id == selected } }
++    private var dirty: Bool { draft != nil && draft != original }
++
++    var body: some View {
++        HStack(spacing: 0) {
++            list.frame(width: 300)
++            Divider().overlay(DockPalette.surface)
++            Group {
++                if let draft {
++                    detail(draft)
++                } else {
++                    Text("Choose an agent to see how it is set up.")
++                        .foregroundStyle(DockPalette.grey)
++                        .frame(maxWidth: .infinity, maxHeight: .infinity)
++                }
++            }
++        }
++        .onAppear(perform: reload)
++        .sheet(isPresented: Binding(get: { creatingIn != nil }, set: { if !$0 { creatingIn = nil } })) {
++            newSheet
++        }
++    }
++
++    // MARK: List
++
++    private struct Group_: Identifiable {
++        var id: String { title }
++        let title: String
++        let note: String
++        let defs: [DockAgentDef]
++        let newIn: (dir: URL, source: DockAgentDef.Source)?
++    }
++
++    private var groups: [Group_] {
++        let home = FileManager.default.homeDirectoryForCurrentUser
++        var out = [Group_(title: "Yours", note: "~/.claude/agents · every project",
++                          defs: defs.filter { $0.source == .user },
++                          newIn: (home.appendingPathComponent(".claude/agents"), .user))]
++        for folder in Set(projects.map(DockAgentConfig.projectRoot)).sorted() where folder != home.path {
++            out.append(Group_(title: (folder as NSString).lastPathComponent,
++                              note: ".claude/agents · this project only",
++                              defs: defs.filter { $0.source == .project(folder) },
++                              newIn: (URL(fileURLWithPath: folder).appendingPathComponent(".claude/agents"),
++                                      .project(folder))))
++        }
++        var plugins: [String] = []
++        for d in defs { if case .plugin(let p) = d.source, !plugins.contains(p) { plugins.append(p) } }
++        for p in plugins {
++            out.append(Group_(title: p, note: "plugin · read only",
++                              defs: defs.filter { $0.source == .plugin(p) }, newIn: nil))
++        }
++        out.append(Group_(title: "Built into Claude Code", note: "read only",
++                          defs: defs.filter { $0.source == .builtIn }, newIn: nil))
++        return out
++    }
++
++    private var list: some View {
++        ScrollView {
++            LazyVStack(alignment: .leading, spacing: 14) {
++                ForEach(groups) { g in
++                    VStack(alignment: .leading, spacing: 4) {
++                        HStack {
++                            VStack(alignment: .leading, spacing: 1) {
++                                Text(g.title).font(.callout.weight(.semibold)).foregroundStyle(DockPalette.text)
++                                Text(g.note).font(.caption).foregroundStyle(DockPalette.grey)
++                            }
++                            Spacer()
++                            if let target = g.newIn {
++                                Button { newName = ""; creatingIn = target } label: {
++                                    Image(systemName: "plus.circle.fill").foregroundStyle(DockPalette.green)
++                                }
++                                .buttonStyle(.plain)
++                                .help("New agent here")
++                            }
++                        }
++                        if g.defs.isEmpty {
++                            Text("None yet").font(.caption).foregroundStyle(DockPalette.grey).padding(.vertical, 2)
++                        }
++                        ForEach(g.defs) { d in row(d) }
++                    }
++                }
++            }
++            .padding(12)
++        }
++        .background(DockPalette.mantle)
++    }
++
++    private func row(_ d: DockAgentDef) -> some View {
++        let runs = usage(d).count
++        return Button { choose(d) } label: {
++            HStack(spacing: 8) {
++                Circle().fill(Self.color(d.color) ?? DockPalette.surface).frame(width: 8, height: 8)
++                Text(d.name).font(.callout).foregroundStyle(DockPalette.text).lineLimit(1)
++                Spacer()
++                if !d.model.isEmpty {
++                    Text(d.model).font(.caption).foregroundStyle(DockPalette.mauve)
++                }
++                if runs > 0 {
++                    Text("\(runs)×").font(.caption.weight(.semibold)).monospacedDigit().foregroundStyle(DockPalette.green)
++                        .help("\(runs) runs (\(activity.scope.rawValue))")
++                }
++            }
++            .padding(.horizontal, 8).padding(.vertical, 5)
++            .background(RoundedRectangle(cornerRadius: 6)
++                .fill(selected == d.id ? DockPalette.blue.opacity(0.2) : Color.clear))
++            .contentShape(Rectangle())
++        }
++        .buttonStyle(.plain)
++    }
++
++    // MARK: Detail
++
++    private func detail(_ d: DockAgentDef) -> some View {
++        let runs = usage(d)
++        let edit = d.editable
++        return ScrollView {
++            VStack(alignment: .leading, spacing: 14) {
++                HStack(alignment: .firstTextBaseline) {
++                    Text(d.name).font(.title2.weight(.bold)).foregroundStyle(DockPalette.text)
++                    Text(sourceText(d)).font(.callout).foregroundStyle(DockPalette.grey)
++                    Spacer()
++                }
++                Text(runs.isEmpty ? "Not run (\(activity.scope.rawValue.lowercased()))"
++                     : "\(runs.count) runs · \(DockCost.formatTokens(runs.map(\.tokens).reduce(0, +))) tokens · "
++                        + "\(DockCost.format(runs.map(\.dollars).reduce(0, +))) · "
++                        + "\(runs.map(\.toolCalls).reduce(0, +)) tool calls (\(activity.scope.rawValue.lowercased()))")
++                    .font(.callout).foregroundStyle(runs.isEmpty ? DockPalette.grey : DockPalette.green)
++
++                field("Description", "When Claude should use it: Claude reads this to decide.") {
++                    editor(\.description, height: 64, enabled: edit, mono: false)
++                }
++                if d.source != .builtIn {
++                    HStack(alignment: .top, spacing: 18) {
++                        field("Model", "Inherit uses the session's model.") {
++                            Picker("", selection: binding(\.model)) {
++                                ForEach(modelChoices(d), id: \.self) { m in
++                                    Text(m.isEmpty ? "Inherit (default)" : m).tag(m)
++                                }
++                            }
++                            .labelsHidden().frame(width: 200).disabled(!edit)
++                        }
++                        field("Colour", "Its colour in Claude Code.") {
++                            HStack(spacing: 6) {
++                                swatch("", d, edit)
++                                ForEach(DockAgentConfig.colors, id: \.self) { swatch($0, d, edit) }
++                            }
++                        }
++                    }
++                    field("Tools", "Blank gives it every tool. e.g. Read, Grep, Glob, Bash") {
++                        TextField("Every tool", text: binding(\.tools)).textFieldStyle(.roundedBorder).disabled(!edit)
++                    }
++                    field("Not allowed", "Tools it may not use, e.g. Write, Edit") {
++                        TextField("None", text: binding(\.disallowedTools)).textFieldStyle(.roundedBorder)
++                            .disabled(!edit)
++                    }
++                    if !d.extra.isEmpty {
++                        field("Other settings", "Kept as they are; edit the file to change them.") {
++                            Text(d.extra.joined(separator: "\n"))
++                                .font(.system(.caption, design: .monospaced)).foregroundStyle(DockPalette.grey)
++                                .textSelection(.enabled)
++                        }
++                    }
++                    field("Instructions", "Its system prompt: what it is and how it works.") {
++                        editor(\.body, height: 280, enabled: edit, mono: true)
++                    }
++                }
++                if let error {
++                    Text(error).font(.callout).foregroundStyle(Color(hex: 0xf0566a))
++                }
++                buttons(d)
++                if edit {
++                    Text("Saved to \(d.path ?? ""). Sessions read agent files when they start: restart a "
++                         + "session (↻) to give it the change.")
++                        .font(.caption).foregroundStyle(DockPalette.grey)
++                        .fixedSize(horizontal: false, vertical: true)
++                } else if case .plugin = d.source {
++                    Text("A plugin's agents are replaced when it updates. Duplicate it to make your own copy to change.")
++                        .font(.caption).foregroundStyle(DockPalette.grey)
++                }
++            }
++            .padding(20)
++            .frame(maxWidth: .infinity, alignment: .leading)
++        }
++    }
++
++    @ViewBuilder
++    private func buttons(_ d: DockAgentDef) -> some View {
++        HStack(spacing: 10) {
++            if d.editable {
++                Button("Save") { save() }
++                    .keyboardShortcut("s", modifiers: .command)
++                    .buttonStyle(DockFilledButton(color: DockPalette.green))
++                    .disabled(!dirty)
++                Button("Revert") { draft = original }.disabled(!dirty)
++            }
++            if d.source != .builtIn {
++                Button("Duplicate as Mine") { duplicate(d) }
++            }
++            if let path = d.path {
++                Button("Open in Editor") { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
++                Button("Show in Finder") {
++                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
++                }
++            }
++            Spacer()
++            if d.editable {
++                Button("Move to Trash…") { trash(d) }.foregroundStyle(Color(hex: 0xf0566a))
++            }
++        }
++    }
++
++    private func field<C: View>(_ title: String, _ hint: String, @ViewBuilder _ content: () -> C) -> some View {
++        VStack(alignment: .leading, spacing: 4) {
++            HStack(alignment: .firstTextBaseline, spacing: 8) {
++                Text(title).font(.callout.weight(.semibold)).foregroundStyle(DockPalette.text)
++                Text(hint).font(.caption).foregroundStyle(DockPalette.grey)
++            }
++            content()
++        }
++    }
++
++    private func editor(_ key: WritableKeyPath<DockAgentDef, String>, height: CGFloat, enabled: Bool,
++                        mono: Bool) -> some View {
++        TextEditor(text: binding(key))
++            .font(mono ? .system(size: 12, design: .monospaced) : .callout)
++            .scrollContentBackground(.hidden)
++            .padding(6)
++            .frame(height: height)
++            .background(RoundedRectangle(cornerRadius: 6).fill(DockPalette.mantle))
++            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(DockPalette.surface))
++            .disabled(!enabled)
++    }
++
++    private func swatch(_ name: String, _ d: DockAgentDef, _ edit: Bool) -> some View {
++        let on = (draft?.color ?? "") == name
++        return Button { draft?.color = name } label: {
++            Circle()
++                .fill(Self.color(name) ?? Color.clear)
++                .overlay(Circle().strokeBorder(name.isEmpty ? DockPalette.greyLine : Color.clear))
++                .frame(width: 16, height: 16)
++                .overlay(Circle().strokeBorder(DockPalette.text, lineWidth: on ? 2 : 0).padding(-3))
++        }
++        .buttonStyle(.plain)
++        .disabled(!edit)
++        .help(name.isEmpty ? "No colour" : name)
++    }
++
++    private func binding(_ key: WritableKeyPath<DockAgentDef, String>) -> Binding<String> {
++        Binding(get: { draft?[keyPath: key] ?? "" }, set: { draft?[keyPath: key] = $0 })
++    }
++
++    private func modelChoices(_ d: DockAgentDef) -> [String] {
++        let current = draft?.model ?? d.model
++        return DockAgentConfig.models + (DockAgentConfig.models.contains(current) ? [] : [current])
++    }
++
++    private var newSheet: some View {
++        VStack(alignment: .leading, spacing: 12) {
++            Text("New agent").font(.headline)
++            Text(creatingIn.map { $0.dir.path } ?? "").font(.caption).foregroundStyle(.secondary)
++            TextField("Name, e.g. code-reviewer", text: $newName).textFieldStyle(.roundedBorder).frame(width: 320)
++            HStack {
++                Spacer()
++                Button("Cancel") { creatingIn = nil }.keyboardShortcut(.cancelAction)
++                Button("Create") { create() }
++                    .keyboardShortcut(.defaultAction)
++                    .disabled(DockAgentConfig.slug(newName).isEmpty)
++            }
++        }
++        .padding(20)
++    }
++
++    // MARK: Actions
++
++    private func reload() {
++        defs = DockAgentConfig.all(projects: projects)
++        if let selected, let d = defs.first(where: { $0.id == selected }) {
++            if !dirty { draft = d }
++        } else if let first = defs.first {
++            choose(first)
++        }
++    }
++
++    private func choose(_ d: DockAgentDef) {
++        if dirty, !confirmDiscard() { return }
++        selected = d.id
++        draft = d
++        error = nil
++    }
++
++    private func confirmDiscard() -> Bool {
++        let alert = NSAlert()
++        alert.messageText = "Discard your changes to \(original?.name ?? "this agent")?"
++        alert.addButton(withTitle: "Discard")
++        alert.addButton(withTitle: "Keep Editing")
++        return alert.runModalNearPointer() == .alertFirstButtonReturn
++    }
++
++    private func save() {
++        guard let d = draft else { return }
++        do {
++            try DockAgentConfig.save(d)
++            error = nil
++            draft = d
++            reload()
++        } catch {
++            self.error = "Could not save: \(error.localizedDescription)"
++        }
++    }
++
++    private func create() {
++        guard let target = creatingIn else { return }
++        let d = DockAgentConfig.new(name: newName, in: target.dir, source: target.source)
++        creatingIn = nil
++        if FileManager.default.fileExists(atPath: d.path ?? "") {
++            error = "\(d.name) already exists there."
++            return
++        }
++        write(d)
++    }
++
++    private func duplicate(_ d: DockAgentDef) {
++        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/agents")
++        var copy = d
++        var name = d.name
++        while FileManager.default.fileExists(atPath: dir.appendingPathComponent(name + ".md").path) {
++            name += "-copy"
++        }
++        copy.name = name
++        copy.source = .user
++        copy.path = dir.appendingPathComponent(name + ".md").path
++        if copy.body.isEmpty { copy.body = "You are \(name). " + d.description + "\n" }
++        write(copy)
++    }
++
++    private func write(_ d: DockAgentDef) {
++        do {
++            try DockAgentConfig.save(d)
++            defs = DockAgentConfig.all(projects: projects)
++            selected = d.id
++            draft = defs.first { $0.id == d.id } ?? d
++            error = nil
++        } catch {
++            self.error = "Could not save: \(error.localizedDescription)"
++        }
++    }
++
++    private func trash(_ d: DockAgentDef) {
++        guard let path = d.path else { return }
++        let alert = NSAlert()
++        alert.messageText = "Move \(d.name) to the Trash?"
++        alert.informativeText = "Sessions started after this can no longer use it. You can put it back from the Trash."
++        alert.addButton(withTitle: "Move to Trash")
++        alert.addButton(withTitle: "Cancel")
++        guard alert.runModalNearPointer() == .alertFirstButtonReturn else { return }
++        do {
++            try FileManager.default.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: nil)
++            selected = nil
++            draft = nil
++            reload()
++        } catch {
++            self.error = "Could not move it to the Trash: \(error.localizedDescription)"
++        }
++    }
++
++    // MARK: Helpers
++
++    private func usage(_ d: DockAgentDef) -> [DockAgents.Agent] {
++        activity.agents.filter { $0.type == d.agentType }
++    }
++
++    private func sourceText(_ d: DockAgentDef) -> String {
++        switch d.source {
++        case .builtIn: return "built into Claude Code"
++        case .user: return "yours · every project"
++        case .project(let f): return "\((f as NSString).lastPathComponent) only"
++        case .plugin(let p): return "from the \(p) plugin"
++        }
++    }
++
++    static func color(_ name: String) -> Color? {
++        switch name {
++        case "red": return Color(hex: 0xf0566a)
++        case "orange": return Color(hex: 0xf5913e)
++        case "yellow": return Color(hex: 0xe8c547)
++        case "green": return Color(hex: 0x4cc38a)
++        case "cyan": return Color(hex: 0x3cc6d6)
++        case "blue": return Color(hex: 0x4c8df6)
++        case "purple": return Color(hex: 0xa66cf0)
++        case "pink": return Color(hex: 0xf06cb4)
++        default: return nil
++        }
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockAgents.swift b/macos/Sources/Features/Dock/DockAgents.swift
 new file mode 100644
 index 0000000..1468a67
@@ -857,10 +1503,10 @@ index 0000000..1468a67
 +}
 diff --git a/macos/Sources/Features/Dock/DockAgentsView.swift b/macos/Sources/Features/Dock/DockAgentsView.swift
 new file mode 100644
-index 0000000..37135e2
+index 0000000..cc51650
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAgentsView.swift
-@@ -0,0 +1,542 @@
+@@ -0,0 +1,556 @@
 +import AppKit
 +import SwiftUI
 +
@@ -951,11 +1597,17 @@ index 0000000..37135e2
 +    @ObservedObject var sessions = DockSessions.shared
 +    @AppStorage(DockSettings.themeKey) private var themeName = ""
 +    @State private var showGuide = false
++    @State private var page = Page.activity
++
++    enum Page: String, CaseIterable { case activity = "Activity", setup = "Set Up" }
 +
 +    var body: some View {
 +        VStack(spacing: 0) {
 +            header
 +            Divider().overlay(DockPalette.surface)
++            if page == .setup {
++                DockAgentConfigView()
++            } else {
 +            HStack(alignment: .top, spacing: 0) {
 +                ScrollView {
 +                    LazyVStack(alignment: .leading, spacing: 18) {
@@ -971,6 +1623,7 @@ index 0000000..37135e2
 +                }
 +                Divider().overlay(DockPalette.surface)
 +                questions.frame(width: 260)
++            }
 +            }
 +        }
 +        .frame(minWidth: 760, minHeight: 460)
@@ -991,6 +1644,13 @@ index 0000000..37135e2
 +        return VStack(alignment: .leading, spacing: 10) {
 +            HStack(spacing: 10) {
 +                Text("Agents").font(.title2.weight(.bold)).foregroundStyle(DockPalette.text)
++                Picker("", selection: $page) {
++                    ForEach(Page.allCases, id: \.self) { Text($0.rawValue).tag($0) }
++                }
++                .pickerStyle(.segmented)
++                .labelsHidden()
++                .frame(width: 170)
++                .help("Activity: what agents are doing. Set Up: how each agent is configured, and change it.")
 +                HStack(spacing: 5) {
 +                    Circle().fill(live > 0 ? DockPalette.green : DockPalette.grey).frame(width: 7, height: 7)
 +                    Text("\(live) live").font(.callout.weight(.semibold))

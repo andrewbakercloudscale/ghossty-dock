@@ -79,6 +79,12 @@ reports each session's status.
   agents** explains how to prompt for them (say subagents, parallel,
   background or worktree) and how to make your own (/agents or
   .claude/agents/*.md).
+  **Set Up** lists every agent Claude Code can start (yours in
+  ~/.claude/agents, each open project's .claude/agents, the plugins' and the
+  built-in ones) with how often each ran, and lets you change yours: the
+  description Claude chooses by, model, colour, tools, tools it may not use
+  and its instructions. New agent (+), Duplicate as Mine (to customise a
+  plugin's), Open in Editor, Move to Trash.
   A **Spend** line shows how fast money is going across every open session,
   agents included: $/hr now (last 10 minutes), last hour, today's average
   $/hr, today, and tokens a minute.
