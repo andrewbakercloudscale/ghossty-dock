@@ -4455,10 +4455,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..d1cf11b
+index 0000000..2f71a3b
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,841 @@
+@@ -0,0 +1,842 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -4660,7 +4660,7 @@ index 0000000..d1cf11b
 +    private var header: some View {
 +        VStack(alignment: .leading, spacing: 7) {
 +            headerButtons
-+                .overlay(alignment: .bottomTrailing) {
++                .overlay(alignment: .topTrailing) {
 +                    if let headerTip {
 +                        Text(headerTip)
 +                            .font(.system(size: 11, weight: .medium))
@@ -4671,7 +4671,8 @@ index 0000000..d1cf11b
 +                            .background(RoundedRectangle(cornerRadius: 5).fill(DockPalette.surface))
 +                            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(DockPalette.greyLine, lineWidth: 1))
 +                            .fixedSize(horizontal: false, vertical: true)
-+                            .alignmentGuide(.bottom) { $0[.top] - 4 }
++                            // Under the buttons, over the counters: never on them.
++                            .offset(y: 28)
 +                            .allowsHitTesting(false)
 +                            .transition(.opacity)
 +                    }
