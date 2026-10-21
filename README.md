@@ -34,7 +34,7 @@ reports each session's status.
   Pauseless Compaction summarises it in the background and swaps the summary
   in with your next prompt. Only while the session is at its prompt (finished
   or idle), so it never answers a question or queues behind a running turn.
-  Needs Claude Burst's `/compact-async` command.
+  Needs Claude Burst: without it the button offers to set it up (see below).
 - **Restart** (↻, beside Undock; or right-click → Restart Session) stops claude
   and resumes the same session in a fresh tab at once. Same as
   `ghostty-dock-move --restart <session id>`.
@@ -144,6 +144,19 @@ One-line install (Claude Code sets it up and tells you what it changed):
     claude "$(curl -fsSL https://raw.githubusercontent.com/andrewbakercloudscale/claude-code-cost-sidebar/main/SETUP_PROMPT.md)"
 
 <br clear="right">
+
+## Pairs well with: Claude Burst
+
+[**Claude Burst**](https://github.com/andrewbakercloudscale/claude-burst) is a
+free local gateway for Claude Code. With it, each row's **Compact** button
+compacts that session in the background (Pauseless Compaction): the summary
+swaps in with your next prompt, so you never sit through `/compact`.
+
+Without Burst, Compact (or Settings → Compaction) offers **Set Up Claude
+Burst**, which opens a tab running its one-line setup. Claude Code says what
+will change and waits for your go-ahead:
+
+    claude "$(curl -fsSL https://raw.githubusercontent.com/andrewbakercloudscale/claude-burst/main/SETUP_PROMPT.md)"
 
 ## Install
 

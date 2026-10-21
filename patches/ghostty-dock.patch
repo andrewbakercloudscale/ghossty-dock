@@ -1031,10 +1031,10 @@ index 0000000..dfd8ad5
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..9749ee9
+index 0000000..71dd9c7
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,751 @@
+@@ -0,0 +1,799 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -1312,6 +1312,7 @@ index 0000000..9749ee9
 +    /// in the background (Pauseless Compaction) and swaps the summary in
 +    /// with the next prompt.
 +    @MainActor func compact(_ row: Row) {
++        guard Self.burstInstalled else { offerBurst(); return }
 +        guard canCompact(row), let sid = row.sessionId, let controller = row.controller,
 +              let surface = (controller.focusedSurface ?? controller.surfaceTree.first)?.surfaceModel
 +        else { NSSound.beep(); return }
@@ -1322,6 +1323,53 @@ index 0000000..9749ee9
 +        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
 +            self?.compacting.remove(sid)
 +            self?.refreshCosts()
++        }
++    }
++
++    static let burstURL = URL(string: "https://github.com/andrewbakercloudscale/claude-burst")!
++    static let burstSetup = "claude \"$(curl -fsSL https://raw.githubusercontent.com/andrewbakercloudscale/claude-burst/main/SETUP_PROMPT.md)\""
++
++    /// Claude Burst installs /compact-async; its gateway does the compacting.
++    static var burstInstalled: Bool {
++        FileManager.default.fileExists(atPath: FileManager.default.homeDirectoryForCurrentUser
++            .appendingPathComponent(".claude/commands/compact-async.md").path)
++    }
++
++    /// Compact without Claude Burst: says what it is and offers to set it
++    /// up in a new tab, where its setup prompt asks before changing anything.
++    func offerBurst() {
++        let alert = NSAlert()
++        alert.messageText = "Compacting without the pause needs Claude Burst"
++        alert.informativeText = """
++            Claude Burst is a free local gateway for Claude Code. Its Pauseless Compaction \
++            summarises a session in the background and swaps the summary in with your next \
++            prompt, so you never sit through /compact.
++
++            Set Up opens a tab running Claude Burst's one-line setup: Claude Code says what \
++            will change and waits for your go-ahead before installing anything.
++            """
++        alert.addButton(withTitle: "Set Up Claude Burst")
++        alert.addButton(withTitle: "Learn More")
++        alert.addButton(withTitle: "Cancel")
++        switch alert.runModal() {
++        case .alertFirstButtonReturn:
++            let opener = FileManager.default.homeDirectoryForCurrentUser
++                .appendingPathComponent(".local/bin/ghostty-dock-open").path
++            guard FileManager.default.isExecutableFile(atPath: opener) else {
++                NSWorkspace.shared.open(Self.burstURL)
++                return
++            }
++            let p = Process()
++            p.executableURL = URL(fileURLWithPath: "/bin/bash")
++            p.arguments = [opener, "--command", Self.burstSetup,
++                           FileManager.default.homeDirectoryForCurrentUser.path]
++            p.standardOutput = FileHandle.nullDevice
++            p.standardError = FileHandle.nullDevice
++            try? p.run()
++        case .alertSecondButtonReturn:
++            NSWorkspace.shared.open(Self.burstURL)
++        default:
++            break
 +        }
 +    }
 +
@@ -1788,10 +1836,10 @@ index 0000000..9749ee9
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..959e529
+index 0000000..36914ae
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,202 @@
+@@ -0,0 +1,215 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -1899,6 +1947,19 @@ index 0000000..959e529
 +                Toggle("Notify me when a session finishes", isOn: $notifyFinished)
 +                Text("Not for the session on screen. Click a notification to go to its tab.")
 +                    .font(.callout)
++            }
++            Section("Compaction") {
++                if DockSessions.burstInstalled {
++                    LabeledContent("Pauseless Compaction") { Text("Claude Burst is set up") }
++                    Text("Each row's ⤡ button compacts its session in the background while it is at its prompt.")
++                        .font(.callout)
++                } else {
++                    LabeledContent("Pauseless Compaction") {
++                        Button("Set Up Claude Burst…") { DockSessions.shared.offerBurst() }
++                    }
++                    Text("Claude Burst, free, compacts sessions in the background so you never wait on /compact.")
++                        .font(.callout)
++                }
 +            }
 +            Section("Keyboard shortcuts") {
 +                ForEach(DockShortcuts.summary, id: \.0) { title, keys in
@@ -2104,10 +2165,10 @@ index 0000000..291ee5e
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..42fb20f
+index 0000000..4a03ea9
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,665 @@
+@@ -0,0 +1,670 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -2467,10 +2528,11 @@ index 0000000..42fb20f
 +                    VStack(spacing: 0) {
 +                        DockIconButton(symbol: "arrow.down.right.and.arrow.up.left", busy: compacting,
 +                                       help: compacting ? "Compacting…"
++                                           : !DockSessions.burstInstalled ? "Compact without the pause: set up Claude Burst"
 +                                           : canCompact ? "Compact: Claude Burst's Pauseless Compaction (/compact-async)"
 +                                           : "Compact: once it is at its prompt",
 +                                       action: onCompact)
-+                            .opacity(canCompact || compacting ? 1 : 0.35)
++                            .opacity(canCompact || compacting || !DockSessions.burstInstalled ? 1 : 0.35)
 +                        DockIconButton(symbol: "arrow.clockwise", busy: restarting,
 +                                       help: restarting ? "Restarting…" : "Restart: resume it in a fresh tab",
 +                                       action: onRestart)
@@ -2532,7 +2594,11 @@ index 0000000..42fb20f
 +            }
 +            Divider()
 +            if row.sessionId != nil {
-+                Button("Compact (Pauseless)", action: onCompact).disabled(!canCompact || compacting)
++                if DockSessions.burstInstalled {
++                    Button("Compact (Pauseless)", action: onCompact).disabled(!canCompact || compacting)
++                } else {
++                    Button("Compact (Pauseless)… needs Claude Burst", action: onCompact)
++                }
 +                Button("Restart Session", action: onRestart).disabled(restarting)
 +                Button("Undock to Its Own Window", action: onUndock).disabled(undocking)
 +            }
