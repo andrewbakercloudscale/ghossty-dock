@@ -188,7 +188,8 @@ If a newer build is already installed under the running app (for example
 after `scripts/build-terminal.sh --no-open`), a green **Restart** button (↻)
 appears at the top of the sidebar instead. It asks first, then restarts once
 your sessions are quiet and you have not typed for 10 seconds, and reopens
-them as tabs. While it waits, a green ⏳ line under the header says what for:
+them as tabs. While it waits, a flashing orange ⏳ replaces the Restart
+button and an orange line under the header says what for:
 "Restart waits for ghostty-dock to finish", then a countdown ("Restarting in
 32s"), then "once you stop typing".
 

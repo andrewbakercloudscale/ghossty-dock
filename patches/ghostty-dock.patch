@@ -4414,10 +4414,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..04f74cd
+index 0000000..97d8a2c
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,857 @@
+@@ -0,0 +1,879 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -4623,8 +4623,8 @@ index 0000000..04f74cd
 +            headerButtons
 +            if let line = updates.restartStatus {
 +                Label(line, systemImage: "hourglass")
-+                    .font(.system(size: 11, weight: .semibold))
-+                    .foregroundStyle(DockPalette.green)
++                    .font(.system(size: 11, weight: .bold))
++                    .foregroundStyle(DockPalette.peach)
 +                    .lineLimit(2)
 +                    .fixedSize(horizontal: false, vertical: true)
 +                    .help("Ghostty Dock restarts into the new build once every session has been quiet "
@@ -4680,15 +4680,18 @@ index 0000000..04f74cd
 +            Text("Sessions").font(.system(size: 12, weight: .semibold)).foregroundStyle(DockPalette.text)
 +            Spacer()
 +            if updates.restartPending && updates.state != .installing {
-+                Button(action: updates.confirmRestart) {
-+                    Image(systemName: updates.restarting ? "hourglass" : "arrow.clockwise")
-+                        .font(.system(size: 11, weight: .bold))
-+                        .foregroundStyle(DockPalette.base)
-+                        .frame(width: 20, height: 20)
-+                        .background(Circle().fill(DockPalette.green))
++                Button { if !updates.restarting { updates.confirmRestart() } } label: {
++                    if updates.restarting {
++                        DockRestartWaiting()
++                    } else {
++                        Image(systemName: "arrow.clockwise")
++                            .font(.system(size: 11, weight: .bold))
++                            .foregroundStyle(DockPalette.base)
++                            .frame(width: 20, height: 20)
++                            .background(Circle().fill(DockPalette.green))
++                    }
 +                }
 +                .buttonStyle(.plain)
-+                .disabled(updates.restarting)
 +                .onHover { inside in
 +                    let tip = updates.restarting ? (updates.restartStatus ?? "Restarting once sessions are quiet…")
 +                        : "Restart into the new build once sessions are quiet"
@@ -4744,6 +4747,25 @@ index 0000000..04f74cd
 +                DockAboutWindow.shared.show(near: NSEvent.mouseLocation)
 +            }
 +        }
++    }
++}
++
++/// The Restart button while a restart waits: a bright hourglass that
++/// flashes, so it is plain that one is coming.
++private struct DockRestartWaiting: View {
++    @State private var on = false
++
++    var body: some View {
++        Image(systemName: "hourglass")
++            .font(.system(size: 11, weight: .heavy))
++            .foregroundStyle(Color.white)
++            .frame(width: 20, height: 20)
++            .background(Circle().fill(DockPalette.peach))
++            .overlay(Circle().stroke(DockPalette.peach, lineWidth: 2).scaleEffect(on ? 1.5 : 1).opacity(on ? 0 : 0.9))
++            .opacity(on ? 0.45 : 1)
++            .onAppear {
++                withAnimation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true)) { on = true }
++            }
 +    }
 +}
 +
@@ -5582,10 +5604,10 @@ index 0000000..c3d922c
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..d16e77b
+index 0000000..c7f6042
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
-@@ -0,0 +1,280 @@
+@@ -0,0 +1,287 @@
 +import AppKit
 +import Combine
 +
@@ -5632,6 +5654,8 @@ index 0000000..d16e77b
 +
 +    private var timer: Timer?
 +    private var statusTimer: Timer?
++    /// When Restart was clicked: until the script's first status, say so.
++    private var restartClicked: Date?
 +    private var installedTimer: Timer?
 +    private var logTimer: Timer?
 +
@@ -5703,6 +5727,9 @@ index 0000000..d16e77b
 +            default: break
 +            }
 +        }
++        if line == nil, let clicked = restartClicked, Date().timeIntervalSince(clicked) < 30 {
++            line = "Waiting to restart…"
++        }
 +        if line != restartStatus { restartStatus = line }
 +        if line != nil, !restarting { restarting = true }
 +    }
@@ -5737,6 +5764,8 @@ index 0000000..d16e77b
 +            return
 +        }
 +        restarting = true
++        restartClicked = Date()
++        readRestartStatus()
 +        DispatchQueue.global(qos: .utility).async { _ = Self.run(restarter, []) }
 +    }
 +
