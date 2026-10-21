@@ -2706,6 +2706,119 @@ index 0000000..389299c
 +        return String(parts[parts.count - 2])
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockRaiseBanner.swift b/macos/Sources/Features/Dock/DockRaiseBanner.swift
+new file mode 100644
+index 0000000..6bc7a28
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockRaiseBanner.swift
+@@ -0,0 +1,107 @@
++import AppKit
++import SwiftUI
++
++/// The banner over a window the Dock brought to the front by itself,
++/// saying which session and why, for five seconds. Click it to close it.
++final class DockRaiseBanner {
++    static let shared = DockRaiseBanner()
++    static let seconds = 5.0
++
++    struct Reason {
++        var symbol: String
++        var color: Color
++        var title: String
++        var detail: String
++    }
++
++    private var panel: NSPanel?
++    private var hide: DispatchWorkItem?
++
++    func show(_ reason: Reason, on window: NSWindow) {
++        close(animated: false)
++        let view = DockRaiseBannerView(reason: reason) { [weak self] in self?.close(animated: true) }
++        let host = NSHostingView(rootView: view)
++        let size = host.fittingSize
++        let p = NSPanel(contentRect: NSRect(origin: .zero, size: size),
++                        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
++        p.contentView = host
++        p.isOpaque = false
++        p.backgroundColor = .clear
++        p.hasShadow = true
++        p.level = window.level
++        let f = window.frame
++        p.setFrameOrigin(NSPoint(x: f.midX - size.width / 2, y: f.maxY - size.height - 60))
++        p.alphaValue = 0
++        window.addChildWindow(p, ordered: .above)
++        panel = p
++        let start = p.frame
++        p.setFrame(start.offsetBy(dx: 0, dy: 16), display: false)
++        NSAnimationContext.runAnimationGroup { ctx in
++            ctx.duration = 0.35
++            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
++            p.animator().alphaValue = 1
++            p.animator().setFrame(start, display: true)
++        }
++        let work = DispatchWorkItem { [weak self] in self?.close(animated: true) }
++        hide = work
++        DispatchQueue.main.asyncAfter(deadline: .now() + Self.seconds, execute: work)
++    }
++
++    private func close(animated: Bool) {
++        hide?.cancel()
++        hide = nil
++        guard let p = panel else { return }
++        panel = nil
++        let done = { p.parent?.removeChildWindow(p); p.orderOut(nil) }
++        guard animated else { done(); return }
++        NSAnimationContext.runAnimationGroup({ ctx in
++            ctx.duration = 0.3
++            p.animator().alphaValue = 0
++        }, completionHandler: done)
++    }
++}
++
++private struct DockRaiseBannerView: View {
++    var reason: DockRaiseBanner.Reason
++    var onClose: () -> Void
++    @State private var left = 1.0
++
++    var body: some View {
++        VStack(alignment: .leading, spacing: 8) {
++            HStack(alignment: .top, spacing: 12) {
++                Image(systemName: reason.symbol)
++                    .font(.system(size: 26))
++                    .foregroundStyle(reason.color)
++                VStack(alignment: .leading, spacing: 3) {
++                    Text(reason.title)
++                        .font(.system(size: 15, weight: .semibold))
++                        .foregroundStyle(DockPalette.text)
++                    Text(reason.detail)
++                        .font(.system(size: 12.5))
++                        .foregroundStyle(DockPalette.text.opacity(0.8))
++                        .lineLimit(3)
++                        .fixedSize(horizontal: false, vertical: true)
++                    Text("Brought to the front because of your setting in Settings → Notifications.")
++                        .font(.system(size: 11))
++                        .foregroundStyle(DockPalette.text.opacity(0.55))
++                }
++                .frame(width: 380, alignment: .leading)
++            }
++            GeometryReader { g in
++                Capsule().fill(reason.color.opacity(0.85))
++                    .frame(width: g.size.width * left, height: 3)
++            }
++            .frame(height: 3)
++        }
++        .padding(16)
++        .background(RoundedRectangle(cornerRadius: 14).fill(DockPalette.base))
++        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(reason.color, lineWidth: 2))
++        .environment(\.colorScheme, DockPalette.scheme)
++        .contentShape(Rectangle())
++        .onTapGesture(perform: onClose)
++        .help("Click to close")
++        .onAppear {
++            withAnimation(.linear(duration: DockRaiseBanner.seconds)) { left = 0 }
++        }
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockSearch.swift b/macos/Sources/Features/Dock/DockSearch.swift
 new file mode 100644
 index 0000000..2b66815
@@ -2944,10 +3057,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..489f72c
+index 0000000..b4093dd
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,935 @@
+@@ -0,0 +1,954 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -3807,30 +3920,49 @@ index 0000000..489f72c
 +                if DockSettings.notifyWaiting { post(sid: sid, title: row.name, body: row.prompt ?? "Needs you") }
 +                // Only from another app: never switches tabs under you.
 +                if DockSettings.raiseWaiting && !looking {
-+                    DispatchQueue.main.async { [weak self] in self?.bringToFront(sid) }
++                    DispatchQueue.main.async { [weak self] in self?.bringToFront(sid, finished: false) }
 +                }
 +            } else if row.status == .unread, before == .running || before == .waiting {
 +                let body = "Finished" + (costs[sid].map { " · " + DockCost.format($0) + " so far" } ?? "")
 +                DockNotices.shared.add(title: row.name, body: body, sessionId: sid, waiting: false)
 +                if DockSettings.notifyFinished { post(sid: sid, title: row.name, body: body) }
 +                if DockSettings.raiseFinished && !looking {
-+                    DispatchQueue.main.async { [weak self] in self?.bringToFront(sid) }
++                    DispatchQueue.main.async { [weak self] in self?.bringToFront(sid, finished: true) }
 +                }
 +            }
 +        }
 +        lastStatus = next
 +    }
 +
-+    /// Un-minimises the window and shows session <sid>'s tab, over other apps.
-+    private func bringToFront(_ sid: String) {
++    /// Un-minimises the window and shows session <sid>'s tab, over other
++    /// apps, fading in with a banner saying why it came up.
++    private func bringToFront(_ sid: String, finished: Bool) {
 +        guard let row = rows.first(where: { $0.sessionId == sid }),
 +              let window = row.controller?.window else { return }
 +        if NSApp.isHidden { NSApp.unhide(nil) }
 +        if window.isMiniaturized { window.deminiaturize(nil) }
++        let wasVisible = window.isVisible && window.occlusionState.contains(.visible)
++        window.tabGroup?.selectedWindow = window
++        if !wasVisible { window.alphaValue = 0 }
 +        select(row)
 +        // macOS may refuse to activate an app the user isn't in; this still
 +        // puts the window above the others.
 +        window.orderFrontRegardless()
++        if !wasVisible {
++            NSAnimationContext.runAnimationGroup { ctx in
++                ctx.duration = 0.35
++                window.animator().alphaValue = 1
++            }
++        }
++        let reason = finished
++            ? DockRaiseBanner.Reason(symbol: "checkmark.circle.fill", color: DockPalette.blue,
++                                     title: "\(row.name) has finished",
++                                     detail: costs[sid].map { "Ready for your next step · " + DockCost.format($0) + " so far" }
++                                         ?? "Ready for your next step")
++            : DockRaiseBanner.Reason(symbol: "questionmark.bubble.fill", color: DockPalette.peach,
++                                     title: "\(row.name) needs an answer",
++                                     detail: row.prompt ?? "Claude is waiting for you")
++        DockRaiseBanner.shared.show(reason, on: window)
 +    }
 +
 +    static let notificationSessionKey = "ghosttyDockSession"
