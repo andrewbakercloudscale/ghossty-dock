@@ -20,6 +20,8 @@ SAVED="$STATE_DIR/open-sessions.tsv"
 # Sessions a restart or restore could not bring back: the app offers to
 # reopen them (--reopen-missing) until they run again.
 MISSING="$STATE_DIR/missing-sessions.tsv"
+# What a restart is waiting for, for the app to show: "<what>\t<deadline>\t<names>".
+STATUS="$STATE_DIR/restart-status"
 OPENER="$HOME/.local/bin/ghostty-dock-open"
 APP_BIN="$HOME/Applications/Ghostty Dock.app/Contents/MacOS/ghostty"
 QUIET_SECS=45
@@ -49,6 +51,11 @@ options:
 
 EOM
     exit 1
+}
+
+# Records what the restart waits for; the deadline is epoch seconds or 0.
+function status() {
+    printf '%s\t%s\t%s\n' "$1" "${2:-0}" "${3:-}" >"$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"
 }
 
 function log() {
@@ -119,21 +126,29 @@ function wait_until_quiet() {
     local started
     started=$(date +%s)
     while true; do
-        local busy=""
+        local busy="" active="" left=0
         local cwd sid flags
         while IFS=$'\t' read -r cwd sid flags; do
             [ -z "$sid" ] && continue
             local q
             q=$(quiet_secs "$cwd" "$sid")
-            [ "$q" -lt "$QUIET_SECS" ] && busy="$busy $(basename "$cwd")"
+            [ "$q" -lt "$QUIET_SECS" ] || continue
+            busy="$busy $(basename "$cwd")"
+            [ "$q" -lt 5 ] && active="${active:+$active, }$(basename "$cwd")"
+            [ $((QUIET_SECS - q)) -gt "$left" ] && left=$((QUIET_SECS - q))
         done <<<"$sessions"
         [ -z "$busy" ] && return 0
         if [ $(($(date +%s) - started)) -gt "$GIVE_UP_SECS" ]; then
             log "gave up: still busy:$busy"
             return 1
         fi
+        if [ -n "$active" ]; then
+            status busy 0 "$active"
+        else
+            status quiet $(($(date +%s) + left))
+        fi
         log "waiting for:$busy"
-        sleep 15
+        sleep $((left < 5 ? left + 1 : 5))
     done
 }
 
@@ -147,6 +162,7 @@ function wait_for_input_idle() {
     while true; do
         idle=$(input_idle_secs)
         [ "${idle:-$INPUT_IDLE_SECS}" -ge "$INPUT_IDLE_SECS" ] && return 0
+        status typing $(($(date +%s) + INPUT_IDLE_SECS - ${idle:-0}))
         $logged || { log "waiting for $INPUT_IDLE_SECS s without typing"; logged=true; }
         sleep 1
     done
@@ -221,6 +237,7 @@ function display_on() {
 function wait_for_display() {
     display_on && return 0
     log "waiting for the screen to come on"
+    status screen
     until display_on; do sleep 15; done
     log "screen is on"
     sleep 5
@@ -276,6 +293,7 @@ function restart() {
     sessions=$(open_sessions "$pid")
     log "$(grep -c . <<<"$sessions") session(s) to resume ($(conditions "$pid"))"
     $dry && { printf '%s' "$sessions"; return 0; }
+    trap 'rm -f "$STATUS"' EXIT
     $now || wait_until_quiet "$sessions" || return 1
     wait_for_display
     wait_for_input_idle
@@ -286,6 +304,7 @@ function restart() {
         [ -n "$s" ] && printf '%s\t%s\t%s\n' "$s" "$c" "$f" >>"$STATE_DIR/sessions-snapshot.tsv"
     done <<<"$sessions"
     log "quitting Ghostty Dock ($pid)"
+    status quitting
     for cpid in $(claudes_under "$pid"); do kill -TERM "$cpid" 2>/dev/null; done
     sleep 3
     kill -TERM "$pid" 2>/dev/null

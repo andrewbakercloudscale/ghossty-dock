@@ -4414,10 +4414,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..3b9a0b4
+index 0000000..04f74cd
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,848 @@
+@@ -0,0 +1,857 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -4621,6 +4621,15 @@ index 0000000..3b9a0b4
 +    private var header: some View {
 +        VStack(alignment: .leading, spacing: 7) {
 +            headerButtons
++            if let line = updates.restartStatus {
++                Label(line, systemImage: "hourglass")
++                    .font(.system(size: 11, weight: .semibold))
++                    .foregroundStyle(DockPalette.green)
++                    .lineLimit(2)
++                    .fixedSize(horizontal: false, vertical: true)
++                    .help("Ghostty Dock restarts into the new build once every session has been quiet "
++                          + "for 45 seconds and you have stopped typing for 10")
++            }
 +            // What the header button under the pointer does, in the
 +            // counters' place while you point at it, so it covers no button.
 +            counters
@@ -4681,7 +4690,7 @@ index 0000000..3b9a0b4
 +                .buttonStyle(.plain)
 +                .disabled(updates.restarting)
 +                .onHover { inside in
-+                    let tip = updates.restarting ? "Restarting once sessions are quiet…"
++                    let tip = updates.restarting ? (updates.restartStatus ?? "Restarting once sessions are quiet…")
 +                        : "Restart into the new build once sessions are quiet"
 +                    if inside { headerTip = tip; headerTipColor = DockPalette.green }
 +                    else if headerTip == tip { headerTip = nil }
@@ -5573,10 +5582,10 @@ index 0000000..c3d922c
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..6f3d77c
+index 0000000..d16e77b
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,280 @@
 +import AppKit
 +import Combine
 +
@@ -5617,8 +5626,12 @@ index 0000000..6f3d77c
 +    /// A newer build is installed on disk than the one running.
 +    @Published private(set) var restartPending = false
 +    @Published private(set) var restarting = false
++    /// What a restart under way is waiting for, as a line to show: "Restarting
++    /// in 32s", "Restart waits for: ghostty-dock". Nil with none.
++    @Published private(set) var restartStatus: String?
 +
 +    private var timer: Timer?
++    private var statusTimer: Timer?
 +    private var installedTimer: Timer?
 +    private var logTimer: Timer?
 +
@@ -5647,6 +5660,7 @@ index 0000000..6f3d77c
 +        timer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in self?.check() }
 +        checkInstalled()
 +        installedTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.checkInstalled() }
++        statusTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.readRestartStatus() }
 +    }
 +
 +    /// Reads the build stamp of the app on disk, which a rebuild replaces
@@ -5663,6 +5677,34 @@ index 0000000..6f3d77c
 +        // The new build may already be GitHub's latest: check again, so
 +        // Update goes away and Restart is what is offered.
 +        if pending { check() }
++    }
++
++    private let statusURL = FileManager.default.homeDirectoryForCurrentUser
++        .appendingPathComponent(".local/state/ghostty-dock/restart-status")
++
++    /// Reads restart-status, which ghostty-dock-restart rewrites while it
++    /// waits: "<what>\t<deadline, epoch seconds>\t<names>". One not rewritten
++    /// for a minute is left over from a restart that died.
++    private func readRestartStatus() {
++        var line: String?
++        if let attrs = try? FileManager.default.attributesOfItem(atPath: statusURL.path),
++           let m = attrs[.modificationDate] as? Date, Date().timeIntervalSince(m) < 60,
++           let text = try? String(contentsOf: statusURL, encoding: .utf8) {
++            let f = text.trimmingCharacters(in: .newlines)
++                .split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
++            let left = max(0, Int((Double(f.count > 1 ? f[1] : "") ?? 0) - Date().timeIntervalSince1970))
++            let names = f.count > 2 ? f[2] : ""
++            switch f.first {
++            case "busy": line = "Restart waits for \(names) to finish"
++            case "quiet": line = "Restarting in \(left)s, unless a session gets busy"
++            case "typing": line = left > 0 ? "Restarting in \(left)s, once you stop typing" : "Restarting once you stop typing"
++            case "screen": line = "Restart waits for the screen to come on"
++            case "quitting": line = "Restarting now…"
++            default: break
++            }
++        }
++        if line != restartStatus { restartStatus = line }
++        if line != nil, !restarting { restarting = true }
 +    }
 +
 +    /// Asks first, then restarts once sessions are quiet; they come back as tabs.
