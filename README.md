@@ -61,6 +61,12 @@ reports each session's status.
   the header lists the last 200; going to a session marks its ones read.
 - **Find (⌘P or the magnifier)**: type part of a name, folder or question;
   ↑↓ and Return. Closed sessions are in the list too.
+- **Agents (⌘⇧A or the 👥 button)**: every subagent your sessions have
+  started, grouped by session: live or finished, how long it ran, tokens
+  (input, output, cache), context, cost, tool calls and failures, files it
+  edited, its latest tool call and its worktree branch. Live, Today or All;
+  the sessions waiting on you are listed on the right. Click a card to go to
+  its session.
 - **Reopen closed (⌘⇧T)**: within a few seconds Ghostty brings the tab back as
   it was; after that, the session is resumed in a new tab with its old flags.
 - **Right-click a row** to rename it, pin it to the top or give it a colour.
@@ -82,6 +88,7 @@ reports each session's status.
 | ⌘⇧U | Undock this session to its own window |
 | ⌘⇧S | Show or hide the sidebar |
 | ⌘P | Find a session by name, folder or question |
+| ⌘⇧A | Agents across all sessions |
 | ⌘⇧T | Reopen the last closed session |
 
 While the sidebar is hidden, ⌘1–9 and the next/previous keys are Ghostty's

@@ -306,10 +306,10 @@ index 0000000..3af6440
 +}
 diff --git a/macos/Sources/Features/Dock/DockAbout.swift b/macos/Sources/Features/Dock/DockAbout.swift
 new file mode 100644
-index 0000000..3b654b9
+index 0000000..1e1b5d5
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAbout.swift
-@@ -0,0 +1,323 @@
+@@ -0,0 +1,338 @@
 +import AppKit
 +import SwiftUI
 +
@@ -367,9 +367,14 @@ index 0000000..3b654b9
 +            HStack(spacing: 12) {
 +                Image(systemName: statusSymbol).font(.title).foregroundStyle(statusColor)
 +                VStack(alignment: .leading, spacing: 3) {
-+                    Text(status).font(.body.weight(.semibold)).foregroundStyle(statusColor)
-+                    Text("You have \(DockUpdates.version)  ·  \(updates.checkedText)")
-+                        .font(.callout).foregroundStyle(DockPalette.text)
++                    if updates.available && updates.state != .installing {
++                        versionLine("New", updates.newest, DockPalette.blue)
++                        versionLine("You have", updates.current, DockPalette.text)
++                    } else {
++                        Text(status).font(.body.weight(.semibold)).foregroundStyle(statusColor)
++                        versionLine("You have", updates.current, DockPalette.text)
++                    }
++                    Text(updates.checkedText).font(.caption).foregroundStyle(DockPalette.grey)
 +                }
 +                Spacer()
 +                if updates.available && updates.state != .installing {
@@ -520,6 +525,16 @@ index 0000000..3b654b9
 +        }
 +    }
 +
++    /// "New  1.0.56 (119aac5) · 21 Oct 17:14", the same layout for both.
++    private func versionLine(_ label: String, _ value: String, _ color: Color) -> some View {
++        HStack(spacing: 6) {
++            Text(label).frame(width: 66, alignment: .leading)
++            Text(value).monospacedDigit()
++        }
++        .font(.body.weight(.semibold))
++        .foregroundStyle(color)
++    }
++
 +    private var statusSymbol: String {
 +        if updates.available { return "arrow.down.circle.fill" }
 +        if case .failed = updates.state { return "exclamationmark.triangle.fill" }
@@ -631,6 +646,613 @@ index 0000000..3b654b9
 +        NSApp.activate(ignoringOtherApps: true)
 +        window?.makeKeyAndOrderFront(nil)
 +        if DockUpdates.shared.lastCheck == nil { DockUpdates.shared.check() }
++    }
++}
+diff --git a/macos/Sources/Features/Dock/DockAgents.swift b/macos/Sources/Features/Dock/DockAgents.swift
+new file mode 100644
+index 0000000..1468a67
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockAgents.swift
+@@ -0,0 +1,189 @@
++import Foundation
++
++/// Every subagent a session has started, with what it has used, from its
++/// transcript and meta file under <session>/subagents. Only Foundation, so
++/// tests/dock-logic can run it.
++///
++/// Like DockCost, each transcript is read once and then only from where the
++/// last read stopped.
++final class DockAgents {
++    struct Agent: Identifiable, Equatable {
++        /// "agent-<id>".
++        let id: String
++        var sessionId: String
++        var type = "agent"
++        var description = ""
++        var worktree: String?
++        var branch: String?
++        var background = false
++        var finished = false
++        var model: String?
++        var started: Date?
++        var lastActive: Date?
++        var inputTokens = 0
++        var outputTokens = 0
++        var cacheReadTokens = 0
++        var cacheWriteTokens = 0
++        /// How full its context was at its last reply.
++        var context = 0
++        var dollars: Double = 0
++        var replies = 0
++        var toolCalls = 0
++        var toolErrors = 0
++        /// Tool name to calls.
++        var tools: [String: Int] = [:]
++        /// Files it wrote or edited.
++        var files: Set<String> = []
++        /// "Bash: npm test", its latest tool call.
++        var lastTool: String?
++        /// The start of its latest text reply.
++        var lastText: String?
++
++        var tokens: Int { inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens }
++
++        /// Not finished and wrote to its transcript lately. A subagent whose
++        /// session died never says it finished, hence the time limit.
++        func live(now: Date = Date()) -> Bool {
++            !finished && (lastActive.map { now.timeIntervalSince($0) < 15 * 60 } ?? false)
++        }
++    }
++
++    private struct FileState {
++        var offset: UInt64 = 0
++        var agent: Agent
++        var counted: Set<String> = []
++    }
++
++    private var files: [String: FileState] = [:]
++    private static let iso: ISO8601DateFormatter = {
++        let f = ISO8601DateFormatter()
++        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
++        return f
++    }()
++
++    /// The agents of the session whose transcript this is, oldest first.
++    /// Skips transcripts last written before `since`.
++    func agents(transcript: URL, sessionId: String, since: Date? = nil) -> [Agent] {
++        let dir = transcript.deletingPathExtension().appendingPathComponent("subagents")
++        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
++        var found: [Agent] = []
++        for name in names where name.hasSuffix(".jsonl") {
++            let url = dir.appendingPathComponent(name)
++            if let since, files[url.path] == nil,
++               let m = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date,
++               m < since { continue }
++            found.append(read(url, sessionId: sessionId))
++        }
++        return found.sorted { ($0.started ?? .distantPast) < ($1.started ?? .distantPast) }
++    }
++
++    private func read(_ url: URL, sessionId: String) -> Agent {
++        let id = url.deletingPathExtension().lastPathComponent
++        var state = files[url.path] ?? FileState(agent: Agent(id: id, sessionId: sessionId))
++        Self.applyMeta(url.deletingPathExtension().appendingPathExtension("meta.json"), to: &state.agent)
++        defer { files[url.path] = state }
++        guard let h = try? FileHandle(forReadingFrom: url) else { return state.agent }
++        defer { try? h.close() }
++        let end = (try? h.seekToEnd()) ?? 0
++        if end < state.offset { state = FileState(agent: Agent(id: id, sessionId: sessionId)) }
++        guard end > state.offset else { return state.agent }
++        try? h.seek(toOffset: state.offset)
++        let data = h.readData(ofLength: Int(end - state.offset))
++        guard let lastNewline = data.lastIndex(of: UInt8(ascii: "\n")) else { return state.agent }
++        var start = data.startIndex
++        while start <= lastNewline {
++            let stop = data[start...lastNewline].firstIndex(of: UInt8(ascii: "\n")) ?? lastNewline
++            if let d = try? JSONSerialization.jsonObject(with: Data(data[start..<stop])) as? [String: Any] {
++                Self.apply(d, to: &state.agent, counted: &state.counted)
++            }
++            start = stop + 1
++        }
++        state.offset += UInt64(lastNewline - data.startIndex + 1)
++        return state.agent
++    }
++
++    static func applyMeta(_ url: URL, to a: inout Agent) {
++        guard let data = try? Data(contentsOf: url),
++              let m = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
++        if let t = m["agentType"] as? String { a.type = t }
++        if let d = m["description"] as? String { a.description = d }
++        a.worktree = m["worktreePath"] as? String
++        a.branch = m["worktreeBranch"] as? String
++        a.background = m["requestShape"] as? String == "background"
++        a.finished = m["finished"] as? Bool ?? false
++    }
++
++    /// Folds one transcript line into the agent.
++    static func apply(_ d: [String: Any], to a: inout Agent, counted: inout Set<String>) {
++        if let t = (d["timestamp"] as? String).flatMap({ iso.date(from: $0) }) {
++            if a.started == nil { a.started = t }
++            a.lastActive = t
++        }
++        guard let msg = d["message"] as? [String: Any] else { return }
++        let content = msg["content"] as? [[String: Any]] ?? []
++        switch d["type"] as? String {
++        case "assistant":
++            if let model = msg["model"] as? String, model.hasPrefix("claude") { a.model = model }
++            for c in content {
++                switch c["type"] as? String {
++                case "tool_use":
++                    let name = c["name"] as? String ?? "?"
++                    let input = c["input"] as? [String: Any] ?? [:]
++                    a.toolCalls += 1
++                    a.tools[name, default: 0] += 1
++                    if ["Edit", "Write", "MultiEdit", "NotebookEdit"].contains(name),
++                       let path = (input["file_path"] ?? input["notebook_path"]) as? String { a.files.insert(path) }
++                    let what = ["command", "file_path", "pattern", "url", "query", "description", "prompt"]
++                        .lazy.compactMap { input[$0] as? String }.first
++                    a.lastTool = name + (what.map { ": " + clip($0) } ?? "")
++                case "text":
++                    if let t = c["text"] as? String, !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
++                        a.lastText = clip(t)
++                    }
++                default: break
++                }
++            }
++            guard let usage = msg["usage"] as? [String: Any] else { return }
++            let key = "\(msg["id"] as? String ?? "")|\(d["requestId"] as? String ?? "")"
++            guard counted.insert(key).inserted else { return }
++            func n(_ k: String) -> Int { (usage[k] as? NSNumber)?.intValue ?? 0 }
++            a.replies += 1
++            a.inputTokens += n("input_tokens")
++            a.outputTokens += n("output_tokens")
++            a.cacheReadTokens += n("cache_read_input_tokens")
++            a.cacheWriteTokens += n("cache_creation_input_tokens")
++            let ctx = n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens")
++            if ctx > 0 { a.context = ctx }
++            a.dollars += DockCost.cost(of: d)?.dollars ?? 0
++        case "user":
++            for c in content where c["type"] as? String == "tool_result" && c["is_error"] as? Bool == true {
++                a.toolErrors += 1
++            }
++        default: break
++        }
++    }
++
++    /// First line, at most 120 characters.
++    static func clip(_ s: String) -> String {
++        let line = s.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? ""
++        let t = line.trimmingCharacters(in: .whitespaces)
++        return t.count > 120 ? String(t.prefix(117)) + "..." : t
++    }
++
++    /// "opus 5.5" from "claude-opus-5-5".
++    static func shortModel(_ id: String?) -> String {
++        guard let id else { return "?" }
++        var parts = id.replacingOccurrences(of: "claude-", with: "").split(separator: "-").map(String.init)
++        if let last = parts.last, last.count == 8, Int(last) != nil { parts.removeLast() }
++        guard let family = parts.first else { return id }
++        return family + (parts.count > 1 ? " " + parts.dropFirst().joined(separator: ".") : "")
++    }
++
++    /// "42s", "7m", "1h 5m".
++    static func duration(_ secs: TimeInterval) -> String {
++        let s = max(0, Int(secs))
++        if s < 60 { return "\(s)s" }
++        if s < 3600 { return "\(s / 60)m" }
++        return "\(s / 3600)h \(s % 3600 / 60)m"
++    }
++}
+diff --git a/macos/Sources/Features/Dock/DockAgentsView.swift b/macos/Sources/Features/Dock/DockAgentsView.swift
+new file mode 100644
+index 0000000..0b42d7c
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockAgentsView.swift
+@@ -0,0 +1,406 @@
++import AppKit
++import SwiftUI
++
++/// The subagents of every session in the Dock, read every two seconds while
++/// the Agents window is open.
++final class DockAgentsModel: ObservableObject {
++    static let shared = DockAgentsModel()
++
++    enum Scope: String, CaseIterable, Identifiable {
++        case live = "Live", today = "Today", all = "All"
++        var id: String { rawValue }
++    }
++
++    struct Section: Identifiable, Equatable {
++        var id: String { sessionId }
++        let sessionId: String
++        let row: DockSessions.Row
++        var agents: [DockAgents.Agent]
++    }
++
++    @Published private(set) var sections: [Section] = []
++    @Published var scope: Scope = .today { didSet { refresh() } }
++    @Published private(set) var now = Date()
++
++    private let meter = DockAgents()
++    private let queue = DispatchQueue(label: "ghostty-dock.agents", qos: .utility)
++    private var timer: Timer?
++    private var busy = false
++
++    func start() {
++        guard timer == nil else { return }
++        refresh()
++        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
++    }
++
++    func stop() {
++        timer?.invalidate()
++        timer = nil
++    }
++
++    func refresh() {
++        guard !busy else { return }
++        let rows = DockSessions.shared.rows
++        let files = rows.compactMap { r in
++            r.sessionId.flatMap { sid in DockSessions.shared.transcriptURL(sid).map { (r, sid, $0) } }
++        }
++        let scope = scope
++        let since: Date? = scope == .all ? nil : Calendar.current.startOfDay(for: Date())
++        busy = true
++        queue.async { [weak self] in
++            guard let self else { return }
++            let now = Date()
++            var built: [Section] = []
++            for (row, sid, url) in files {
++                var agents = self.meter.agents(transcript: url, sessionId: sid, since: since)
++                switch scope {
++                case .live: agents = agents.filter { $0.live(now: now) }
++                case .today: agents = agents.filter { ($0.lastActive ?? .distantPast) >= since! }
++                case .all: break
++                }
++                // Newest first, live ones ahead of finished.
++                agents.sort { a, b in
++                    let la = a.live(now: now), lb = b.live(now: now)
++                    if la != lb { return la }
++                    return (a.started ?? .distantPast) > (b.started ?? .distantPast)
++                }
++                if !agents.isEmpty || scope != .live { built.append(Section(sessionId: sid, row: row, agents: agents)) }
++            }
++            built.sort { a, b in
++                let la = a.agents.contains { $0.live(now: now) }, lb = b.agents.contains { $0.live(now: now) }
++                if la != lb { return la }
++                if a.agents.isEmpty != b.agents.isEmpty { return !a.agents.isEmpty }
++                return a.row.name.localizedCaseInsensitiveCompare(b.row.name) == .orderedAscending
++            }
++            DispatchQueue.main.async {
++                self.busy = false
++                self.now = now
++                if built != self.sections { self.sections = built }
++            }
++        }
++    }
++
++    var agents: [DockAgents.Agent] { sections.flatMap(\.agents) }
++}
++
++struct DockAgentsView: View {
++    @ObservedObject var model = DockAgentsModel.shared
++    @ObservedObject var sessions = DockSessions.shared
++    @AppStorage(DockSettings.themeKey) private var themeName = ""
++
++    var body: some View {
++        VStack(spacing: 0) {
++            header
++            Divider().overlay(DockPalette.surface)
++            HStack(alignment: .top, spacing: 0) {
++                ScrollView {
++                    LazyVStack(alignment: .leading, spacing: 18) {
++                        if model.sections.allSatisfy({ $0.agents.isEmpty }) { empty }
++                        ForEach(model.sections) { section in
++                            DockAgentSection(section: section, now: model.now, maxTokens: maxTokens,
++                                             cost: sessions.costs[section.sessionId],
++                                             context: sessions.contexts[section.sessionId])
++                        }
++                    }
++                    .padding(16)
++                }
++                Divider().overlay(DockPalette.surface)
++                questions.frame(width: 260)
++            }
++        }
++        .frame(minWidth: 760, minHeight: 460)
++        .background(DockPalette.base)
++        .environment(\.colorScheme, DockPalette.scheme)
++        .id(themeName)
++        .onAppear { model.start() }
++        .onDisappear { model.stop() }
++    }
++
++    private var maxTokens: Int { max(1, model.agents.map(\.tokens).max() ?? 1) }
++
++    private var header: some View {
++        let agents = model.agents
++        let live = agents.filter { $0.live(now: model.now) }.count
++        let worktrees = Set(agents.compactMap(\.worktree)).count
++        let withAgents = model.sections.filter { !$0.agents.isEmpty }.count
++        return VStack(alignment: .leading, spacing: 10) {
++            HStack(spacing: 10) {
++                Text("Agents").font(.title2.weight(.bold)).foregroundStyle(DockPalette.text)
++                HStack(spacing: 5) {
++                    Circle().fill(live > 0 ? DockPalette.green : DockPalette.grey).frame(width: 7, height: 7)
++                    Text("\(live) live").font(.callout.weight(.semibold))
++                }
++                .foregroundStyle(live > 0 ? DockPalette.green : DockPalette.grey)
++                .padding(.horizontal, 9).padding(.vertical, 3)
++                .background(Capsule().fill((live > 0 ? DockPalette.green : DockPalette.grey).opacity(0.15)))
++                Spacer()
++                Picker("", selection: $model.scope) {
++                    ForEach(DockAgentsModel.Scope.allCases) { Text($0.rawValue).tag($0) }
++                }
++                .pickerStyle(.segmented)
++                .frame(width: 200)
++                .help("Live: running now. Today: started or active today. All: every agent of the open sessions.")
++            }
++            HStack(spacing: 22) {
++                DockAgentStat(value: "\(agents.count)", label: "agents")
++                DockAgentStat(value: "\(withAgents)", label: "sessions")
++                DockAgentStat(value: "\(worktrees)", label: "worktrees")
++                DockAgentStat(value: DockCost.formatTokens(agents.map(\.tokens).reduce(0, +)), label: "tokens")
++                DockAgentStat(value: DockCost.formatTokens(agents.map(\.outputTokens).reduce(0, +)), label: "output")
++                DockAgentStat(value: "\(agents.map(\.toolCalls).reduce(0, +))", label: "tool calls")
++                DockAgentStat(value: DockCost.format(agents.map(\.dollars).reduce(0, +)), label: "agent cost")
++                Spacer()
++            }
++        }
++        .padding(16)
++        .background(DockPalette.mantle)
++    }
++
++    private var empty: some View {
++        VStack(spacing: 8) {
++            Image(systemName: "person.3").font(.largeTitle).foregroundStyle(DockPalette.grey)
++            Text(model.scope == .live ? "No agents running right now" : "No agents yet")
++                .font(.headline).foregroundStyle(DockPalette.text)
++            Text("Subagents your sessions start (the Agent tool) show up here with what they use.")
++                .font(.callout).foregroundStyle(DockPalette.grey)
++        }
++        .frame(maxWidth: .infinity)
++        .padding(.top, 60)
++    }
++
++    /// Sessions waiting on you, with what they ask.
++    private var questions: some View {
++        let waiting = sessions.rows.filter { $0.status == .waiting }
++        return VStack(alignment: .leading, spacing: 10) {
++            Text("NEEDS YOU").font(.caption.weight(.bold)).tracking(1.2).foregroundStyle(DockPalette.peach)
++            if waiting.isEmpty {
++                Text("Nothing is waiting on you.").font(.callout).foregroundStyle(DockPalette.grey)
++            }
++            ScrollView {
++                VStack(alignment: .leading, spacing: 8) {
++                    ForEach(waiting) { row in
++                        Button { sessions.select(row) } label: {
++                            VStack(alignment: .leading, spacing: 4) {
++                                Text(row.name).font(.callout.weight(.semibold)).foregroundStyle(DockPalette.text)
++                                Text(row.prompt ?? "Waiting for you")
++                                    .font(.caption).foregroundStyle(DockPalette.text.opacity(0.8))
++                                    .lineLimit(4)
++                                if let since = row.since {
++                                    Text(since, style: .relative).font(.caption2).foregroundStyle(DockPalette.grey)
++                                }
++                            }
++                            .frame(maxWidth: .infinity, alignment: .leading)
++                            .padding(9)
++                            .background(RoundedRectangle(cornerRadius: 8).fill(DockPalette.peach.opacity(0.1)))
++                            .overlay(Rectangle().fill(DockPalette.peach).frame(width: 3), alignment: .leading)
++                        }
++                        .buttonStyle(.plain)
++                        .help("Go to \(row.name)")
++                    }
++                }
++            }
++            Spacer(minLength: 0)
++        }
++        .padding(14)
++        .frame(maxHeight: .infinity, alignment: .top)
++        .background(DockPalette.mantle)
++    }
++}
++
++private struct DockAgentStat: View {
++    var value: String
++    var label: String
++
++    var body: some View {
++        HStack(alignment: .firstTextBaseline, spacing: 5) {
++            Text(value).font(.title3.weight(.bold)).monospacedDigit().foregroundStyle(DockPalette.text)
++            Text(label).font(.callout).foregroundStyle(DockPalette.grey)
++        }
++    }
++}
++
++/// One session: its name and totals, then a card per agent.
++private struct DockAgentSection: View {
++    var section: DockAgentsModel.Section
++    var now: Date
++    var maxTokens: Int
++    var cost: Double?
++    var context: Int?
++
++    private let columns = [GridItem(.adaptive(minimum: 250, maximum: 400), spacing: 12)]
++
++    var body: some View {
++        VStack(alignment: .leading, spacing: 10) {
++            Button { DockSessions.shared.select(section.row) } label: {
++                HStack(spacing: 8) {
++                    Circle().fill(DockPalette.color(section.row.status)).frame(width: 8, height: 8)
++                    Text(section.row.name).font(.headline).foregroundStyle(DockPalette.text)
++                    Text(DockPalette.label(section.row.status)).font(.caption).foregroundStyle(DockPalette.color(section.row.status))
++                    Text(totals).font(.caption).monospacedDigit().foregroundStyle(DockPalette.grey)
++                    Spacer()
++                }
++                .contentShape(Rectangle())
++            }
++            .buttonStyle(.plain)
++            .help("Go to \(section.row.name)")
++            if section.agents.isEmpty {
++                Text("No agents").font(.caption).foregroundStyle(DockPalette.grey).padding(.leading, 16)
++            } else {
++                LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
++                    ForEach(section.agents) { agent in
++                        DockAgentCard(agent: agent, row: section.row, now: now, maxTokens: maxTokens)
++                    }
++                }
++            }
++        }
++    }
++
++    private var totals: String {
++        var parts = ["\(section.agents.count) agent" + (section.agents.count == 1 ? "" : "s")]
++        if let cost { parts.append(DockCost.format(cost) + " session") }
++        if let context { parts.append(DockCost.formatTokens(context) + " context") }
++        return parts.joined(separator: " · ")
++    }
++}
++
++private struct DockAgentCard: View {
++    var agent: DockAgents.Agent
++    var row: DockSessions.Row
++    var now: Date
++    var maxTokens: Int
++    @State private var hover = false
++
++    private var live: Bool { agent.live(now: now) }
++    private var tint: Color { live ? DockPalette.green : agent.finished ? DockPalette.mauve : DockPalette.grey }
++
++    var body: some View {
++        VStack(alignment: .leading, spacing: 8) {
++            HStack(alignment: .top, spacing: 7) {
++                Circle().fill(tint).frame(width: 8, height: 8).padding(.top, 5)
++                    .overlay(live ? Circle().stroke(tint.opacity(0.4), lineWidth: 4) : nil)
++                Text(agent.description.isEmpty ? agent.id : agent.description)
++                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(DockPalette.text)
++                    .lineLimit(2)
++                Spacer(minLength: 4)
++                Text(elapsed).font(.caption.weight(.medium)).monospacedDigit().foregroundStyle(tint)
++            }
++            Text(subtitle).font(.caption).foregroundStyle(DockPalette.grey).lineLimit(1)
++            VStack(alignment: .leading, spacing: 3) {
++                GeometryReader { g in
++                    ZStack(alignment: .leading) {
++                        Capsule().fill(DockPalette.surface)
++                        Capsule().fill(DockPalette.blue)
++                            .frame(width: max(4, g.size.width * CGFloat(agent.tokens) / CGFloat(maxTokens)))
++                    }
++                }
++                .frame(height: 5)
++                HStack(alignment: .firstTextBaseline, spacing: 4) {
++                    Text(agent.tokens.formatted()).font(.system(size: 14, weight: .bold, design: .monospaced))
++                        .foregroundStyle(DockPalette.text)
++                    Text("tok").font(.caption).foregroundStyle(DockPalette.grey)
++                    Spacer()
++                    Text(DockCost.format(agent.dollars)).font(.callout.weight(.semibold)).monospacedDigit()
++                        .foregroundStyle(DockPalette.text)
++                }
++            }
++            HStack(spacing: 10) {
++                metric("arrow.up", DockCost.formatTokens(agent.outputTokens), "Output tokens")
++                metric("rectangle.stack", DockCost.formatTokens(agent.context), "Context at its last reply")
++                metric("wrench.and.screwdriver", "\(agent.toolCalls)", topTools)
++                if agent.toolErrors > 0 {
++                    metric("exclamationmark.triangle", "\(agent.toolErrors)", "Tool calls that failed", DockPalette.peach)
++                }
++                metric("doc", "\(agent.files.count)", "Files written or edited")
++                metric("bubble.left", "\(agent.replies)", "Replies")
++            }
++            if let line = live ? (agent.lastTool ?? agent.lastText) : (agent.lastText ?? agent.lastTool) {
++                Text(line).font(.system(size: 10.5, design: .monospaced))
++                    .foregroundStyle(DockPalette.text.opacity(0.75)).lineLimit(2)
++            }
++            if let branch = agent.branch {
++                Label(branch, systemImage: "arrow.triangle.branch").font(.caption2).foregroundStyle(DockPalette.teal)
++                    .lineLimit(1)
++            }
++        }
++        .padding(11)
++        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(DockPalette.mantle))
++        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
++            .strokeBorder(live ? DockPalette.green.opacity(0.6) : hover ? DockPalette.blue.opacity(0.6) : DockPalette.surface,
++                          lineWidth: 1.25))
++        .opacity(live || hover ? 1 : 0.85)
++        .onHover { hover = $0 }
++        .onTapGesture { DockSessions.shared.select(row) }
++        .help(tooltip)
++        .contextMenu {
++            Button("Go to \(row.name)") { DockSessions.shared.select(row) }
++            if let worktree = agent.worktree {
++                Button("Show Worktree in Finder") {
++                    NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: worktree)
++                }
++            }
++            Button("Copy Agent ID") {
++                NSPasteboard.general.clearContents()
++                NSPasteboard.general.setString(String(agent.id.dropFirst(6)), forType: .string)
++            }
++        }
++    }
++
++    private func metric(_ symbol: String, _ value: String, _ help: String, _ color: Color = DockPalette.text) -> some View {
++        HStack(spacing: 3) {
++            Image(systemName: symbol).font(.system(size: 9, weight: .semibold)).foregroundStyle(DockPalette.grey)
++            Text(value).font(.caption.weight(.medium)).monospacedDigit().foregroundStyle(color)
++        }
++        .help(help)
++    }
++
++    private var elapsed: String {
++        guard let started = agent.started else { return "" }
++        if live { return DockAgents.duration(now.timeIntervalSince(started)) }
++        let ran = DockAgents.duration((agent.lastActive ?? started).timeIntervalSince(started))
++        let ago = agent.lastActive.map { DockAgents.duration(now.timeIntervalSince($0)) + " ago" } ?? ""
++        return ran + " · " + ago
++    }
++
++    private var subtitle: String {
++        var parts = [agent.type, DockAgents.shortModel(agent.model)]
++        if agent.background { parts.append("background") }
++        parts.append(live ? "running" : agent.finished ? "finished" : "stopped")
++        return parts.joined(separator: " · ")
++    }
++
++    private var topTools: String {
++        let top = agent.tools.sorted { $0.value > $1.value }.prefix(6).map { "\($0.key) \($0.value)" }
++        return top.isEmpty ? "No tool calls" : "Tool calls: " + top.joined(separator: ", ")
++    }
++
++    private var tooltip: String {
++        var lines = [agent.description, "\(agent.type) · \(agent.model ?? "?") · in \(row.name)"]
++        lines.append("Input \(agent.inputTokens.formatted()) · output \(agent.outputTokens.formatted())")
++        lines.append("Cache read \(agent.cacheReadTokens.formatted()) · cache write \(agent.cacheWriteTokens.formatted())")
++        lines.append(topTools)
++        if let worktree = agent.worktree { lines.append("Worktree: " + worktree) }
++        lines.append("Click to go to its session")
++        return lines.joined(separator: "\n")
++    }
++}
++
++/// Agents in its own window, opened from the sidebar or ⌘⇧A.
++final class DockAgentsWindow {
++    static let shared = DockAgentsWindow()
++    private var window: NSWindow?
++
++    func show() {
++        if window == nil {
++            let w = NSWindow(contentViewController: NSHostingController(rootView: DockAgentsView()))
++            w.title = "Agents"
++            w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
++            w.isReleasedWhenClosed = false
++            w.setContentSize(NSSize(width: 1180, height: 760))
++            w.setFrameAutosaveName("GhosttyDockAgents")
++            if !w.setFrameUsingName("GhosttyDockAgents") { w.center() }
++            window = w
++        }
++        NSApp.activate(ignoringOtherApps: true)
++        window?.makeKeyAndOrderFront(nil)
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockCost.swift b/macos/Sources/Features/Dock/DockCost.swift
@@ -1383,10 +2005,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..06ac0df
+index 0000000..5fc326e
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,874 @@
+@@ -0,0 +1,877 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -1786,6 +2408,9 @@ index 0000000..06ac0df
 +        startedCache[sid] = d
 +        return d
 +    }
++
++    /// Session <id>'s transcript, for the Agents window.
++    func transcriptURL(_ sid: String) -> URL? { transcript(sid) }
 +
 +    /// Session <id>'s transcript, in whichever project folder it is.
 +    private func transcript(_ sid: String) -> URL? {
@@ -2529,10 +3154,10 @@ index 0000000..6fcffed
 +}
 diff --git a/macos/Sources/Features/Dock/DockShortcuts.swift b/macos/Sources/Features/Dock/DockShortcuts.swift
 new file mode 100644
-index 0000000..291ee5e
+index 0000000..819d35f
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockShortcuts.swift
-@@ -0,0 +1,102 @@
+@@ -0,0 +1,105 @@
 +import AppKit
 +import Carbon
 +
@@ -2577,6 +3202,8 @@ index 0000000..291ee5e
 +            },
 +            Shortcut(keys: "⌘P", title: "Find a Session", keyCode: kVK_ANSI_P,
 +                     modifiers: .command) { DockSearchPanel.shared.show() },
++            Shortcut(keys: "⌘⇧A", title: "Show Agents", keyCode: kVK_ANSI_A,
++                     modifiers: [.command, .shift]) { DockAgentsWindow.shared.show() },
 +            Shortcut(keys: "⌘⇧J", title: "Next Session That Needs You", keyCode: kVK_ANSI_J,
 +                     modifiers: [.command, .shift]) { model.jumpToNextWaiting() },
 +            Shortcut(keys: "⌘⇧R", title: "Restart Session", keyCode: kVK_ANSI_R,
@@ -2597,6 +3224,7 @@ index 0000000..291ee5e
 +        ("Next / previous session", "⌃⇥ ⌃⇧⇥  or  ⌘⇧] ⌘⇧["),
 +        ("Next session that needs you", "⌘⇧J  (⌃⌥J from any app)"),
 +        ("Find a session by name", "⌘P"),
++        ("Agents across all sessions", "⌘⇧A"),
 +        ("Reopen the last closed session", "⌘⇧T"),
 +        ("Restart session", "⌘⇧R"),
 +        ("Undock session", "⌘⇧U"),
@@ -2637,10 +3265,10 @@ index 0000000..291ee5e
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..a09d208
+index 0000000..3bf9e97
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,759 @@
+@@ -0,0 +1,765 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -2900,6 +3528,12 @@ index 0000000..a09d208
 +            .buttonStyle(.plain)
 +            .foregroundStyle(DockPalette.text)
 +            .help("Find a session (⌘P)")
++            Button(action: { DockAgentsWindow.shared.show() }) {
++                Image(systemName: "person.3").font(.system(size: 11, weight: .semibold))
++            }
++            .buttonStyle(.plain)
++            .foregroundStyle(DockPalette.text)
++            .help("Agents: every subagent across your sessions, with tokens, cost and tool calls (⌘⇧A)")
 +            Button(action: { showNotices.toggle() }) {
 +                Image(systemName: notices.unread > 0 ? "bell.badge" : "bell")
 +                    .font(.system(size: 12, weight: .semibold))
@@ -3707,10 +4341,10 @@ index 0000000..c3d922c
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..26108e0
+index 0000000..1e5032e
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
-@@ -0,0 +1,213 @@
+@@ -0,0 +1,243 @@
 +import AppKit
 +import Combine
 +
@@ -3739,6 +4373,8 @@ index 0000000..26108e0
 +    /// Changes on GitHub not in this build, newest first.
 +    @Published private(set) var changes: [Change] = []
 +    @Published private(set) var latest: String?
++    /// The commit GitHub's latest version is built from.
++    @Published private(set) var latestCommit: String?
 +    /// Commits in the clone that are not on GitHub (unpushed work).
 +    @Published private(set) var ahead = 0
 +    @Published private(set) var lastCheck: Date?
@@ -3837,6 +4473,7 @@ index 0000000..26108e0
 +            let (status, text) = Self.run(script, ["--check"])
 +            var changes: [Change] = []
 +            var latest: String?
++            var latestCommit: String?
 +            var ahead = 0
 +            var error: String?
 +            let iso = ISO8601DateFormatter()
@@ -3845,7 +4482,9 @@ index 0000000..26108e0
 +                switch f.first {
 +                case "commit" where f.count >= 4:
 +                    changes.append(Change(sha: f[1], date: iso.date(from: f[2]), title: f[3...].joined(separator: "\t")))
-+                case "latest" where f.count >= 2: latest = f[1]
++                case "latest" where f.count >= 2:
++                    latest = f[1]
++                    latestCommit = f.count >= 3 ? f[2] : nil
 +                case "ahead" where f.count >= 2: ahead = Int(f[1]) ?? 0
 +                case "error" where f.count >= 2: error = f[1]
 +                default: break
@@ -3860,6 +4499,7 @@ index 0000000..26108e0
 +                }
 +                self.changes = changes
 +                self.latest = latest
++                self.latestCommit = latestCommit
 +                self.ahead = ahead
 +                self.state = changes.isEmpty ? .upToDate : .idle
 +            }
@@ -3871,7 +4511,7 @@ index 0000000..26108e0
 +    func confirmInstall() {
 +        let alert = NSAlert()
 +        alert.messageText = latest.map { "Update Ghostty Dock to \($0)?" } ?? "Update Ghostty Dock?"
-+        alert.informativeText = """
++        alert.informativeText = versionNotes + """
 +            Pulls the latest version from GitHub and builds it (a minute or two). \
 +            Ghostty Dock then restarts once your sessions are quiet, and reopens each one as a tab.
 +            """
@@ -3879,6 +4519,30 @@ index 0000000..26108e0
 +        alert.addButton(withTitle: "Cancel")
 +        guard alert.runModal() == .alertFirstButtonReturn else { return }
 +        install()
++    }
++
++    /// "1.0.54 (e4d7abf) · 21 Oct 16:38": a version, its commit and date,
++    /// written the same way for this build and GitHub's latest.
++    static func describe(_ version: String, _ commit: String?, _ date: Date?) -> String {
++        let f = DateFormatter()
++        f.dateFormat = "d MMM HH:mm"
++        return version + (commit.map { " (\($0))" } ?? "") + (date.map { " · " + f.string(from: $0) } ?? "")
++    }
++
++    /// This build: built when.
++    var current: String { Self.describe(Self.version, Self.commit, Self.built) }
++    /// GitHub's latest: committed when.
++    var newest: String { Self.describe(latest ?? "?", latestCommit, changes.first?.date) }
++
++    /// Both versions, then what changed.
++    private var versionNotes: String {
++        var text = "You have: \(current)\nNew: \(newest)\n\n"
++        if !changes.isEmpty {
++            let shown = changes.prefix(8).map { "• " + $0.title }
++            let more = changes.count > 8 ? ["…and \(changes.count - 8) more"] : []
++            text += "What's new:\n" + (shown + more).joined(separator: "\n") + "\n\n"
++        }
++        return text
 +    }
 +
 +    private func install() {
