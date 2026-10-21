@@ -4414,10 +4414,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..0f25904
+index 0000000..3b9a0b4
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,839 @@
+@@ -0,0 +1,848 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -4485,6 +4485,8 @@ index 0000000..0f25904
 +    @State private var showNotices = false
 +    /// What the header button under the pointer does, shown under the header.
 +    @State private var headerTip: String?
++    /// The colour of the button the tip is about.
++    @State private var headerTipColor = DockPalette.blue
 +    @AppStorage(DockSettings.showSidebarKey) private var show = true
 +    @AppStorage(DockSettings.themeKey) private var themeName = ""
 +    @AppStorage(DockSettings.sidebarWidthKey) private var width = Double(Self.width)
@@ -4626,8 +4628,8 @@ index 0000000..0f25904
 +                .overlay(alignment: .leading) {
 +                    if let headerTip {
 +                        Text(headerTip)
-+                            .font(.system(size: 11, weight: .medium))
-+                            .foregroundStyle(DockPalette.text)
++                            .font(.system(size: 11, weight: .semibold))
++                            .foregroundStyle(headerTipColor)
 +                            .lineLimit(1)
 +                            .minimumScaleFactor(0.75)
 +                            .truncationMode(.tail)
@@ -4681,7 +4683,8 @@ index 0000000..0f25904
 +                .onHover { inside in
 +                    let tip = updates.restarting ? "Restarting once sessions are quiet…"
 +                        : "Restart into the new build once sessions are quiet"
-+                    if inside { headerTip = tip } else if headerTip == tip { headerTip = nil }
++                    if inside { headerTip = tip; headerTipColor = DockPalette.green }
++                    else if headerTip == tip { headerTip = nil }
 +                }
 +            }
 +            if updates.available || updates.state == .installing {
@@ -4697,37 +4700,38 @@ index 0000000..0f25904
 +                .disabled(updates.state == .installing)
 +                .onHover { inside in
 +                    let tip = updates.latest.map { "Update: install \($0) from GitHub" } ?? "Install the latest version"
-+                    if inside { headerTip = tip } else if headerTip == tip { headerTip = nil }
++                    if inside { headerTip = tip; headerTipColor = DockPalette.green }
++                    else if headerTip == tip { headerTip = nil }
 +                }
 +            }
 +            DockHeaderButton(symbol: "magnifyingglass", color: DockPalette.blue,
-+                             tip: "Find a session (⌘P)", shownTip: $headerTip) {
++                             tip: "Find a session (⌘P)", shownTip: $headerTip, tipColor: $headerTipColor) {
 +                DockSearchPanel.shared.show(below: NSEvent.mouseLocation)
 +            }
 +            DockHeaderButton(symbol: "person.3", size: 11, color: DockPalette.mauve,
-+                             tip: "Agents: subagents, tokens, spend (⌘⇧A)", shownTip: $headerTip) {
++                             tip: "Agents: subagents, tokens, spend (⌘⇧A)", shownTip: $headerTip, tipColor: $headerTipColor) {
 +                DockAgentsWindow.shared.show(near: NSEvent.mouseLocation)
 +            }
 +            DockHeaderButton(symbol: notices.unread > 0 ? "bell.badge.fill" : "bell",
 +                             color: DockPalette.color(DockTag.orange),
 +                             tip: notices.unread > 0 ? "Notifications: \(notices.unread) unread" : "Notifications",
-+                             shownTip: $headerTip) {
++                             shownTip: $headerTip, tipColor: $headerTipColor) {
 +                showNotices.toggle()
 +            }
 +            .popover(isPresented: $showNotices, arrowEdge: .bottom) {
 +                DockNoticeList { showNotices = false }
 +            }
 +            DockHeaderButton(symbol: "plus", color: DockPalette.green, tip: "New tab (⌘T)",
-+                             shownTip: $headerTip, action: onNewTab)
++                             shownTip: $headerTip, tipColor: $headerTipColor, action: onNewTab)
 +            DockHeaderButton(symbol: "arrow.down.to.line", color: DockPalette.peach,
 +                             tip: "Next session that needs you (⌃⌥J)",
-+                             shownTip: $headerTip, action: model.jumpToNextWaiting)
++                             shownTip: $headerTip, tipColor: $headerTipColor, action: model.jumpToNextWaiting)
 +            DockHeaderButton(symbol: "gearshape", color: DockPalette.text, tip: "Settings (⌘,)",
-+                             shownTip: $headerTip) {
++                             shownTip: $headerTip, tipColor: $headerTipColor) {
 +                DockSettingsWindow.shared.show(near: NSEvent.mouseLocation)
 +            }
 +            DockHeaderButton(symbol: "info.circle", color: DockPalette.teal, tip: "About and updates",
-+                             shownTip: $headerTip) {
++                             shownTip: $headerTip, tipColor: $headerTipColor) {
 +                DockAboutWindow.shared.show(near: NSEvent.mouseLocation)
 +            }
 +        }
@@ -4742,6 +4746,7 @@ index 0000000..0f25904
 +    var color: Color
 +    var tip: String
 +    @Binding var shownTip: String?
++    @Binding var tipColor: Color
 +    var action: () -> Void
 +    @State private var hover = false
 +
@@ -4756,7 +4761,11 @@ index 0000000..0f25904
 +        .buttonStyle(.plain)
 +        .onHover { inside in
 +            hover = inside
-+            if inside { shownTip = tip } else if shownTip == tip { shownTip = nil }
++            if inside {
++                shownTip = tip
++                // The settings icon is in the text colour; its tip still stands out.
++                tipColor = color == DockPalette.text ? DockPalette.blue : color
++            } else if shownTip == tip { shownTip = nil }
 +        }
 +    }
 +}
