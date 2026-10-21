@@ -2214,10 +2214,10 @@ index 0000000..291ee5e
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..4a03ea9
+index 0000000..24d3e53
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,670 @@
+@@ -0,0 +1,683 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -2441,6 +2441,19 @@ index 0000000..4a03ea9
 +        HStack(spacing: 6) {
 +            Text("Sessions").font(.system(size: 12, weight: .semibold)).foregroundStyle(DockPalette.text)
 +            Spacer()
++            if updates.restartPending && !updates.available && updates.state != .installing {
++                Button(action: updates.confirmRestart) {
++                    Text(updates.restarting ? "Restarting…" : "Restart")
++                        .font(.system(size: 10.5, weight: .semibold))
++                        .foregroundStyle(DockPalette.base)
++                        .padding(.horizontal, 7)
++                        .padding(.vertical, 2)
++                        .background(Capsule().fill(DockPalette.green))
++                }
++                .buttonStyle(.plain)
++                .disabled(updates.restarting)
++                .dockTip("A newer build is installed: restart to use it, once sessions are quiet")
++            }
 +            if updates.available || updates.state == .installing {
 +                Button(action: updates.confirmInstall) {
 +                    Text(updates.state == .installing ? "Updating…" : "Update")
@@ -3161,10 +3174,10 @@ index 0000000..29d7386
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..57f65f1
+index 0000000..a03c91a
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,200 @@
 +import AppKit
 +import Combine
 +
@@ -3200,8 +3213,12 @@ index 0000000..57f65f1
 +    @Published private(set) var progress = ""
 +
 +    var available: Bool { !changes.isEmpty }
++    /// A newer build is installed on disk than the one running.
++    @Published private(set) var restartPending = false
++    @Published private(set) var restarting = false
 +
 +    private var timer: Timer?
++    private var installedTimer: Timer?
 +    private var logTimer: Timer?
 +
 +    private static func info(_ key: String) -> String? {
@@ -3227,6 +3244,40 @@ index 0000000..57f65f1
 +        guard timer == nil else { return }
 +        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in self?.check() }
 +        timer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in self?.check() }
++        checkInstalled()
++        installedTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.checkInstalled() }
++    }
++
++    /// Reads the build stamp of the app on disk, which a rebuild replaces
++    /// under the running one.
++    private func checkInstalled() {
++        let plist = Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist")
++        guard let running = Self.built,
++              let dict = NSDictionary(contentsOf: plist),
++              let stamp = dict["GhosttyDockBuilt"] as? String,
++              let installed = ISO8601DateFormatter().date(from: stamp) else { return }
++        let pending = installed > running
++        if pending != restartPending { restartPending = pending }
++    }
++
++    /// Asks first, then restarts once sessions are quiet; they come back as tabs.
++    func confirmRestart() {
++        let alert = NSAlert()
++        alert.messageText = "Restart Ghostty Dock?"
++        alert.informativeText = """
++            A newer build is installed. Ghostty Dock restarts once your sessions are quiet             (none running or waiting on you), and reopens each one as a tab with claude --resume.
++            """
++        alert.addButton(withTitle: "Restart When Quiet")
++        alert.addButton(withTitle: "Cancel")
++        guard alert.runModal() == .alertFirstButtonReturn else { return }
++        let restarter = FileManager.default.homeDirectoryForCurrentUser
++            .appendingPathComponent(".local/bin/ghostty-dock-restart").path
++        guard FileManager.default.isExecutableFile(atPath: restarter) else {
++            state = .failed("ghostty-dock-restart is not installed; run ./install.sh --skip-app.")
++            return
++        }
++        restarting = true
++        DispatchQueue.global(qos: .utility).async { _ = Self.run(restarter, []) }
 +    }
 +
 +    func check() {
