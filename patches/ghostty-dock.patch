@@ -3120,10 +3120,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..50f2849
+index 0000000..1bfdf13
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1005 @@
+@@ -0,0 +1,1007 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -3648,6 +3648,8 @@ index 0000000..50f2849
 +
 +        let now = Int(Date().timeIntervalSince1970)
 +        let appActive = NSApp.isActive
++        // Sessions some tab is running now: their colour is theirs, never handed on.
++        let liveSids = Set(sessions.values.compactMap { $0.session_id }.filter { !$0.isEmpty })
 +        var built: [Row] = []
 +        for controller in TerminalController.all {
 +            guard let window = controller.window else { continue }
@@ -3692,7 +3694,7 @@ index 0000000..50f2849
 +                : (pwd as NSString).lastPathComponent
 +            let key = best?.sid ?? "dir:" + pwd
 +            if let old = tabKeys[id], old.controller === controller, old.key != key,
-+               !built.contains(where: { $0.key == key }) {
++               !liveSids.contains(old.key), !built.contains(where: { $0.key == key }) {
 +                carry(from: old.key, to: key)
 +            }
 +            tabKeys[id] = TabKey(key: key, controller: controller)
