@@ -195,7 +195,8 @@ your sessions are quiet and you have not typed for 10 seconds, and reopens
 them as tabs. While it waits, a flashing red ⏳ replaces the Restart
 button and an orange line under the header says what for:
 "Restart waits for ghostty-dock to finish", then a countdown ("Restarting in
-32s"), then "once you stop typing".
+32s"), then "once you stop typing". Click the ⏳ to restart now (what is running
+is interrupted) or cancel the restart.
 
 ## Pairs well with: Claude Code Cost Sidebar
 
