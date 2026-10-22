@@ -4443,7 +4443,7 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..f7cf304
+index 0000000..a93c884
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
 @@ -0,0 +1,938 @@
@@ -4846,7 +4846,7 @@ index 0000000..f7cf304
 +    }
 +}
 +
-+/// The Restart button while a restart waits: a bright hourglass that
++/// The Restart button while a restart waits: a red hourglass that
 +/// flashes, so it is plain that one is coming.
 +private struct DockRestartWaiting: View {
 +    @State private var on = false
@@ -4856,8 +4856,8 @@ index 0000000..f7cf304
 +            .font(.system(size: 11, weight: .heavy))
 +            .foregroundStyle(Color.white)
 +            .frame(width: 20, height: 20)
-+            .background(Circle().fill(DockPalette.peach))
-+            .overlay(Circle().stroke(DockPalette.peach, lineWidth: 2).scaleEffect(on ? 1.5 : 1).opacity(on ? 0 : 0.9))
++            .background(Circle().fill(DockPalette.color(DockTag.red)))
++            .overlay(Circle().stroke(DockPalette.color(DockTag.red), lineWidth: 2).scaleEffect(on ? 1.5 : 1).opacity(on ? 0 : 0.9))
 +            .opacity(on ? 0.45 : 1)
 +            .onAppear {
 +                withAnimation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true)) { on = true }
