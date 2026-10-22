@@ -71,7 +71,8 @@ reports each session's status.
   ↑↓ and Return. Closed sessions are in the list too.
 - **Agents (⌘⇧A or the 👥 button)**: four tiles at the top (spending now,
   today, agents running, sessions that need you; click that one to go to
-  it), then every subagent your sessions have started, one row each, grouped
+  it), then **Agents used today**: each session that used agents today, how
+  many and what they cost, most first (click one to go to it), then every subagent your sessions have started, one row each, grouped
   by session: what it is doing, type, model, tool calls, tokens, cost and how
   long ago. Busy sessions without agents show as "working on its own". Live,
   Today or All at the top right; point at a row for the token breakdown,

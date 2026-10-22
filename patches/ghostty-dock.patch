@@ -1503,10 +1503,10 @@ index 0000000..1468a67
 +}
 diff --git a/macos/Sources/Features/Dock/DockAgentsView.swift b/macos/Sources/Features/Dock/DockAgentsView.swift
 new file mode 100644
-index 0000000..eca5fe4
+index 0000000..e7038d6
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAgentsView.swift
-@@ -0,0 +1,502 @@
+@@ -0,0 +1,591 @@
 +import AppKit
 +import SwiftUI
 +
@@ -1527,7 +1527,17 @@ index 0000000..eca5fe4
 +        var agents: [DockAgents.Agent]
 +    }
 +
++    /// Agents each session used today, whatever the period picked: most first.
++    struct Usage: Identifiable, Equatable {
++        var id: String { sessionId }
++        let sessionId: String
++        let row: DockSessions.Row
++        var count: Int
++        var dollars: Double
++    }
++
 +    @Published private(set) var sections: [Section] = []
++    @Published private(set) var today: [Usage] = []
 +    @Published var scope: Scope = .today { didSet { refresh() } }
 +    @Published private(set) var now = Date()
 +
@@ -1554,17 +1564,24 @@ index 0000000..eca5fe4
 +            r.sessionId.flatMap { sid in DockSessions.shared.transcriptURL(sid).map { (r, sid, $0) } }
 +        }
 +        let scope = scope
-+        let since: Date? = scope == .all ? nil : Calendar.current.startOfDay(for: Date())
++        let midnight = Calendar.current.startOfDay(for: Date())
++        let since: Date? = scope == .all ? nil : midnight
 +        busy = true
 +        queue.async { [weak self] in
 +            guard let self else { return }
 +            let now = Date()
 +            var built: [Section] = []
++            var usage: [Usage] = []
 +            for (row, sid, url) in files {
 +                var agents = self.meter.agents(transcript: url, sessionId: sid, since: since)
++                let used = agents.filter { ($0.lastActive ?? .distantPast) >= midnight }
++                if !used.isEmpty {
++                    usage.append(Usage(sessionId: sid, row: row, count: used.count,
++                                       dollars: used.map(\.dollars).reduce(0, +)))
++                }
 +                switch scope {
 +                case .live: agents = agents.filter { $0.live(now: now) }
-+                case .today: agents = agents.filter { ($0.lastActive ?? .distantPast) >= since! }
++                case .today: agents = agents.filter { ($0.lastActive ?? .distantPast) >= midnight }
 +                case .all: break
 +                }
 +                // Newest first, live ones ahead of finished.
@@ -1584,10 +1601,15 @@ index 0000000..eca5fe4
 +                if a.agents.isEmpty != b.agents.isEmpty { return !a.agents.isEmpty }
 +                return a.row.name.localizedCaseInsensitiveCompare(b.row.name) == .orderedAscending
 +            }
++            usage.sort { a, b in
++                if a.count != b.count { return a.count > b.count }
++                return a.row.name.localizedCaseInsensitiveCompare(b.row.name) == .orderedAscending
++            }
 +            DispatchQueue.main.async {
 +                self.busy = false
 +                self.now = now
 +                if built != self.sections { self.sections = built }
++                if usage != self.today { self.today = usage }
 +            }
 +        }
 +    }
@@ -1614,6 +1636,7 @@ index 0000000..eca5fe4
 +                ScrollView {
 +                    VStack(alignment: .leading, spacing: 22) {
 +                        tiles
++                        DockAgentsToday(usage: model.today)
 +                        if model.sections.isEmpty {
 +                            empty
 +                        } else {
@@ -1772,6 +1795,72 @@ index 0000000..eca5fe4
 +        .onHover { hover = $0 }
 +        .onTapGesture { action?() }
 +        .help(help)
++    }
++}
++
++/// Which sessions used agents today, and how many: one line each, most first.
++private struct DockAgentsToday: View {
++    var usage: [DockAgentsModel.Usage]
++
++    var body: some View {
++        let total = usage.map(\.count).reduce(0, +)
++        let most = max(1, usage.map(\.count).max() ?? 1)
++        VStack(alignment: .leading, spacing: 0) {
++            HStack(spacing: 8) {
++                Label("Agents used today", systemImage: "person.2.fill")
++                    .font(.headline).foregroundStyle(DockPalette.text)
++                Spacer()
++                Text(usage.isEmpty ? "None yet"
++                     : "\(total) agent\(total == 1 ? "" : "s") · "
++                        + DockCost.format(usage.map(\.dollars).reduce(0, +))
++                        + " · \(usage.count) session\(usage.count == 1 ? "" : "s")")
++                    .font(.caption).monospacedDigit().foregroundStyle(DockPalette.grey)
++            }
++            .padding(.horizontal, 12).padding(.vertical, 9)
++            ForEach(usage) { u in
++                Divider().overlay(DockPalette.surface)
++                DockAgentsTodayRow(usage: u, most: most)
++            }
++        }
++        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(DockPalette.mantle))
++        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
++    }
++}
++
++private struct DockAgentsTodayRow: View {
++    var usage: DockAgentsModel.Usage
++    var most: Int
++    @State private var hover = false
++
++    private var tint: Color { usage.row.tag.map { DockPalette.color($0) } ?? DockPalette.color(usage.row.status) }
++
++    var body: some View {
++        Button { DockSessions.shared.select(usage.row) } label: {
++            HStack(spacing: 10) {
++                Circle().fill(tint).frame(width: 8, height: 8)
++                Text(usage.row.name).font(.callout.weight(.medium)).foregroundStyle(DockPalette.text)
++                    .lineLimit(1).truncationMode(.middle)
++                    .frame(width: 230, alignment: .leading)
++                GeometryReader { g in
++                    Capsule().fill(tint.opacity(0.75))
++                        .frame(width: max(6, g.size.width * CGFloat(usage.count) / CGFloat(most)), height: 6)
++                        .frame(maxHeight: .infinity)
++                }
++                .frame(height: 14)
++                Text("\(usage.count) agent\(usage.count == 1 ? "" : "s")")
++                    .font(.callout).monospacedDigit().foregroundStyle(DockPalette.text)
++                    .frame(width: 80, alignment: .trailing)
++                Text(DockCost.format(usage.dollars))
++                    .font(.callout).monospacedDigit().foregroundStyle(DockPalette.grey)
++                    .frame(width: 70, alignment: .trailing)
++            }
++            .padding(.horizontal, 12).padding(.vertical, 7)
++            .background(hover ? DockPalette.surface.opacity(0.5) : Color.clear)
++            .contentShape(Rectangle())
++        }
++        .buttonStyle(.plain)
++        .onHover { hover = $0 }
++        .help("Go to \(usage.row.name)")
 +    }
 +}
 +
