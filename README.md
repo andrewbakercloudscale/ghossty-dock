@@ -69,7 +69,8 @@ reports each session's status.
   all.
 - **Find (⌘P or the magnifier)**: type part of a name, folder or question;
   ↑↓ and Return. Closed sessions are in the list too.
-- **Agents (⌘⇧A or the 👥 button)**: four tiles at the top (spending now,
+- **Agents (⌘⇧A or the 👥 button)**: the 👥 button turns green with a count
+  while your sessions' agents are running. Four tiles at the top (spending now,
   today, agents running, sessions that need you; click that one to go to
   it), then **Agents used today**: each session that used agents today, how
   many and what they cost, most first (click one to go to it), then
