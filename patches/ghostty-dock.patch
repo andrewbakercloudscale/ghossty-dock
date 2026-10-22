@@ -3286,10 +3286,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..1bfdf13
+index 0000000..d75648f
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1007 @@
+@@ -0,0 +1,1037 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -3381,6 +3381,8 @@ index 0000000..1bfdf13
 +    @Published private(set) var contexts: [String: Int] = [:]
 +    /// How fast the open sessions are spending.
 +    @Published private(set) var velocity = DockCost.Velocity()
++    /// Subagents of the open sessions at work now, for the header's 👥.
++    @Published private(set) var agentsRunning = 0
 +    /// Row key to its folder's git branch, pull request and ports.
 +    @Published private(set) var workspaces: [String: DockWorkspace] = [:]
 +    private let workspaceMeter = DockWorkspaces()
@@ -3463,6 +3465,7 @@ index 0000000..1bfdf13
 +    private let costMeter = DockCost()
 +    private let costQueue = DispatchQueue(label: "ghostty-dock.cost", qos: .utility)
 +    private var costTimer: Timer?
++    private var agentTimer: Timer?
 +    private var transcripts: [String: URL] = [:]
 +
 +    private init() {
@@ -3519,6 +3522,7 @@ index 0000000..1bfdf13
 +        }
 +        costTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in self?.refreshCosts() }
 +        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.refreshCosts() }
++        agentTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.refreshAgentsRunning() }
 +        NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil,
 +                                               queue: .main) { [weak self] _ in self?.applySettings() }
 +        applySettings()
@@ -3767,6 +3771,32 @@ index 0000000..1bfdf13
 +            }
 +        }
 +        return nil
++    }
++
++    /// Counts the open sessions' subagents at work: not finished, and wrote
++    /// to their transcript in the last 15 minutes, as DockAgents.Agent.live.
++    private func refreshAgentsRunning() {
++        let files = rows.compactMap { r in r.sessionId.flatMap { transcript($0) } }
++        costQueue.async { [weak self] in
++            let fm = FileManager.default
++            let now = Date()
++            var running = 0
++            for url in files {
++                let dir = url.deletingPathExtension().appendingPathComponent("subagents")
++                for name in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where name.hasSuffix(".jsonl") {
++                    let file = dir.appendingPathComponent(name)
++                    guard let m = (try? fm.attributesOfItem(atPath: file.path))?[.modificationDate] as? Date,
++                          now.timeIntervalSince(m) < 15 * 60 else { continue }
++                    var agent = DockAgents.Agent(id: "", sessionId: "")
++                    DockAgents.applyMeta(file.deletingPathExtension().appendingPathExtension("meta.json"), to: &agent)
++                    if !agent.finished { running += 1 }
++                }
++            }
++            DispatchQueue.main.async {
++                guard let self, running != self.agentsRunning else { return }
++                self.agentsRunning = running
++            }
++        }
 +    }
 +
 +    /// Each session's cost so far and context size, read off the main
@@ -4712,10 +4742,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..e2d5c06
+index 0000000..66650bc
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,945 @@
+@@ -0,0 +1,958 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -5017,8 +5047,13 @@ index 0000000..e2d5c06
 +                             tip: "Find a session (⌘P)", shownTip: $headerTip, tipColor: $headerTipColor) {
 +                DockSearchPanel.shared.show(below: NSEvent.mouseLocation)
 +            }
-+            DockHeaderButton(symbol: "person.3", size: 11, color: DockPalette.mauve,
-+                             tip: "Agents: subagents, tokens, spend (⌘⇧A)", shownTip: $headerTip, tipColor: $headerTipColor) {
++            DockHeaderButton(symbol: model.agentsRunning > 0 ? "person.3.fill" : "person.3", size: 11,
++                             color: model.agentsRunning > 0 ? DockPalette.green : DockPalette.mauve,
++                             tip: model.agentsRunning > 0
++                                 ? "Agents: \(model.agentsRunning) running now (⌘⇧A)"
++                                 : "Agents: subagents, tokens, spend (⌘⇧A)",
++                             badge: model.agentsRunning,
++                             shownTip: $headerTip, tipColor: $headerTipColor) {
 +                DockAgentsWindow.shared.show(near: NSEvent.mouseLocation)
 +            }
 +            DockHeaderButton(symbol: notices.unread > 0 ? "bell.badge.fill" : "bell",
@@ -5148,6 +5183,8 @@ index 0000000..e2d5c06
 +    var size: CGFloat = 12
 +    var color: Color
 +    var tip: String
++    /// A count next to the icon, hidden at 0.
++    var badge = 0
 +    @Binding var shownTip: String?
 +    @Binding var tipColor: Color
 +    var action: () -> Void
@@ -5155,11 +5192,17 @@ index 0000000..e2d5c06
 +
 +    var body: some View {
 +        Button(action: action) {
-+            Image(systemName: symbol)
-+                .font(.system(size: size, weight: .semibold))
-+                .foregroundStyle(color)
-+                .padding(3)
-+                .background(Circle().fill(color.opacity(hover ? 0.2 : 0)))
++            HStack(spacing: 2) {
++                Image(systemName: symbol)
++                    .font(.system(size: size, weight: .semibold))
++                if badge > 0 {
++                    Text("\(badge)").font(.system(size: 10, weight: .bold)).monospacedDigit()
++                }
++            }
++            .foregroundStyle(color)
++            .padding(.vertical, 3)
++            .padding(.horizontal, badge > 0 ? 5 : 3)
++            .background(Capsule().fill(color.opacity(hover ? 0.3 : badge > 0 ? 0.16 : 0)))
 +        }
 +        .buttonStyle(.plain)
 +        .onHover { inside in
