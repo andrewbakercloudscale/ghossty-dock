@@ -5791,10 +5791,10 @@ index 0000000..596cc6e
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..85cc42e
+index 0000000..b212c12
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
-@@ -0,0 +1,324 @@
+@@ -0,0 +1,326 @@
 +import AppKit
 +import Combine
 +
@@ -5918,7 +5918,9 @@ index 0000000..85cc42e
 +            line = "Waiting to restart…"
 +        }
 +        if line != restartStatus { restartStatus = line }
-+        if line != nil, !restarting { restarting = true }
++        // Only while a restart is actually waiting: a status left over from the
++        // restart that launched this app must not leave the hourglass flashing.
++        if restarting != (line != nil) { restarting = line != nil }
 +    }
 +
 +    /// While a restart waits: restart now (busy sessions are interrupted),
