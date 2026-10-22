@@ -72,7 +72,9 @@ reports each session's status.
 - **Agents (⌘⇧A or the 👥 button)**: four tiles at the top (spending now,
   today, agents running, sessions that need you; click that one to go to
   it), then **Agents used today**: each session that used agents today, how
-  many and what they cost, most first (click one to go to it), then every subagent your sessions have started, one row each, grouped
+  many and what they cost, most first (click one to go to it), then
+  **Background runs today**: `claude -p` runs with no tab (git hooks,
+  scripts, compactions) by project, with their agents and cost, then every subagent your sessions have started, one row each, grouped
   by session: what it is doing, type, model, tool calls, tokens, cost and how
   long ago. Busy sessions without agents show as "working on its own". Live,
   Today or All at the top right; point at a row for the token breakdown,

@@ -1503,10 +1503,10 @@ index 0000000..1468a67
 +}
 diff --git a/macos/Sources/Features/Dock/DockAgentsView.swift b/macos/Sources/Features/Dock/DockAgentsView.swift
 new file mode 100644
-index 0000000..e7038d6
+index 0000000..396aa75
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAgentsView.swift
-@@ -0,0 +1,591 @@
+@@ -0,0 +1,757 @@
 +import AppKit
 +import SwiftUI
 +
@@ -1536,8 +1536,30 @@ index 0000000..e7038d6
 +        var dollars: Double
 +    }
 +
++    /// One `claude -p` run today with no tab: a git hook, a script, a
++    /// compaction. It costs the same but is not in the Dock.
++    struct Run: Identifiable, Equatable {
++        var id: String { sessionId }
++        let sessionId: String
++        var what: String
++        var lastActive: Date?
++        var agents: Int
++        var live: Int
++        var dollars: Double
++    }
++
++    /// A project's background runs today, newest first.
++    struct Background: Identifiable, Equatable {
++        var id: String { project }
++        let project: String
++        var runs: [Run]
++        var agents: Int { runs.map(\.agents).reduce(0, +) }
++        var dollars: Double { runs.map(\.dollars).reduce(0, +) }
++    }
++
 +    @Published private(set) var sections: [Section] = []
 +    @Published private(set) var today: [Usage] = []
++    @Published private(set) var background: [Background] = []
 +    @Published var scope: Scope = .today { didSet { refresh() } }
 +    @Published private(set) var now = Date()
 +
@@ -1545,6 +1567,11 @@ index 0000000..e7038d6
 +    private let queue = DispatchQueue(label: "ghostty-dock.agents", qos: .utility)
 +    private var timer: Timer?
 +    private var busy = false
++    private let backgroundCost = DockCost()
++    /// Transcript path to its project and first prompt if it is a `claude -p`
++    /// run, nil if it is not. Each is looked at once.
++    private var headless: [String: (project: String, what: String)?] = [:]
++    private var scanned = Date.distantPast
 +
 +    func start() {
 +        guard timer == nil else { return }
@@ -1605,13 +1632,88 @@ index 0000000..e7038d6
 +                if a.count != b.count { return a.count > b.count }
 +                return a.row.name.localizedCaseInsensitiveCompare(b.row.name) == .orderedAscending
 +            }
++            // Every 10 seconds is enough: it means listing every project folder.
++            var background: [Background]?
++            if now.timeIntervalSince(self.scanned) >= 10 {
++                self.scanned = now
++                background = self.scanBackground(open: Set(files.map(\.1)), since: midnight, now: now)
++            }
 +            DispatchQueue.main.async {
 +                self.busy = false
 +                self.now = now
 +                if built != self.sections { self.sections = built }
 +                if usage != self.today { self.today = usage }
++                if let background, background != self.background { self.background = background }
 +            }
 +        }
++    }
++
++    /// Today's `claude -p` runs in any project, except the Dock's own sessions.
++    private func scanBackground(open: Set<String>, since: Date, now: Date) -> [Background] {
++        let fm = FileManager.default
++        let projects = fm.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
++        let dirs = (try? fm.contentsOfDirectory(at: projects, includingPropertiesForKeys: nil)) ?? []
++        var byProject: [String: [Run]] = [:]
++        for dir in dirs {
++            let urls = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
++            for url in urls where url.pathExtension == "jsonl" {
++                let sid = url.deletingPathExtension().lastPathComponent
++                guard !open.contains(sid),
++                      let m = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
++                      m >= since,
++                      let info = headlessInfo(url) else { continue }
++                let agents = meter.agents(transcript: url, sessionId: sid, since: since)
++                byProject[info.project, default: []].append(Run(
++                    sessionId: sid, what: info.what, lastActive: m, agents: agents.count,
++                    live: agents.filter { $0.live(now: now) }.count,
++                    dollars: backgroundCost.dollars(transcript: url)))
++            }
++        }
++        return byProject.map { project, runs in
++            Background(project: project, runs: runs.sorted { ($0.lastActive ?? .distantPast) > ($1.lastActive ?? .distantPast) })
++        }
++        .sorted { $0.dollars > $1.dollars }
++    }
++
++    /// The project and first prompt of a `claude -p` run, from its first lines;
++    /// nil for an interactive session.
++    private func headlessInfo(_ url: URL) -> (project: String, what: String)? {
++        if let known = headless[url.path] { return known }
++        guard let h = try? FileHandle(forReadingFrom: url) else { return nil }
++        defer { try? h.close() }
++        let data = h.readData(ofLength: 256 * 1024)
++        var entrypoint: String?
++        var cwd: String?
++        var what: String?
++        for line in data.split(separator: UInt8(ascii: "\n")) {
++            guard let d = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
++            if entrypoint == nil { entrypoint = d["entrypoint"] as? String }
++            if cwd == nil { cwd = d["cwd"] as? String }
++            if what == nil, d["type"] as? String == "user",
++               let text = (d["message"] as? [String: Any])?["content"] as? String {
++                what = Self.prompt(text)
++            }
++            if entrypoint != nil, cwd != nil, what != nil { break }
++        }
++        // Not sure yet while the run is still writing its first lines.
++        guard let entrypoint else { return nil }
++        let info: (project: String, what: String)? = entrypoint == "sdk-cli"
++            ? (project: URL(fileURLWithPath: cwd ?? url.deletingLastPathComponent().path).lastPathComponent,
++               what: what ?? "claude -p")
++            : nil
++        headless[url.path] = .some(info)
++        return info
++    }
++
++    /// "/wp-plugin-standards-review" for a slash command, else the prompt's
++    /// first line of words.
++    static func prompt(_ text: String) -> String {
++        if let r = text.range(of: "<command-name>"), let e = text.range(of: "</command-name>", range: r.upperBound..<text.endIndex) {
++            return String(text[r.upperBound..<e.lowerBound])
++        }
++        let line = text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
++            .first { !$0.isEmpty && !$0.hasPrefix("<") } ?? "claude -p"
++        return DockAgents.clip(line)
 +    }
 +
 +    var agents: [DockAgents.Agent] { sections.flatMap(\.agents) }
@@ -1637,6 +1739,9 @@ index 0000000..e7038d6
 +                    VStack(alignment: .leading, spacing: 22) {
 +                        tiles
 +                        DockAgentsToday(usage: model.today)
++                        if !model.background.isEmpty {
++                            DockAgentsBackground(projects: model.background, now: model.now)
++                        }
 +                        if model.sections.isEmpty {
 +                            empty
 +                        } else {
@@ -1861,6 +1966,67 @@ index 0000000..e7038d6
 +        .buttonStyle(.plain)
 +        .onHover { hover = $0 }
 +        .help("Go to \(usage.row.name)")
++    }
++}
++
++/// Today's `claude -p` runs with no tab, by project: a line per run.
++private struct DockAgentsBackground: View {
++    var projects: [DockAgentsModel.Background]
++    var now: Date
++
++    var body: some View {
++        let runs = projects.map(\.runs.count).reduce(0, +)
++        VStack(alignment: .leading, spacing: 0) {
++            HStack(spacing: 8) {
++                Label("Background runs today", systemImage: "gearshape.2.fill")
++                    .font(.headline).foregroundStyle(DockPalette.text)
++                Spacer()
++                Text(Self.totals(runs: runs, agents: projects.map(\.agents).reduce(0, +),
++                                 dollars: projects.map(\.dollars).reduce(0, +)))
++                    .font(.caption).monospacedDigit().foregroundStyle(DockPalette.grey)
++            }
++            .padding(.horizontal, 12).padding(.vertical, 9)
++            .help("claude -p runs with no tab: git hooks, scripts, compactions. Not in the Today tile.")
++            ForEach(projects) { p in
++                Divider().overlay(DockPalette.surface)
++                HStack(spacing: 8) {
++                    Image(systemName: "folder.fill").foregroundStyle(DockPalette.blue)
++                    Text(p.project).font(.callout.weight(.semibold)).foregroundStyle(DockPalette.text)
++                    Spacer()
++                    Text(Self.totals(runs: p.runs.count, agents: p.agents, dollars: p.dollars))
++                        .font(.caption).monospacedDigit().foregroundStyle(DockPalette.grey)
++                }
++                .padding(.horizontal, 12).padding(.vertical, 7)
++                ForEach(p.runs) { run in
++                    HStack(spacing: 10) {
++                        Circle().fill(run.live > 0 ? DockPalette.green : DockPalette.grey).frame(width: 7, height: 7)
++                        Text(run.what).font(.system(size: 12, design: .monospaced))
++                            .foregroundStyle(DockPalette.text).lineLimit(1).truncationMode(.tail)
++                        Spacer(minLength: 8)
++                        Text(run.live > 0 ? "\(run.live) running" : run.agents == 0 ? "no agents"
++                             : "\(run.agents) agent\(run.agents == 1 ? "" : "s")")
++                            .font(.caption).monospacedDigit()
++                            .foregroundStyle(run.live > 0 ? DockPalette.green : DockPalette.grey)
++                            .frame(width: 80, alignment: .trailing)
++                        Text(DockCost.format(run.dollars))
++                            .font(.callout).monospacedDigit().foregroundStyle(DockPalette.text)
++                            .frame(width: 70, alignment: .trailing)
++                        Text(run.lastActive.map { DockAgents.duration(now.timeIntervalSince($0)) + " ago" } ?? "")
++                            .font(.caption).monospacedDigit().foregroundStyle(DockPalette.grey)
++                            .frame(width: 80, alignment: .trailing)
++                    }
++                    .padding(.leading, 34).padding(.trailing, 12).padding(.vertical, 4)
++                    .help("Session \(run.sessionId)")
++                }
++                Spacer().frame(height: 4)
++            }
++        }
++        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(DockPalette.mantle))
++        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
++    }
++
++    static func totals(runs: Int, agents: Int, dollars: Double) -> String {
++        "\(runs) run\(runs == 1 ? "" : "s") · \(agents) agent\(agents == 1 ? "" : "s") · " + DockCost.format(dollars)
 +    }
 +}
 +
