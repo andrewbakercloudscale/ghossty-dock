@@ -290,6 +290,17 @@ against the newest Ghostty release.
 - Every step, with the screen state, app pid and PATH, is logged in
   `~/.local/state/ghostty-dock/restart-dock.log`.
 
+## Logs
+
+- The app logs failures (a save, a helper script or `git`/`gh` that failed or
+  ran over its time limit, a file it could not write) and key events
+  (restores, restarts, moves, reopens, updates). See them in Console.app
+  (search `ghosttydock`) or with
+  `log show --last 1h --predicate 'subsystem == "consulting.cloudscale.ghosttydock"'`.
+- The scripts log to `~/.local/state/ghostty-dock/` (`restart-dock.log`,
+  `update.log`, `move-to-dock.log`). A few minutes after the app starts these
+  are cut to their last 2000 lines, and notes older than a week are removed.
+
 ## If it goes wrong: undo
 
     scripts/undo.sh --list           # what it would reopen

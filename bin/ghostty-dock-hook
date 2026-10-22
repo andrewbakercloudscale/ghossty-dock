@@ -71,23 +71,28 @@ function find_lineage() {
         echo "$GHOSTTY_DOCK_TEST_LINEAGE"
         return
     fi
-    local pid="$PPID" claude="" ghostty="" tty="" hops line ppid ptty comm
+    local pid="$PPID" claude="" ghostty="" tty="" hops line ppid ptty etime comm started=""
     for ((hops = 0; pid > 1 && hops < 40; hops++)); do
-        line=$(ps -o ppid=,tty=,comm= -p "$pid" 2>/dev/null) || break
-        read -r ppid ptty comm <<<"$line"
+        line=$(ps -o ppid=,tty=,etime=,comm= -p "$pid" 2>/dev/null) || break
+        read -r ppid ptty etime comm <<<"$line"
         comm="${comm##*/}"
         if [ -z "$claude" ] && [ "$comm" = "claude" ]; then
             claude="$pid"
             tty="$ptty"
-            local cached
+            started=$(start_time "$etime")
+            # The cache is "<start time> <answer>": a pid used again after a
+            # reboot or a quit starts at another time, so its old answer is not used.
+            local cached cached_start
             cached=$(cat "$STATE_DIR/lineage/$claude" 2>/dev/null)
-            if [ -n "$cached" ]; then
-                echo "$cached"
+            cached_start="${cached%% *}"
+            if [ -n "$cached" ] && [[ "$cached_start" =~ ^[0-9]+$ ]] &&
+                ((cached_start - started <= 2 && started - cached_start <= 2)); then
+                echo "${cached#* }"
                 return
             fi
             if is_headless "$claude"; then
                 mkdir -p "$STATE_DIR/lineage" 2>/dev/null &&
-                    echo "headless - -" >"$STATE_DIR/lineage/$claude" 2>/dev/null
+                    echo "$started headless - -" >"$STATE_DIR/lineage/$claude" 2>/dev/null
                 echo "headless - -"
                 return
             fi
@@ -101,9 +106,26 @@ function find_lineage() {
     [ "$tty" = "??" ] && tty=""
     local result="${claude:--} ${ghostty:--} ${tty:--}"
     if [ -n "$claude" ] && mkdir -p "$STATE_DIR/lineage" 2>/dev/null; then
-        echo "$result" >"$STATE_DIR/lineage/$claude" 2>/dev/null
+        echo "$started $result" >"$STATE_DIR/lineage/$claude" 2>/dev/null
     fi
     echo "$result"
+}
+
+# When a process started, in epoch seconds, from its ps etime
+# ("[[dd-]hh:]mm:ss").
+function start_time() {
+    local etime="$1" days=0 h=0 m=0 sec=0 parts
+    if [[ "$etime" == *-* ]]; then
+        days="${etime%%-*}"
+        etime="${etime#*-}"
+    fi
+    IFS=: read -r -a parts <<<"$etime"
+    case ${#parts[@]} in
+        3) h="${parts[0]}" m="${parts[1]}" sec="${parts[2]}" ;;
+        2) m="${parts[0]}" sec="${parts[1]}" ;;
+        *) sec="${parts[0]:-0}" ;;
+    esac
+    echo $(($(date +%s) - ((10#$days * 24 + 10#$h) * 60 + 10#$m) * 60 - 10#$sec))
 }
 
 # True when this claude was started with -p/--print: it answers once and

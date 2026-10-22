@@ -133,10 +133,10 @@ index ade9bf3..dfbd82b 100644
  // rest of the app.
 diff --git a/macos/Sources/Features/Dock/DockAPI.swift b/macos/Sources/Features/Dock/DockAPI.swift
 new file mode 100644
-index 0000000..3af6440
+index 0000000..0851575
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAPI.swift
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,178 @@
 +import AppKit
 +
 +/// The app's side of the `ghostty-dock` command: requests are JSON files
@@ -179,10 +179,21 @@ index 0000000..3af6440
 +                .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
 +            try? fm.removeItem(at: url)
 +            let answer = request.map(handle) ?? ["ok": false, "error": "unreadable request"]
-+            guard let data = try? JSONSerialization.data(withJSONObject: answer, options: [.sortedKeys]) else { continue }
++            let op = request?["op"] as? String ?? "?"
++            // An answer that cannot be encoded still gets an answer, so the CLI is not left waiting.
++            guard let data = (try? JSONSerialization.data(withJSONObject: answer, options: [.sortedKeys]))
++                ?? (try? JSONSerialization.data(withJSONObject: ["ok": false, "error": "could not encode the answer"]))
++            else { continue }
++            if answer["ok"] as? Bool == false {
++                DockLog.sessions.error("api \(op, privacy: .public): \(answer["error"] as? String ?? "failed", privacy: .public)")
++            }
 +            let tmp = Self.dir.appendingPathComponent(".res-\(id).json")
-+            try? data.write(to: tmp)
-+            try? fm.moveItem(at: tmp, to: Self.dir.appendingPathComponent("res-\(id).json"))
++            guard DockLog.write(data, to: tmp, atomic: false) else { continue }
++            do {
++                try fm.moveItem(at: tmp, to: Self.dir.appendingPathComponent("res-\(id).json"))
++            } catch {
++                DockLog.files.error("api answer \(id, privacy: .public) not delivered: \(error.localizedDescription, privacy: .public)")
++            }
 +        }
 +        // Answers nobody collected, after a minute.
 +        for url in files where url.lastPathComponent.hasPrefix("res-") {
@@ -1308,10 +1319,10 @@ index 0000000..3dc069c
 +}
 diff --git a/macos/Sources/Features/Dock/DockAgents.swift b/macos/Sources/Features/Dock/DockAgents.swift
 new file mode 100644
-index 0000000..1468a67
+index 0000000..84a9b57
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAgents.swift
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,195 @@
 +import Foundation
 +
 +/// Every subagent a session has started, with what it has used, from its
@@ -1389,6 +1400,12 @@ index 0000000..1468a67
 +            found.append(read(url, sessionId: sessionId))
 +        }
 +        return found.sorted { ($0.started ?? .distantPast) < ($1.started ?? .distantPast) }
++    }
++
++    /// Forgets the agents of sessions other than these.
++    func prune(keeping transcripts: [URL]) {
++        let dirs = transcripts.map { $0.deletingPathExtension().appendingPathComponent("subagents").path + "/" }
++        files = files.filter { path, _ in dirs.contains { path.hasPrefix($0) } }
 +    }
 +
 +    private func read(_ url: URL, sessionId: String) -> Agent {
@@ -1503,10 +1520,10 @@ index 0000000..1468a67
 +}
 diff --git a/macos/Sources/Features/Dock/DockAgentsView.swift b/macos/Sources/Features/Dock/DockAgentsView.swift
 new file mode 100644
-index 0000000..396aa75
+index 0000000..e83caf9
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAgentsView.swift
-@@ -0,0 +1,757 @@
+@@ -0,0 +1,768 @@
 +import AppKit
 +import SwiftUI
 +
@@ -1636,7 +1653,9 @@ index 0000000..396aa75
 +            var background: [Background]?
 +            if now.timeIntervalSince(self.scanned) >= 10 {
 +                self.scanned = now
-+                background = self.scanBackground(open: Set(files.map(\.1)), since: midnight, now: now)
++                let (found, runs) = self.scanBackground(open: Set(files.map(\.1)), since: midnight, now: now)
++                background = found
++                self.meter.prune(keeping: files.map(\.2) + runs)
 +            }
 +            DispatchQueue.main.async {
 +                self.busy = false
@@ -1649,19 +1668,24 @@ index 0000000..396aa75
 +    }
 +
 +    /// Today's `claude -p` runs in any project, except the Dock's own sessions.
-+    private func scanBackground(open: Set<String>, since: Date, now: Date) -> [Background] {
++    /// Also returns the runs' transcripts, so caches can forget the rest.
++    private func scanBackground(open: Set<String>, since: Date, now: Date) -> ([Background], [URL]) {
 +        let fm = FileManager.default
 +        let projects = fm.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
 +        let dirs = (try? fm.contentsOfDirectory(at: projects, includingPropertiesForKeys: nil)) ?? []
 +        var byProject: [String: [Run]] = [:]
++        var today: Set<String> = []
++        var runs: [URL] = []
 +        for dir in dirs {
 +            let urls = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
 +            for url in urls where url.pathExtension == "jsonl" {
 +                let sid = url.deletingPathExtension().lastPathComponent
 +                guard !open.contains(sid),
 +                      let m = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
-+                      m >= since,
-+                      let info = headlessInfo(url) else { continue }
++                      m >= since else { continue }
++                today.insert(url.path)
++                guard let info = headlessInfo(url) else { continue }
++                runs.append(url)
 +                let agents = meter.agents(transcript: url, sessionId: sid, since: since)
 +                byProject[info.project, default: []].append(Run(
 +                    sessionId: sid, what: info.what, lastActive: m, agents: agents.count,
@@ -1669,10 +1693,14 @@ index 0000000..396aa75
 +                    dollars: backgroundCost.dollars(transcript: url)))
 +            }
 +        }
-+        return byProject.map { project, runs in
++        // Only today's transcripts are looked at again.
++        headless = headless.filter { today.contains($0.key) }
++        backgroundCost.prune(keeping: runs)
++        let found = byProject.map { project, runs in
 +            Background(project: project, runs: runs.sorted { ($0.lastActive ?? .distantPast) > ($1.lastActive ?? .distantPast) })
 +        }
 +        .sorted { $0.dollars > $1.dollars }
++        return (found, runs)
 +    }
 +
 +    /// The project and first prompt of a `claude -p` run, from its first lines;
@@ -2266,10 +2294,10 @@ index 0000000..396aa75
 +}
 diff --git a/macos/Sources/Features/Dock/DockCost.swift b/macos/Sources/Features/Dock/DockCost.swift
 new file mode 100644
-index 0000000..d4c0224
+index 0000000..d751429
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockCost.swift
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,196 @@
 +import Foundation
 +
 +/// What a Claude Code session has cost so far, from its transcript, priced as
@@ -2438,6 +2466,16 @@ index 0000000..d4c0224
 +        state.spends.removeAll { $0.date < midnight }
 +        files[url.path] = state
 +        return state.dollars
++    }
++
++    /// Forgets transcripts other than these sessions' (and their subagents'),
++    /// unless they spent money today, which still counts in the day's total.
++    func prune(keeping transcripts: [URL]) {
++        let keep = Set(transcripts.map(\.path))
++        let dirs = transcripts.map { $0.deletingPathExtension().appendingPathComponent("subagents").path + "/" }
++        files = files.filter { path, state in
++            keep.contains(path) || dirs.contains { path.hasPrefix($0) } || !state.spends.isEmpty
++        }
 +    }
 +
 +    /// How full the session's context is now, from its last reply; nil
@@ -2667,9 +2705,194 @@ index 0000000..5c3bff6
 +        }
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockLog.swift b/macos/Sources/Features/Dock/DockLog.swift
+new file mode 100644
+index 0000000..6d9cbd4
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockLog.swift
+@@ -0,0 +1,179 @@
++import Foundation
++import os
++
++/// Ghostty Dock's log: failures, and key events such as restores, restarts,
++/// moves and updates. Nothing is logged while things work quietly. Read it in
++/// Console.app (search "ghosttydock") or with:
++///   log show --last 1h --predicate 'subsystem == "consulting.cloudscale.ghosttydock"'
++enum DockLog {
++    static let subsystem = "consulting.cloudscale.ghosttydock"
++    static let sessions = Logger(subsystem: subsystem, category: "sessions")
++    static let restart = Logger(subsystem: subsystem, category: "restart")
++    static let updates = Logger(subsystem: subsystem, category: "updates")
++    static let files = Logger(subsystem: subsystem, category: "files")
++    static let tools = Logger(subsystem: subsystem, category: "tools")
++
++    /// Writes data to a file, logging why when it cannot.
++    @discardableResult
++    static func write(_ data: Data, to url: URL, atomic: Bool = true) -> Bool {
++        do {
++            try data.write(to: url, options: atomic ? .atomic : [])
++            return true
++        } catch {
++            files.error("could not write \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
++            return false
++        }
++    }
++
++    /// Removes a file, logging why when it cannot (a missing file is fine).
++    static func remove(_ url: URL) {
++        do {
++            try FileManager.default.removeItem(at: url)
++        } catch CocoaError.fileNoSuchFile {
++        } catch {
++            files.error("could not remove \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
++        }
++    }
++}
++
++/// Runs the Dock's helper programs: with a time limit when it waits for one,
++/// and a log line when one cannot start, fails or runs too long.
++enum DockProcess {
++    struct Result {
++        var status: Int32
++        var output: Data
++        var text: String { String(decoding: output, as: UTF8.self) }
++    }
++
++    /// Output read on other threads, handed over once both are done.
++    private final class Box: @unchecked Sendable {
++        var out = Data()
++        var err = Data()
++    }
++
++    /// Runs a program and waits up to `timeout` seconds. Nil when it could
++    /// not start or ran too long (it is then killed). Exit codes in `quiet`
++    /// are answers, not failures, and are not logged (pgrep's 1, "none").
++    static func run(_ path: String, _ args: [String], in dir: String? = nil,
++                    environment: [String: String]? = nil, timeout: TimeInterval = 30,
++                    quiet: Set<Int32> = [], log: Logger = DockLog.tools) -> Result? {
++        let p = Process()
++        p.executableURL = URL(fileURLWithPath: path)
++        p.arguments = args
++        if let dir { p.currentDirectoryURL = URL(fileURLWithPath: dir) }
++        if let environment { p.environment = environment }
++        let out = Pipe(), err = Pipe()
++        p.standardOutput = out
++        p.standardError = err
++        p.standardInput = FileHandle.nullDevice
++        let name = Self.name(path, args)
++        let group = DispatchGroup()
++        group.enter()
++        p.terminationHandler = { _ in group.leave() }
++        do {
++            try p.run()
++        } catch {
++            group.leave()
++            log.error("\(name, privacy: .public) did not start: \(error.localizedDescription, privacy: .public)")
++            return nil
++        }
++        let box = Box()
++        group.enter()
++        DispatchQueue.global(qos: .utility).async {
++            box.out = out.fileHandleForReading.readDataToEndOfFile()
++            group.leave()
++        }
++        group.enter()
++        DispatchQueue.global(qos: .utility).async {
++            box.err = err.fileHandleForReading.readDataToEndOfFile()
++            group.leave()
++        }
++        if group.wait(timeout: .now() + timeout) == .timedOut {
++            p.terminate()
++            if group.wait(timeout: .now() + 2) == .timedOut, p.isRunning { kill(p.processIdentifier, SIGKILL) }
++            log.error("\(name, privacy: .public) ran over \(Int(timeout))s and was stopped")
++            return nil
++        }
++        let status = p.terminationStatus
++        if status != 0 && !quiet.contains(status) {
++            log.error("\(name, privacy: .public) failed (exit \(status)): \(tail(box.err), privacy: .public)")
++        }
++        return Result(status: status, output: box.out)
++    }
++
++    /// Starts a program and does not wait for it. Its output goes nowhere;
++    /// false, and a log line, when it cannot start.
++    @discardableResult
++    static func launch(_ path: String, _ args: [String], log: Logger = DockLog.tools) -> Bool {
++        let p = Process()
++        p.executableURL = URL(fileURLWithPath: path)
++        p.arguments = args
++        p.standardInput = FileHandle.nullDevice
++        p.standardOutput = FileHandle.nullDevice
++        p.standardError = FileHandle.nullDevice
++        do {
++            try p.run()
++            return true
++        } catch {
++            log.error("\(Self.name(path, args), privacy: .public) did not start: \(error.localizedDescription, privacy: .public)")
++            return false
++        }
++    }
++
++    /// "ghostty-dock-restart --save": the script, not bash, and its first arguments.
++    private static func name(_ path: String, _ args: [String]) -> String {
++        let shown = path.hasSuffix("/bash") || path.hasSuffix("/env") ? args : [path] + args
++        return shown.prefix(3).enumerated()
++            .map { $0.offset == 0 ? ($0.element as NSString).lastPathComponent : $0.element }
++            .joined(separator: " ")
++    }
++
++    /// The last few lines of a program's error output.
++    private static func tail(_ data: Data) -> String {
++        let lines = String(decoding: data, as: UTF8.self).split(separator: "\n").suffix(5)
++        return lines.isEmpty ? "no error output" : lines.joined(separator: " | ")
++    }
++}
++
++/// Tidies the state folder a few minutes after the app starts (once the
++/// restore has stopped writing its log): the scripts' logs keep their last
++/// 2000 lines, and per-process and per-tab notes older than a week go.
++enum DockHousekeeping {
++    static func run() {
++        DispatchQueue.global(qos: .background).asyncAfter(deadline: .now() + 300) {
++            let fm = FileManager.default
++            let dir = fm.homeDirectoryForCurrentUser.appendingPathComponent(".local/state/ghostty-dock")
++            for name in ["restart-dock.log", "update.log", "move-to-dock.log", "sessions-snapshot.tsv"] {
++                trim(dir.appendingPathComponent(name), keep: 2000)
++            }
++            let weekAgo = Date().addingTimeInterval(-7 * 86400)
++            var removed = 0
++            for sub in ["lineage", "tabs"] {
++                let urls = (try? fm.contentsOfDirectory(at: dir.appendingPathComponent(sub),
++                                                        includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
++                for url in urls {
++                    guard let m = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
++                          m < weekAgo else { continue }
++                    DockLog.remove(url)
++                    removed += 1
++                }
++            }
++            if removed > 0 { DockLog.files.notice("removed \(removed) notes older than a week") }
++        }
++    }
++
++    /// Keeps a file's last `keep` lines. Left alone while it is short.
++    private static func trim(_ url: URL, keep: Int) {
++        // Not while a script is writing to it.
++        guard let m = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
++              Date().timeIntervalSince(m) > 10,
++              let data = try? Data(contentsOf: url) else { return }
++        let lines = data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false)
++        guard lines.count > keep + 200 else { return }
++        var kept = Data(lines.suffix(keep + 1).joined(separator: [UInt8(ascii: "\n")]))
++        if kept.first == UInt8(ascii: "\n") { kept.removeFirst() }
++        if DockLog.write(kept, to: url) {
++            DockLog.files.notice("trimmed \(url.lastPathComponent, privacy: .public) to its last \(keep) lines")
++        }
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockNotices.swift b/macos/Sources/Features/Dock/DockNotices.swift
 new file mode 100644
-index 0000000..9a04d08
+index 0000000..cfcdb9b
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockNotices.swift
 @@ -0,0 +1,143 @@
@@ -2741,7 +2964,7 @@ index 0000000..9a04d08
 +
 +    private func save() {
 +        guard let data = try? JSONEncoder().encode(items) else { return }
-+        try? data.write(to: file, options: .atomic)
++        DockLog.write(data, to: file)
 +    }
 +}
 +
@@ -3381,10 +3604,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..f7089bc
+index 0000000..04c41de
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1043 @@
+@@ -0,0 +1,1053 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -3612,6 +3835,7 @@ index 0000000..f7089bc
 +        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.refresh() }
 +        moveTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refreshMovable() }
 +        refreshMovable()
++        DockHousekeeping.run()
 +        startSessionRestore()
 +        watchSessions()
 +        MainActor.assumeIsolated {
@@ -3630,27 +3854,34 @@ index 0000000..f7089bc
 +        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/ghostty-dock-restart").path
 +    }
 +    private var saveTimer: Timer?
++    private var saving = false
++    private var listing = false
 +
 +    /// Records the open sessions every few seconds, and reopens the ones
 +    /// recorded before a quit or crash when the app starts.
 +    private func startSessionRestore() {
 +        let restarter = restarter
-+        guard FileManager.default.isExecutableFile(atPath: restarter) else { return }
-+        let run: ([String]) -> Void = { args in
-+            DispatchQueue.global(qos: .utility).async {
-+                let p = Process()
-+                p.executableURL = URL(fileURLWithPath: "/bin/bash")
-+                p.arguments = [restarter] + args
-+                p.standardOutput = FileHandle.nullDevice
-+                p.standardError = FileHandle.nullDevice
-+                guard (try? p.run()) != nil else { return }
-+                p.waitUntilExit()
-+            }
++        guard FileManager.default.isExecutableFile(atPath: restarter) else {
++            DockLog.restart.error("ghostty-dock-restart is not installed: sessions are not saved or restored")
++            return
 +        }
 +        // After the first window is up, so the sessions open as its tabs.
 +        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-+            if DockSettings.restoreSessions { run(["--restore"]) }
-+            self.saveTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { _ in run(["--save"]) }
++            if DockSettings.restoreSessions {
++                DockLog.restart.notice("restoring the sessions open before the last quit")
++                DispatchQueue.global(qos: .utility).async {
++                    _ = DockProcess.run("/bin/bash", [restarter, "--restore"], timeout: 300, log: DockLog.restart)
++                }
++            }
++            self.saveTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
++                // One at a time: a slow save must not stack up behind itself.
++                guard let self, !self.saving else { return }
++                self.saving = true
++                DispatchQueue.global(qos: .utility).async {
++                    _ = DockProcess.run("/bin/bash", [restarter, "--save"], timeout: 60, log: DockLog.restart)
++                    DispatchQueue.main.async { self.saving = false }
++                }
++            }
 +        }
 +    }
 +
@@ -3660,17 +3891,14 @@ index 0000000..f7089bc
 +
 +    private func refreshMovable() {
 +        let mover = mover
-+        guard FileManager.default.isExecutableFile(atPath: mover) else { return }
++        guard !listing, FileManager.default.isExecutableFile(atPath: mover) else { return }
++        listing = true
 +        DispatchQueue.global(qos: .utility).async { [weak self] in
-+            let out = Pipe()
-+            let p = Process()
-+            p.executableURL = URL(fileURLWithPath: "/bin/bash")
-+            p.arguments = [mover, "--list"]
-+            p.standardOutput = out
-+            p.standardError = FileHandle.nullDevice
-+            guard (try? p.run()) != nil else { return }
-+            let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-+            p.waitUntilExit()
++            let text = DockProcess.run("/bin/bash", [mover, "--list"], timeout: 30, log: DockLog.sessions)?.text
++            guard let text else {
++                DispatchQueue.main.async { self?.listing = false }
++                return
++            }
 +            var windows: [Undocked] = []
 +            var leaving: Set<String> = []
 +            var restarts: Set<String> = []
@@ -3688,6 +3916,7 @@ index 0000000..f7089bc
 +            let missing = self?.readMissing() ?? []
 +            DispatchQueue.main.async {
 +                guard let self else { return }
++                self.listing = false
 +                self.noticeMissing(missing)
 +                if self.undocked != windows { self.undocked = windows }
 +                if self.undocking != leaving { self.undocking = leaving }
@@ -3697,13 +3926,13 @@ index 0000000..f7089bc
 +    }
 +
 +    private func runMover(_ args: [String]) {
-+        guard FileManager.default.isExecutableFile(atPath: mover) else { NSSound.beep(); return }
-+        let p = Process()
-+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
-+        p.arguments = [mover, "--detach"] + args
-+        p.standardOutput = FileHandle.nullDevice
-+        p.standardError = FileHandle.nullDevice
-+        try? p.run()
++        guard FileManager.default.isExecutableFile(atPath: mover) else {
++            DockLog.sessions.error("ghostty-dock-move is not installed")
++            NSSound.beep()
++            return
++        }
++        DockLog.sessions.notice("move \(args.joined(separator: " "), privacy: .public)")
++        DockProcess.launch("/bin/bash", [mover, "--detach"] + args, log: DockLog.sessions)
 +        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.refreshMovable() }
 +    }
 +
@@ -3788,13 +4017,8 @@ index 0000000..f7089bc
 +                NSWorkspace.shared.open(Self.burstURL)
 +                return
 +            }
-+            let p = Process()
-+            p.executableURL = URL(fileURLWithPath: "/bin/bash")
-+            p.arguments = [opener, "--command", Self.burstSetup,
-+                           FileManager.default.homeDirectoryForCurrentUser.path]
-+            p.standardOutput = FileHandle.nullDevice
-+            p.standardError = FileHandle.nullDevice
-+            try? p.run()
++            DockProcess.launch("/bin/bash", [opener, "--command", Self.burstSetup,
++                                              FileManager.default.homeDirectoryForCurrentUser.path])
 +        case .alertSecondButtonReturn:
 +            NSWorkspace.shared.open(Self.burstURL)
 +        default:
@@ -3904,6 +4128,12 @@ index 0000000..f7089bc
 +    /// thread: the first read of a long transcript takes a moment.
 +    private func refreshCosts() {
 +        let files = rows.compactMap { r in r.sessionId.flatMap { sid in transcript(sid).map { (sid, $0) } } }
++        // Lookups of sessions no longer open.
++        let open = Set(rows.compactMap(\.sessionId))
++        transcripts = transcripts.filter { open.contains($0.key) }
++        transcriptMissed = transcriptMissed.filter { open.contains($0.key) }
++        startedCache = startedCache.filter { open.contains($0.key) }
++        startedMissed = startedMissed.filter { open.contains($0.key) }
 +        var folders: [String: (dir: String, pid: Int32?)] = [:]
 +        if DockSettings.showWorkspace {
 +            for r in rows where !r.detail.isEmpty { folders[r.key] = (r.detail, r.pid) }
@@ -3919,6 +4149,7 @@ index 0000000..f7089bc
 +                sizes[sid] = self.costMeter.context(transcript: url)
 +            }
 +            let velocity = self.costMeter.velocity()
++            self.costMeter.prune(keeping: files.map(\.1))
 +            DispatchQueue.main.async {
 +                let merged = self.costs.merging(found) { _, new in new }
 +                if merged != self.costs { self.costs = merged }
@@ -4207,13 +4438,14 @@ index 0000000..f7089bc
 +    func reopen(_ c: Closed) -> Bool {
 +        closed.removeAll { $0 == c }
 +        let opener = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/ghostty-dock-open").path
-+        guard FileManager.default.isExecutableFile(atPath: opener) else { return false }
-+        let p = Process()
-+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
-+        p.arguments = [opener, "--command", "caffeinate -i claude --resume \(c.sessionId) \(c.flags)", c.folder]
-+        p.standardOutput = FileHandle.nullDevice
-+        p.standardError = FileHandle.nullDevice
-+        return (try? p.run()) != nil
++        guard FileManager.default.isExecutableFile(atPath: opener) else {
++            DockLog.sessions.error("ghostty-dock-open is not installed: cannot reopen \(c.name, privacy: .public)")
++            return false
++        }
++        DockLog.sessions.notice("reopen \(c.name, privacy: .public) (\(c.sessionId, privacy: .public))")
++        return DockProcess.launch("/bin/bash", [opener, "--command",
++                                                "caffeinate -i claude --resume \(c.sessionId) \(c.flags)", c.folder],
++                                  log: DockLog.sessions)
 +    }
 +
 +    // MARK: Sessions that did not come back
@@ -4237,9 +4469,10 @@ index 0000000..f7089bc
 +    private func noticeMissing(_ listed: [Closed]) {
 +        let running = Set(rows.compactMap(\.sessionId))
 +        let now = listed.filter { !running.contains($0.sessionId) }
-+        if now.isEmpty && !listed.isEmpty { try? FileManager.default.removeItem(at: missingFile) }
++        if now.isEmpty && !listed.isEmpty { DockLog.remove(missingFile) }
 +        let fresh = now.filter { c in !missing.contains { $0.sessionId == c.sessionId } }
 +        if !fresh.isEmpty {
++            DockLog.restart.error("did not come back: \(fresh.map(\.name).joined(separator: ", "), privacy: .public)")
 +            postNotice(id: "ghostty-dock-missing",
 +                       title: now.count == 1 ? "\(now[0].name) didn't come back" : "\(now.count) sessions didn't come back",
 +                       body: "Open Ghostty Dock and click Reopen at the top of the sidebar.")
@@ -4250,12 +4483,8 @@ index 0000000..f7089bc
 +    /// Reopens every missing session, checking each starts.
 +    func reopenMissing() {
 +        guard FileManager.default.isExecutableFile(atPath: restarter) else { NSSound.beep(); return }
-+        let p = Process()
-+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
-+        p.arguments = [restarter, "--reopen-missing"]
-+        p.standardOutput = FileHandle.nullDevice
-+        p.standardError = FileHandle.nullDevice
-+        try? p.run()
++        DockLog.restart.notice("reopen \(self.missing.count) missing sessions")
++        DockProcess.launch("/bin/bash", [restarter, "--reopen-missing"], log: DockLog.restart)
 +        missing = []
 +    }
 +
@@ -4404,8 +4633,12 @@ index 0000000..f7089bc
 +    }
 +
 +    private func saveSeen() {
++        // Tabs closed over a week ago are forgotten.
++        let open = Set(rows.map(\.key))
++        let weekAgo = Int(Date().timeIntervalSince1970) - 7 * 86400
++        seen = seen.filter { open.contains($0.key) || $0.value >= weekAgo }
 +        guard let data = try? JSONEncoder().encode(seen) else { return }
-+        try? data.write(to: stateDir.appendingPathComponent("seen.json"), options: .atomic)
++        DockLog.write(data, to: stateDir.appendingPathComponent("seen.json"))
 +    }
 +
 +    private func watchSessions() {
@@ -5861,10 +6094,10 @@ index 0000000..b7b34d7
 +}
 diff --git a/macos/Sources/Features/Dock/DockSurfaceError.swift b/macos/Sources/Features/Dock/DockSurfaceError.swift
 new file mode 100644
-index 0000000..0735cc8
+index 0000000..f0b8d41
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSurfaceError.swift
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,105 @@
 +import AppKit
 +import SwiftUI
 +
@@ -5961,14 +6194,8 @@ index 0000000..0735cc8
 +    }
 +
 +    private static func running(_ sid: String) -> Bool {
-+        let p = Process()
-+        p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-+        p.arguments = ["-f", "claude .*--(session-id|resume) \(sid)"]
-+        p.standardOutput = FileHandle.nullDevice
-+        p.standardError = FileHandle.nullDevice
-+        guard (try? p.run()) != nil else { return false }
-+        p.waitUntilExit()
-+        return p.terminationStatus == 0
++        DockProcess.run("/usr/bin/pgrep", ["-f", "claude .*--(session-id|resume) \(sid)"],
++                        timeout: 5, quiet: [1])?.status == 0
 +    }
 +
 +    /// The command without the PATH the opener puts in front of it.
@@ -5978,10 +6205,10 @@ index 0000000..0735cc8
 +}
 diff --git a/macos/Sources/Features/Dock/DockTheme.swift b/macos/Sources/Features/Dock/DockTheme.swift
 new file mode 100644
-index 0000000..c3d922c
+index 0000000..cf53b7e
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockTheme.swift
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,195 @@
 +import AppKit
 +import SwiftUI
 +
@@ -6016,7 +6243,7 @@ index 0000000..c3d922c
 +        let name = selected
 +        try? FileManager.default.createDirectory(at: overrideFile.deletingLastPathComponent(),
 +                                                 withIntermediateDirectories: true)
-+        try? (name.isEmpty ? "" : "theme = \(name)\n").write(to: overrideFile, atomically: true, encoding: .utf8)
++        DockLog.write(Data((name.isEmpty ? "" : "theme = \(name)\n").utf8), to: overrideFile)
 +        cache = nil
 +        configCache = nil
 +        (NSApp.delegate as? AppDelegate)?.reloadConfig(nil)
@@ -6031,10 +6258,23 @@ index 0000000..c3d922c
 +    static func syncClaudeCode() {
 +        cache = nil
 +        configCache = nil
-+        let file = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/settings.json")
++        // Through a symlink to the real file (dotfiles), which an atomic write would replace with a copy.
++        let file = FileManager.default.homeDirectoryForCurrentUser
++            .appendingPathComponent(".claude/settings.json").resolvingSymlinksInPath()
 +        guard let text = try? String(contentsOf: file, encoding: .utf8),
 +              let updated = claudeSettings(text, dark: colours.dark) else { return }
-+        try? updated.write(to: file, atomically: true, encoding: .utf8)
++        // Claude Code writes this file too: read again just before writing,
++        // and give up if it changed in between rather than undo its change.
++        guard (try? String(contentsOf: file, encoding: .utf8)) == text else {
++            DockLog.files.notice("settings.json changed while setting the theme; left for next time")
++            return
++        }
++        do {
++            try updated.write(to: file, atomically: true, encoding: .utf8)
++            DockLog.files.notice("Claude Code theme set to \(colours.dark ? "dark" : "light", privacy: .public)")
++        } catch {
++            DockLog.files.error("could not write \(file.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
++        }
 +    }
 +
 +    /// settings.json with its theme set to light or dark, edited in place so
@@ -6258,10 +6498,10 @@ index 0000000..596cc6e
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..037312c
+index 0000000..befaf2c
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
-@@ -0,0 +1,329 @@
+@@ -0,0 +1,358 @@
 +import AppKit
 +import Combine
 +
@@ -6312,6 +6552,8 @@ index 0000000..037312c
 +    private var restartClicked: Date?
 +    private var installedTimer: Timer?
 +    private var logTimer: Timer?
++    private var logOffset: UInt64 = 0
++    private var installStarted = Date.distantPast
 +
 +    private static func info(_ key: String) -> String? {
 +        Bundle.main.object(forInfoDictionaryKey: key) as? String
@@ -6409,7 +6651,8 @@ index 0000000..037312c
 +        guard answer != .alertSecondButtonReturn else { return }
 +        Self.stopWaitingRestart()
 +        guard answer == .alertFirstButtonReturn else {
-+            try? FileManager.default.removeItem(at: statusURL)
++            DockLog.restart.notice("restart cancelled")
++            DockLog.remove(statusURL)
 +            restartClicked = nil
 +            restarting = false
 +            readRestartStatus()
@@ -6418,16 +6661,14 @@ index 0000000..037312c
 +        let restarter = FileManager.default.homeDirectoryForCurrentUser
 +            .appendingPathComponent(".local/bin/ghostty-dock-restart").path
 +        restartClicked = Date()
-+        DispatchQueue.global(qos: .utility).async { _ = Self.run(restarter, ["--now"]) }
++        DockLog.restart.notice("restart now")
++        DockProcess.launch("/bin/bash", [restarter, "--now"], log: DockLog.restart)
 +    }
 +
 +    /// Ends the ghostty-dock-restart that is waiting for quiet sessions.
 +    private static func stopWaitingRestart() {
-+        let p = Process()
-+        p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-+        p.arguments = ["-f", "ghostty-dock-restart --foreground"]
-+        try? p.run()
-+        p.waitUntilExit()
++        _ = DockProcess.run("/usr/bin/pkill", ["-f", "ghostty-dock-restart --foreground"],
++                            timeout: 5, quiet: [1], log: DockLog.restart)
 +    }
 +
 +    /// Asks first, then restarts once sessions are quiet; they come back as tabs.
@@ -6462,7 +6703,8 @@ index 0000000..037312c
 +        restarting = true
 +        restartClicked = Date()
 +        readRestartStatus()
-+        DispatchQueue.global(qos: .utility).async { _ = Self.run(restarter, []) }
++        DockLog.restart.notice("restart once sessions are quiet")
++        DockProcess.launch("/bin/bash", [restarter], log: DockLog.restart)
 +    }
 +
 +    func check() {
@@ -6552,25 +6794,59 @@ index 0000000..037312c
 +        guard let script, state != .installing else { return }
 +        state = .installing
 +        progress = "Starting…"
-+        let start = (try? FileManager.default.attributesOfItem(atPath: logURL.path)[.size] as? Int) ?? 0
-+        DispatchQueue.global(qos: .utility).async { _ = Self.run(script, ["--install", "--detach"]) }
-+        logTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-+            self?.followLog(from: start)
++        logOffset = (try? FileManager.default.attributesOfItem(atPath: logURL.path)[.size] as? UInt64) ?? 0
++        installStarted = Date()
++        DockLog.updates.notice("update started")
++        guard DockProcess.launch("/bin/bash", [script, "--install", "--detach"], log: DockLog.updates) else {
++            state = .failed("Could not start the update.")
++            return
 +        }
++        logTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.followLog() }
 +    }
 +
 +    /// Shows the update's progress; it ends with the restart, or a failure.
-+    private func followLog(from offset: Int) {
-+        guard let data = try? Data(contentsOf: logURL), data.count > offset else { return }
-+        let lines = String(decoding: data[offset...], as: UTF8.self)
-+            .split(separator: "\n").map { String($0.dropFirst(9)) }
-+        guard let last = lines.last else { return }
-+        progress = last
-+        if last.hasPrefix("failed: ") {
-+            logTimer?.invalidate()
-+            logTimer = nil
-+            state = .failed(String(last.dropFirst(8)))
++    /// Reads only what was added since the last look.
++    private func followLog() {
++        if let h = try? FileHandle(forReadingFrom: logURL) {
++            defer { try? h.close() }
++            let end = (try? h.seekToEnd()) ?? 0
++            if end > logOffset {
++                try? h.seek(toOffset: logOffset)
++                let data = h.readData(ofLength: Int(end - logOffset))
++                logOffset = end
++                let lines = String(decoding: data, as: UTF8.self).split(separator: "\n").map { String($0.dropFirst(9)) }
++                if let last = lines.last { progress = last }
++            }
 +        }
++        let last = progress
++        if last.hasPrefix("failed: ") {
++            stopFollowing()
++            DockLog.updates.error("update \(last, privacy: .public)")
++            state = .failed(String(last.dropFirst(8)))
++        } else if Date().timeIntervalSince(installStarted) > 15, !Self.updateRunning() {
++            // update.sh is gone without a last word: it was killed, or done.
++            stopFollowing()
++            if last.hasPrefix("installed") {
++                DockLog.updates.notice("update installed")
++            } else {
++                DockLog.updates.error("update stopped at: \(last, privacy: .public)")
++                state = .failed("The update stopped" + (last.isEmpty ? "." : " at: \(last)") + " See update.log.")
++            }
++        }
++    }
++
++    private func stopFollowing() {
++        logTimer?.invalidate()
++        logTimer = nil
++    }
++
++    /// update.sh holds update.pid while it runs.
++    private static func updateRunning() -> Bool {
++        let lock = FileManager.default.homeDirectoryForCurrentUser
++            .appendingPathComponent(".local/state/ghostty-dock/update.pid")
++        guard let text = try? String(contentsOf: lock, encoding: .utf8),
++              let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)) else { return false }
++        return kill(pid, 0) == 0
 +    }
 +
 +    var checkedText: String {
@@ -6579,24 +6855,17 @@ index 0000000..037312c
 +    }
 +
 +    private static func run(_ script: String, _ args: [String]) -> (Int32, String) {
-+        let out = Pipe()
-+        let p = Process()
-+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
-+        p.arguments = [script] + args
-+        p.standardOutput = out
-+        p.standardError = FileHandle.nullDevice
-+        guard (try? p.run()) != nil else { return (1, "") }
-+        let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-+        p.waitUntilExit()
-+        return (p.terminationStatus, text)
++        guard let r = DockProcess.run("/bin/bash", [script] + args, timeout: 120, log: DockLog.updates)
++        else { return (1, "") }
++        return (r.status, r.text)
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockWorkspace.swift b/macos/Sources/Features/Dock/DockWorkspace.swift
 new file mode 100644
-index 0000000..86cd02b
+index 0000000..9be71a4
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockWorkspace.swift
-@@ -0,0 +1,171 @@
+@@ -0,0 +1,168 @@
 +import Foundation
 +
 +/// What each row's folder is up to: its git branch, commits not pushed,
@@ -6708,23 +6977,20 @@ index 0000000..86cd02b
 +
 +    // MARK: Gathering
 +
-+    /// Runs a tool and returns its output, or nil when it fails.
++    /// Runs a tool and returns its output, or nil when it fails. Stopped
++    /// after 10 seconds: a gh waiting on the network or a login must not
++    /// hold up costs and agents, which share its queue.
 +    static func run(_ tool: String, _ args: [String], in dir: String? = nil) -> Data? {
-+        let p = Process()
-+        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-+        p.arguments = [tool] + args
-+        if let dir { p.currentDirectoryURL = URL(fileURLWithPath: dir) }
 +        var env = ProcessInfo.processInfo.environment
 +        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (env["PATH"] ?? "")
 +        env["GIT_OPTIONAL_LOCKS"] = "0"
-+        p.environment = env
-+        let out = Pipe()
-+        p.standardOutput = out
-+        p.standardError = FileHandle.nullDevice
-+        guard (try? p.run()) != nil else { return nil }
-+        let data = out.fileHandleForReading.readDataToEndOfFile()
-+        p.waitUntilExit()
-+        return p.terminationStatus == 0 ? data : nil
++        env["GIT_TERMINAL_PROMPT"] = "0"
++        env["GH_PROMPT_DISABLED"] = "1"
++        // Not a git folder, or no pull request: answers, not failures.
++        guard let r = DockProcess.run("/usr/bin/env", [tool] + args, in: dir, environment: env,
++                                      timeout: 10, quiet: [1, 128]),
++              r.status == 0 else { return nil }
++        return r.output
 +    }
 +}
 +
