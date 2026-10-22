@@ -117,6 +117,8 @@ function install() {
         exit 0
     fi
     echo $$ >"$LOCK"
+    # Killed or interrupted: say so, so the app's Update button does not wait forever.
+    trap 'fail "interrupted"' INT TERM HUP
     log "updating"
     [ -z "$(git -C "$ROOT" status --porcelain --untracked-files=no -- . ':!vendor')" ] ||
         fail "this clone has uncommitted changes ($ROOT)"
@@ -134,6 +136,7 @@ function install() {
     local args=()
     $now && args+=(--now)
     "$ROOT/scripts/restart-dock.sh" "${args[@]}" >>"$LOG" 2>&1 || fail "could not restart; see $LOG"
+    trap - INT TERM HUP
     rm -f "$LOCK"
 }
 
