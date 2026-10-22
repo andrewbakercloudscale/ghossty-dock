@@ -92,6 +92,10 @@ reports each session's status.
   it was; after that, the session is resumed in a new tab with its old flags.
 - **Right-click a row** to rename it, pin it to the top or give it a colour.
   These stick to the session, across restarts.
+- **Colour a session** with the 🎨 header button (or right-click → Colour…):
+  20 colours that sit well together. Its row is tinted in it and its
+  terminal's background takes a little of it, so you can tell at a glance
+  which session you are typing in. None takes it off.
 - **Drag rows** by the ⋮⋮ grip on their right to put them in your own order
   (the sort becomes "As you drag them"), or right-click → Move Up / Move Down.
 - **Groups** (Settings): fold rows under their folder (the project's parent

@@ -2468,10 +2468,10 @@ index 0000000..9a04d08
 +}
 diff --git a/macos/Sources/Features/Dock/DockOrdering.swift b/macos/Sources/Features/Dock/DockOrdering.swift
 new file mode 100644
-index 0000000..389299c
+index 0000000..ca0bfa7
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockOrdering.swift
-@@ -0,0 +1,180 @@
+@@ -0,0 +1,208 @@
 +import Foundation
 +
 +/// What a tab is doing. Raw values are the urgency order: needs you first.
@@ -2494,9 +2494,37 @@ index 0000000..389299c
 +
 +/// A colour you give a row, to mark it or to group by.
 +enum DockTag: String, CaseIterable, Codable {
-+    case red, orange, yellow, green, blue, purple, pink
++    // Round the colour wheel, so neighbours in the picker differ.
++    case red, coral, orange, amber, yellow, lime, green, emerald, teal, cyan
++    case sky, blue, indigo, violet, purple, magenta, pink, rose, brown, slate
 +
 +    var label: String { rawValue.capitalized }
++
++    /// Bright enough on a dark theme, deep enough on a light one.
++    var hex: Int {
++        switch self {
++        case .red: return 0xf0566a
++        case .coral: return 0xff7f66
++        case .orange: return 0xf5913e
++        case .amber: return 0xf2b33d
++        case .yellow: return 0xe8c547
++        case .lime: return 0xa8d14f
++        case .green: return 0x4cc46a
++        case .emerald: return 0x2fb38a
++        case .teal: return 0x2bb3b3
++        case .cyan: return 0x3cc3e6
++        case .sky: return 0x5aa9f0
++        case .blue: return 0x4a90e8
++        case .indigo: return 0x6b72e8
++        case .violet: return 0x8c6cf0
++        case .purple: return 0xa66cf0
++        case .magenta: return 0xd35fd6
++        case .pink: return 0xf06cb4
++        case .rose: return 0xe85d8c
++        case .brown: return 0xb07f5a
++        case .slate: return 0x8a9bb0
++        }
++    }
 +}
 +
 +/// How the sidebar orders and groups its rows. Only Foundation, so
@@ -3003,10 +3031,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..abd05b9
+index 0000000..e112c22
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,992 @@
+@@ -0,0 +1,993 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -3619,6 +3647,7 @@ index 0000000..abd05b9
 +        notify(flat, appActive: appActive)
 +        noticeFailed(flat)
 +        if flat != rows { rows = flat }
++        DockTint.shared.apply(flat)
 +        checkLoading(flat)
 +        if grouped.map(\.id) != groups.map(\.id) || grouped.map(\.items) != groups.map(\.items) { groups = grouped }
 +        let badge = DockSettings.dockBadge && waitingCount > 0 ? "\(waitingCount)" : nil
@@ -4414,10 +4443,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..97d8a2c
+index 0000000..f7cf304
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,879 @@
+@@ -0,0 +1,938 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -4453,17 +4482,7 @@ index 0000000..97d8a2c
 +    }
 +
 +    /// A colour you gave a row.
-+    static func color(_ t: DockTag) -> Color {
-+        switch t {
-+        case .red: return Color(hex: 0xf0566a)
-+        case .orange: return Color(hex: 0xf5913e)
-+        case .yellow: return Color(hex: 0xe8c547)
-+        case .green: return Color(hex: 0x4cc46a)
-+        case .blue: return Color(hex: 0x4a90e8)
-+        case .purple: return Color(hex: 0xa66cf0)
-+        case .pink: return Color(hex: 0xf06cb4)
-+        }
-+    }
++    static func color(_ t: DockTag) -> Color { Color(hex: t.hex) }
 +
 +    static func label(_ s: DockSessions.Status) -> String {
 +        switch s {
@@ -4487,6 +4506,8 @@ index 0000000..97d8a2c
 +    @State private var headerTip: String?
 +    /// The colour of the button the tip is about.
 +    @State private var headerTipColor = DockPalette.blue
++    @State private var showColours = false
++    private var selectedTag: DockTag? { model.rows.first(where: \.selected)?.tag }
 +    @AppStorage(DockSettings.showSidebarKey) private var show = true
 +    @AppStorage(DockSettings.themeKey) private var themeName = ""
 +    @AppStorage(DockSettings.sidebarWidthKey) private var width = Double(Self.width)
@@ -4738,6 +4759,18 @@ index 0000000..97d8a2c
 +            DockHeaderButton(symbol: "arrow.down.to.line", color: DockPalette.peach,
 +                             tip: "Next session that needs you (⌃⌥J)",
 +                             shownTip: $headerTip, tipColor: $headerTipColor, action: model.jumpToNextWaiting)
++            DockHeaderButton(symbol: "paintpalette.fill", color: selectedTag.map(DockPalette.color) ?? DockPalette.color(DockTag.pink),
++                             tip: "Colour this session, its row and its terminal", shownTip: $headerTip,
++                             tipColor: $headerTipColor) {
++                showColours.toggle()
++            }
++            .popover(isPresented: $showColours, arrowEdge: .bottom) {
++                if let row = model.rows.first(where: \.selected) {
++                    DockColourPicker(row: row) { showColours = false }
++                } else {
++                    Text("Click a session first").padding(14)
++                }
++            }
 +            DockHeaderButton(symbol: "gearshape", color: DockPalette.text, tip: "Settings (⌘,)",
 +                             shownTip: $headerTip, tipColor: $headerTipColor) {
 +                DockSettingsWindow.shared.show(near: NSEvent.mouseLocation)
@@ -4747,6 +4780,69 @@ index 0000000..97d8a2c
 +                DockAboutWindow.shared.show(near: NSEvent.mouseLocation)
 +            }
 +        }
++    }
++}
++
++/// 20 colours for a session, and None. The row and its terminal take it.
++struct DockColourPicker: View {
++    var row: DockSessions.Row
++    var done: () -> Void
++    @State private var hover: DockTag?
++
++    var body: some View {
++        VStack(alignment: .leading, spacing: 10) {
++            Text("Colour for \(row.name)").font(.system(size: 12, weight: .semibold))
++                .foregroundStyle(DockPalette.text).lineLimit(1)
++            LazyVGrid(columns: Array(repeating: GridItem(.fixed(26), spacing: 8), count: 5), spacing: 8) {
++                ForEach(DockTag.allCases, id: \.self) { tag in
++                    Button {
++                        DockSessions.shared.setTag(row, tag)
++                        done()
++                    } label: {
++                        Circle().fill(DockPalette.color(tag))
++                            .frame(width: 24, height: 24)
++                            .overlay(Circle().strokeBorder(DockPalette.text, lineWidth: row.tag == tag ? 2.5 : 0))
++                            .overlay(row.tag == tag ? Image(systemName: "checkmark")
++                                .font(.system(size: 10, weight: .heavy)).foregroundStyle(.white) : nil)
++                            .scaleEffect(hover == tag ? 1.15 : 1)
++                    }
++                    .buttonStyle(.plain)
++                    .onHover { hover = $0 ? tag : (hover == tag ? nil : hover) }
++                    .help(tag.label)
++                }
++            }
++            HStack {
++                Text(hover?.label ?? row.tag?.label ?? "No colour")
++                    .font(.system(size: 11)).foregroundStyle(DockPalette.grey)
++                Spacer()
++                Button("None") {
++                    DockSessions.shared.setTag(row, nil)
++                    done()
++                }
++                .disabled(row.tag == nil)
++            }
++        }
++        .padding(14)
++        .frame(width: 200)
++        .background(DockPalette.base)
++        .environment(\.colorScheme, DockPalette.scheme)
++        .animation(.easeOut(duration: 0.1), value: hover)
++    }
++}
++
++/// The picker in a small panel near the pointer, for the row's menu.
++enum DockColourPanel {
++    private static var panel: NSPanel?
++
++    static func show(for row: DockSessions.Row) {
++        panel?.close()
++        let p = NSPanel(contentRect: .zero, styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
++        p.title = "Colour"
++        p.isReleasedWhenClosed = false
++        p.contentViewController = NSHostingController(rootView: DockColourPicker(row: row) { panel?.close() })
++        p.place(near: NSEvent.mouseLocation)
++        p.makeKeyAndOrderFront(nil)
++        panel = p
 +    }
 +}
 +
@@ -4869,9 +4965,6 @@ index 0000000..97d8a2c
 +                        .foregroundStyle(DockPalette.text)
 +                        .lineLimit(1)
 +                        .truncationMode(.middle)
-+                    if let tag = row.tag {
-+                        Circle().fill(DockPalette.color(tag)).frame(width: 7, height: 7)
-+                    }
 +                }
 +                TimelineView(.periodic(from: .now, by: 30)) { ctx in
 +                    Text(row.failed ? "Didn't start · see the tab" : subtitle(now: ctx.date))
@@ -4946,11 +5039,13 @@ index 0000000..97d8a2c
 +        .padding(.vertical, 6)
 +        .background(
 +            RoundedRectangle(cornerRadius: 7)
-+                .fill(row.selected ? DockPalette.blue.opacity(0.24) : hover ? DockPalette.base : Color.clear)
++                .fill(row.selected ? accent.opacity(0.28)
++                      : row.tag != nil ? accent.opacity(hover ? 0.24 : 0.16)
++                      : hover ? DockPalette.base : Color.clear)
 +        )
 +        .overlay {
 +            if row.selected {
-+                RoundedRectangle(cornerRadius: 7).strokeBorder(DockPalette.blue.opacity(0.8), lineWidth: 1.5)
++                RoundedRectangle(cornerRadius: 7).strokeBorder(accent.opacity(0.85), lineWidth: 1.5)
 +            } else if row.status == .waiting {
 +                DockAttentionRing()
 +            }
@@ -4959,8 +5054,8 @@ index 0000000..97d8a2c
 +            if row.status == .running { DockRunningShimmer() }
 +        }
 +        .overlay(alignment: .leading) {
-+            if row.selected {
-+                RoundedRectangle(cornerRadius: 2).fill(DockPalette.blue).frame(width: 4, height: 28).offset(x: -4)
++            if row.selected || row.tag != nil {
++                RoundedRectangle(cornerRadius: 2).fill(accent).frame(width: 4, height: 28).offset(x: -4)
 +            }
 +        }
 +        .contentShape(Rectangle())
@@ -4983,17 +5078,7 @@ index 0000000..97d8a2c
 +                .disabled(model.visibleRows.first?.key == row.key)
 +            Button("Move Down") { model.move(row, by: 1) }
 +                .disabled(model.visibleRows.last?.key == row.key)
-+            Menu("Colour") {
-+                ForEach(DockTag.allCases, id: \.self) { tag in
-+                    Button {
-+                        model.setTag(row, row.tag == tag ? nil : tag)
-+                    } label: {
-+                        Label(tag.label, systemImage: row.tag == tag ? "checkmark.circle.fill" : "circle.fill")
-+                    }
-+                }
-+                Divider()
-+                Button("None") { model.setTag(row, nil) }.disabled(row.tag == nil)
-+            }
++            Button("Colour…") { DockColourPanel.show(for: row) }
 +            Divider()
 +            if row.sessionId != nil {
 +                if DockSessions.burstInstalled {
@@ -5012,6 +5097,9 @@ index 0000000..97d8a2c
 +            Button("Close Tab", action: onClose)
 +        }
 +    }
++
++    /// The colour you gave the row, or the selection blue.
++    private var accent: Color { row.tag.map(DockPalette.color) ?? DockPalette.blue }
 +
 +    private func subtitle(now: Date) -> String {
 +        let label = DockPalette.label(row.status)
@@ -5600,6 +5688,98 @@ index 0000000..c3d922c
 +    init(hex: Int) {
 +        self.init(red: Double((hex >> 16) & 0xff) / 255, green: Double((hex >> 8) & 0xff) / 255,
 +                  blue: Double(hex & 0xff) / 255)
++    }
++}
+diff --git a/macos/Sources/Features/Dock/DockTint.swift b/macos/Sources/Features/Dock/DockTint.swift
+new file mode 100644
+index 0000000..596cc6e
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockTint.swift
+@@ -0,0 +1,86 @@
++import AppKit
++import GhosttyKit
++import SwiftUI
++
++/// Gives the terminal of a row you coloured a background tinted with that
++/// colour, so you can tell at a glance which session you are typing in.
++///
++/// Each surface gets its own config: the app's, plus a background line.
++/// A config reload resets every surface, so the tints are put back after one.
++final class DockTint {
++    static let shared = DockTint()
++
++    /// The background each surface was given, by surface.
++    private var applied: [ObjectIdentifier: Int] = [:]
++    private var observer: NSObjectProtocol?
++
++    private init() {
++        observer = NotificationCenter.default.addObserver(
++            forName: .ghosttyConfigDidChange, object: nil, queue: .main
++        ) { [weak self] note in
++            // A surface's own change (ours included) has the surface as its object.
++            guard note.object == nil else { return }
++            self?.applied = [:]
++            DockSessions.shared.refresh()
++        }
++    }
++
++    /// How much of the colour goes into the theme's background.
++    private static let strength = 0.16
++
++    func apply(_ rows: [DockSessions.Row]) {
++        var seen = Set<ObjectIdentifier>()
++        for row in rows {
++            guard let controller = row.controller else { continue }
++            let want = row.tag.map(Self.background)
++            for view in controller.surfaceTree {
++                let id = ObjectIdentifier(view)
++                seen.insert(id)
++                guard applied[id] != want else { continue }
++                guard let surface = view.surface, set(surface, background: want) else { continue }
++                applied[id] = want
++            }
++        }
++        applied = applied.filter { seen.contains($0.key) }
++    }
++
++    /// The theme's background with some of the colour mixed in.
++    static func background(_ tag: DockTag) -> Int {
++        let base = NSColor(DockPalette.base).usingColorSpace(.sRGB) ?? .black
++        let mix = { (from: CGFloat, shift: Int) -> Int in
++            let to = Double((tag.hex >> shift) & 0xff) / 255
++            return Int(((Double(from) + (to - Double(from)) * strength) * 255).rounded())
++        }
++        return mix(base.redComponent, 16) << 16 | mix(base.greenComponent, 8) << 8 | mix(base.blueComponent, 0)
++    }
++
++    /// Gives one surface the app's config with this background, or the
++    /// app's own config back with nil.
++    private func set(_ surface: ghostty_surface_t, background: Int?) -> Bool {
++        guard let ghostty = (NSApp.delegate as? AppDelegate)?.ghostty else { return false }
++        guard let background else {
++            ghostty.reloadConfig(surface: surface, soft: true)
++            return true
++        }
++        let file = FileManager.default.temporaryDirectory.appendingPathComponent("ghostty-dock-tint.conf")
++        guard (try? String(format: "background = #%06x\n", background)
++            .write(to: file, atomically: true, encoding: .utf8)) != nil else { return false }
++        let config = Ghostty.Config(config: Self.load(extra: file.path))
++        guard let c = config.config else { return false }
++        ghostty_surface_update_config(surface, c)
++        return true
++    }
++
++    /// The config as Ghostty.Config loads it, with one more file on top.
++    private static func load(extra: String) -> ghostty_config_t? {
++        guard let cfg = ghostty_config_new() else { return nil }
++        ghostty_config_load_default_files(cfg)
++        ghostty_config_load_recursive_files(cfg)
++        if FileManager.default.fileExists(atPath: DockTheme.overrideFile.path) {
++            ghostty_config_load_file(cfg, DockTheme.overrideFile.path)
++        }
++        ghostty_config_load_file(cfg, extra)
++        ghostty_config_finalize(cfg)
++        return cfg
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
