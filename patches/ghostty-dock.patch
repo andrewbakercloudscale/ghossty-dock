@@ -5894,10 +5894,10 @@ index 0000000..596cc6e
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..b212c12
+index 0000000..b745ee1
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
-@@ -0,0 +1,326 @@
+@@ -0,0 +1,329 @@
 +import AppKit
 +import Combine
 +
@@ -6003,6 +6003,9 @@ index 0000000..b212c12
 +        var line: String?
 +        if let attrs = try? FileManager.default.attributesOfItem(atPath: statusURL.path),
 +           let m = attrs[.modificationDate] as? Date, Date().timeIntervalSince(m) < 60,
++           // Written before this app started: the restart that launched it,
++           // which is over, though it lingers while it reopens the sessions.
++           m > (NSRunningApplication.current.launchDate ?? .distantPast),
 +           let text = try? String(contentsOf: statusURL, encoding: .utf8) {
 +            let f = text.trimmingCharacters(in: .newlines)
 +                .split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
