@@ -3120,10 +3120,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..e112c22
+index 0000000..50f2849
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,993 @@
+@@ -0,0 +1,1005 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -3270,7 +3270,13 @@ index 0000000..e112c22
 +    private var seen: [String: Int] = [:]
 +    /// Each tab's key last time, so a tab whose session changes (a restart,
 +    /// claude --continue, claude quitting) keeps its place, name, pin and colour.
-+    private var tabKeys: [ObjectIdentifier: String] = [:]
++    /// Holds the tab itself too: a closed tab's ObjectIdentifier can be
++    /// reused by a new one, which must not inherit the closed tab's colour.
++    private var tabKeys: [ObjectIdentifier: TabKey] = [:]
++    private struct TabKey {
++        let key: String
++        weak var controller: TerminalController?
++    }
 +    /// Session id to its transcript's creation date; nil while not found.
 +    private var startedCache: [String: Date] = [:]
 +    /// When a session's transcript was last looked for and not found.
@@ -3685,8 +3691,11 @@ index 0000000..e112c22
 +                : !title.isEmpty ? title
 +                : (pwd as NSString).lastPathComponent
 +            let key = best?.sid ?? "dir:" + pwd
-+            if let old = tabKeys[id], old != key { carry(from: old, to: key) }
-+            tabKeys[id] = key
++            if let old = tabKeys[id], old.controller === controller, old.key != key,
++               !built.contains(where: { $0.key == key }) {
++                carry(from: old.key, to: key)
++            }
++            tabKeys[id] = TabKey(key: key, controller: controller)
 +            let m = meta[key]
 +            built.append(Row(id: id, key: key,
 +                             name: m?.name ?? (name.isEmpty ? "shell" : name), detail: pwd,
@@ -3800,7 +3809,10 @@ index 0000000..e112c22
 +        }
 +        if let m = meta[old], meta[new] == nil {
 +            meta[new] = m
-+            meta[old] = nil
++            // A session id stays where it is: claude quitting as the app
++            // quits, or a key seen for a moment while tabs come back, must not
++            // take a session's colour away from it.
++            if old.hasPrefix("dir:") { meta[old] = nil }
 +            if let data = try? JSONEncoder().encode(meta) {
 +                UserDefaults.standard.set(data, forKey: DockSettings.rowMetaKey)
 +            }
