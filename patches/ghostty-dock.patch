@@ -4443,10 +4443,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..2d2c875
+index 0000000..f5e4210
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,938 @@
+@@ -0,0 +1,945 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -4663,6 +4663,10 @@ index 0000000..2d2c875
 +                            .lineLimit(1)
 +                            .minimumScaleFactor(0.75)
 +                            .truncationMode(.tail)
++                            .padding(.horizontal, 8)
++                            .padding(.vertical, 3)
++                            .background(Capsule().fill(headerTipColor.opacity(0.16)))
++                            .overlay(Capsule().strokeBorder(headerTipColor.opacity(0.35), lineWidth: 1))
 +                            .frame(maxWidth: .infinity, alignment: .leading)
 +                            .allowsHitTesting(false)
 +                    }
@@ -4701,7 +4705,7 @@ index 0000000..2d2c875
 +            Text("Sessions").font(.system(size: 12, weight: .semibold)).foregroundStyle(DockPalette.text)
 +            Spacer()
 +            if updates.restartPending && updates.state != .installing {
-+                Button { if !updates.restarting { updates.confirmRestart() } } label: {
++                Button { updates.restarting ? updates.confirmRestartNow() : updates.confirmRestart() } label: {
 +                    if updates.restarting {
 +                        DockRestartWaiting()
 +                    } else {
@@ -4714,9 +4718,12 @@ index 0000000..2d2c875
 +                }
 +                .buttonStyle(.plain)
 +                .onHover { inside in
-+                    let tip = updates.restarting ? (updates.restartStatus ?? "Restarting once sessions are quiet…")
++                    let tip = updates.restarting ? "Click to restart now or cancel"
 +                        : "Restart into the new build once sessions are quiet"
-+                    if inside { headerTip = tip; headerTipColor = DockPalette.green }
++                    if inside {
++                        headerTip = tip
++                        headerTipColor = updates.restarting ? DockPalette.color(DockTag.red) : DockPalette.green
++                    }
 +                    else if headerTip == tip { headerTip = nil }
 +                }
 +            }
@@ -5784,10 +5791,10 @@ index 0000000..596cc6e
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..c7f6042
+index 0000000..0d359bd
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
-@@ -0,0 +1,287 @@
+@@ -0,0 +1,324 @@
 +import AppKit
 +import Combine
 +
@@ -5912,6 +5919,43 @@ index 0000000..c7f6042
 +        }
 +        if line != restartStatus { restartStatus = line }
 +        if line != nil, !restarting { restarting = true }
++    }
++
++    /// While a restart waits: restart now (busy sessions are interrupted),
++    /// stop the restart, or keep waiting.
++    func confirmRestartNow() {
++        let alert = NSAlert()
++        let running = DockSessions.shared.rows.filter { $0.status == .running }.map(\.name)
++        alert.messageText = "Restart now?"
++        alert.informativeText = (restartStatus ?? "A restart is waiting for your sessions to be quiet.")
++            + (running.isEmpty ? "" : "\n\nRestarting now interrupts what is running: "
++                + running.joined(separator: ", ") + ". They come back at their prompt.")
++        alert.addButton(withTitle: "Restart Now")
++        alert.addButton(withTitle: "Keep Waiting")
++        alert.addButton(withTitle: "Cancel Restart")
++        let answer = alert.runModalNearPointer()
++        guard answer != .alertSecondButtonReturn else { return }
++        Self.stopWaitingRestart()
++        guard answer == .alertFirstButtonReturn else {
++            try? FileManager.default.removeItem(at: statusURL)
++            restartClicked = nil
++            restarting = false
++            readRestartStatus()
++            return
++        }
++        let restarter = FileManager.default.homeDirectoryForCurrentUser
++            .appendingPathComponent(".local/bin/ghostty-dock-restart").path
++        restartClicked = Date()
++        DispatchQueue.global(qos: .utility).async { _ = Self.run(restarter, ["--now"]) }
++    }
++
++    /// Ends the ghostty-dock-restart that is waiting for quiet sessions.
++    private static func stopWaitingRestart() {
++        let p = Process()
++        p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
++        p.arguments = ["-f", "ghostty-dock-restart --foreground"]
++        try? p.run()
++        p.waitUntilExit()
 +    }
 +
 +    /// Asks first, then restarts once sessions are quiet; they come back as tabs.
