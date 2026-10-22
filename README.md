@@ -201,9 +201,9 @@ of the sidebar. Update runs `scripts/update.sh --install` in the clone the app
 was built from: pull, rebuild, install, then restart once your sessions are
 quiet (they are resumed as tabs). Log: `~/.local/state/ghostty-dock/update.log`.
 
-If a newer build is already installed under the running app (for example
-after `scripts/build-terminal.sh --no-open`), a green **Restart** button (↻)
-appears at the top of the sidebar instead. It asks first, then restarts once
+The **Restart** button (↻) is always at the top of the sidebar; it turns
+into a filled green circle when a newer build is installed under the running
+app (for example after `scripts/build-terminal.sh --no-open`). It asks first, then restarts once
 no session has been busy and you have not typed for 10 seconds (a key press
 starts the 10 seconds again), and reopens them as tabs. While it waits, a
 flashing red ⏳ replaces the Restart button and an orange line under the
