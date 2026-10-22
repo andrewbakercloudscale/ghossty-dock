@@ -24,10 +24,10 @@ MISSING="$STATE_DIR/missing-sessions.tsv"
 STATUS="$STATE_DIR/restart-status"
 OPENER="$HOME/.local/bin/ghostty-dock-open"
 APP_BIN="$HOME/Applications/Ghostty Dock.app/Contents/MacOS/ghostty"
-QUIET_SECS=45
+QUIET_SECS=10
 GIVE_UP_SECS=$((4 * 3600))
 # No restart until the keyboard and mouse have been still this long, so it
-# never lands while you are typing.
+# never lands while you are typing; a key press starts the count again.
 INPUT_IDLE_SECS=10
 
 function usage() {
@@ -121,12 +121,15 @@ function quiet_secs() {
     echo $(($(date +%s) - $(stat -f %m "$file")))
 }
 
+# Waits until no session has been busy for QUIET_SECS and you have not
+# typed for INPUT_IDLE_SECS, both at once; checks every second, so a key
+# press or a session waking puts the countdown back.
 function wait_until_quiet() {
     local sessions="$1"
-    local started
+    local started last=""
     started=$(date +%s)
     while true; do
-        local busy="" active="" left=0
+        local busy="" active="" left=0 idle typing
         local cwd sid flags
         while IFS=$'\t' read -r cwd sid flags; do
             [ -z "$sid" ] && continue
@@ -137,18 +140,23 @@ function wait_until_quiet() {
             [ "$q" -lt 5 ] && active="${active:+$active, }$(basename "$cwd")"
             [ $((QUIET_SECS - q)) -gt "$left" ] && left=$((QUIET_SECS - q))
         done <<<"$sessions"
-        [ -z "$busy" ] && return 0
+        idle=$(input_idle_secs)
+        typing=$((INPUT_IDLE_SECS - ${idle:-$INPUT_IDLE_SECS}))
+        [ -z "$busy" ] && [ "$typing" -le 0 ] && return 0
         if [ $(($(date +%s) - started)) -gt "$GIVE_UP_SECS" ]; then
             log "gave up: still busy:$busy"
             return 1
         fi
         if [ -n "$active" ]; then
             status busy 0 "$active"
+        elif [ "$typing" -gt "$left" ]; then
+            status typing $(($(date +%s) + typing))
         else
             status quiet $(($(date +%s) + left))
         fi
-        log "waiting for:$busy"
-        sleep $((left < 5 ? left + 1 : 5))
+        [ "$busy" != "$last" ] && [ -n "$busy" ] && log "waiting for:$busy"
+        last="$busy"
+        sleep 1
     done
 }
 

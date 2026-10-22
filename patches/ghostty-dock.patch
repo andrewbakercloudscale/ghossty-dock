@@ -4443,7 +4443,7 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..f5e4210
+index 0000000..e2d5c06
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
 @@ -0,0 +1,945 @@
@@ -4649,7 +4649,7 @@ index 0000000..f5e4210
 +                    .lineLimit(2)
 +                    .fixedSize(horizontal: false, vertical: true)
 +                    .help("Ghostty Dock restarts into the new build once every session has been quiet "
-+                          + "for 45 seconds and you have stopped typing for 10")
++                          + "for 10 seconds and you have not typed for 10 (typing starts the count again)")
 +            }
 +            // What the header button under the pointer does, in the
 +            // counters' place while you point at it, so it covers no button.
@@ -5791,7 +5791,7 @@ index 0000000..596cc6e
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..0d359bd
+index 0000000..85cc42e
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
 @@ -0,0 +1,324 @@
@@ -5975,8 +5975,8 @@ index 0000000..0d359bd
 +        alert.messageText = "Restart Ghostty Dock?"
 +        alert.informativeText = """
 +            A newer build is installed. Ghostty Dock restarts once no session has been busy \
-+            for 45 seconds, and reopens each Claude session as a tab with claude --resume \
-+            (plain shell tabs are not reopened).
++            and you have not typed for 10 seconds (typing starts the count again), and reopens \
++            each Claude session as a tab with claude --resume (plain shell tabs are not reopened).
 +            """ + (notes.isEmpty ? "" : "\n\n" + notes.joined(separator: "\n\n"))
 +        alert.addButton(withTitle: "Restart When Quiet")
 +        alert.addButton(withTitle: "Cancel")
