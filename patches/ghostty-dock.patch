@@ -4843,10 +4843,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..5534341
+index 0000000..b7b34d7
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1005 @@
+@@ -0,0 +1,1012 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -5104,22 +5104,29 @@ index 0000000..5534341
 +        HStack(spacing: 2) {
 +            Text("Sessions").font(.system(size: 12, weight: .semibold)).foregroundStyle(DockPalette.text)
 +            Spacer()
-+            if updates.restartPending && updates.state != .installing {
++            // Always there; green and filled when a newer build is installed.
++            if updates.state != .installing {
 +                Button { updates.restarting ? updates.confirmRestartNow() : updates.confirmRestart() } label: {
 +                    if updates.restarting {
 +                        DockRestartWaiting()
-+                    } else {
++                    } else if updates.restartPending {
 +                        Image(systemName: "arrow.clockwise")
 +                            .font(.system(size: 11, weight: .bold))
 +                            .foregroundStyle(DockPalette.base)
 +                            .frame(width: 20, height: 20)
 +                            .background(Circle().fill(DockPalette.green))
++                    } else {
++                        Image(systemName: "arrow.clockwise")
++                            .font(.system(size: 12, weight: .semibold))
++                            .foregroundStyle(DockPalette.green)
++                            .frame(width: 20, height: 20)
 +                    }
 +                }
 +                .buttonStyle(.plain)
 +                .onHover { inside in
 +                    let tip = updates.restarting ? "Click to restart now or cancel"
-+                        : "Restart into the new build once sessions are quiet"
++                        : updates.restartPending ? "Restart into the new build once sessions are quiet"
++                        : "Restart Ghostty Dock once sessions are quiet"
 +                    if inside {
 +                        headerTip = tip
 +                        headerTipColor = updates.restarting ? DockPalette.color(DockTag.red) : DockPalette.green
@@ -6251,7 +6258,7 @@ index 0000000..596cc6e
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..b745ee1
+index 0000000..037312c
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
 @@ -0,0 +1,329 @@
@@ -6439,7 +6446,7 @@ index 0000000..b745ee1
 +        }
 +        alert.messageText = "Restart Ghostty Dock?"
 +        alert.informativeText = """
-+            A newer build is installed. Ghostty Dock restarts once no session has been busy \
++            \(restartPending ? "A newer build is installed. " : "")Ghostty Dock restarts once no session has been busy \
 +            and you have not typed for 10 seconds (typing starts the count again), and reopens \
 +            each Claude session as a tab with claude --resume (plain shell tabs are not reopened).
 +            """ + (notes.isEmpty ? "" : "\n\n" + notes.joined(separator: "\n\n"))
