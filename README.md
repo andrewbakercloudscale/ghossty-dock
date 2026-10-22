@@ -2,7 +2,8 @@
 
 Ghostty with a Chrome-style vertical tab sidebar: one window, one Dock icon,
 every Claude Code session as a tab, coloured by status (needs you, running,
-finished, idle, shell) and sorted by name so rows stay put. Ctrl-Opt-J jumps to the
+finished, idle, shell) and sorted by name so rows stay put. Give a session one of
+20 colours and its row and terminal both take it. Ctrl-Opt-J jumps to the
 next session waiting for you.
 
 ![Ghostty Dock window](docs/window.png)
@@ -88,6 +89,10 @@ reports each session's status.
   A **Spend** line shows how fast money is going across every open session,
   agents included: $/hr now (last 10 minutes), last hour, today's average
   $/hr, today, and tokens a minute.
+
+  ![Agents window: four tiles, then each session's agents](docs/agents.png)
+
+  ![Agents Set Up: every agent definition, with an editor](docs/agent-setup.png)
 - **Reopen closed (⌘⇧T)**: within a few seconds Ghostty brings the tab back as
   it was; after that, the session is resumed in a new tab with its old flags.
 - **Right-click a row** to rename it, pin it to the top or give it a colour.
@@ -96,6 +101,10 @@ reports each session's status.
   20 colours that sit well together. Its row is tinted in it and its
   terminal's background takes a little of it, so you can tell at a glance
   which session you are typing in. None takes it off.
+
+  <img src="docs/colour-picker.png" width="340" alt="Colour picker: 20 colours for the selected session">
+
+  ![A violet session: its row and its terminal are both tinted](docs/colour-tint.png)
 - **Drag rows** by the ⋮⋮ grip on their right to put them in your own order
   (the sort becomes "As you drag them"), or right-click → Move Up / Move Down.
 - **Groups** (Settings): fold rows under their folder (the project's parent
