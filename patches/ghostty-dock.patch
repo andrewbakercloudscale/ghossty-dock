@@ -317,10 +317,10 @@ index 0000000..0851575
 +}
 diff --git a/macos/Sources/Features/Dock/DockAbout.swift b/macos/Sources/Features/Dock/DockAbout.swift
 new file mode 100644
-index 0000000..eff4a1a
+index 0000000..22b4d45
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAbout.swift
-@@ -0,0 +1,350 @@
+@@ -0,0 +1,397 @@
 +import AppKit
 +import SwiftUI
 +
@@ -329,6 +329,7 @@ index 0000000..eff4a1a
 +struct DockAboutView: View {
 +    @ObservedObject var updates = DockUpdates.shared
 +    @State private var copied = false
++    @State private var shareCopied = false
 +    @AppStorage(DockSettings.themeKey) private var themeName = ""
 +
 +    static let linkedIn = URL(string: "https://www.linkedin.com/in/andrew-baker-ninja/")!
@@ -342,6 +343,7 @@ index 0000000..eff4a1a
 +        ScrollView {
 +            VStack(alignment: .leading, spacing: 14) {
 +                hero
++                shareCard
 +                updatesCard
 +                author
 +                project
@@ -444,8 +446,53 @@ index 0000000..eff4a1a
 +                Text("This clone has \(updates.ahead) commit\(updates.ahead == 1 ? "" : "s") not on GitHub yet; push them before updating.")
 +                    .font(.callout).foregroundStyle(DockPalette.peach).fixedSize(horizontal: false, vertical: true)
 +            }
-+            Text("Checks run a minute after launch and every 6 hours. Update pulls GitHub's latest into the clone it was built from, rebuilds, and restarts once your sessions are quiet. They come back as tabs.")
++            Text("Checks run a minute after launch and every 6 hours. " + (DockUpdates.fromRelease
++                ? "Update downloads GitHub's latest release"
++                : "Update pulls GitHub's latest into the clone it was built from, rebuilds,")
++                + " and restarts once your sessions are quiet. They come back as tabs.")
 +                .font(.callout).foregroundStyle(DockPalette.text).fixedSize(horizontal: false, vertical: true)
++        }
++    }
++
++    static let installCommand = "curl -fsSL https://raw.githubusercontent.com/\(DockUpdates.repo)/main/get.sh | bash"
++
++    /// What a friend gets: what it is and the one line that installs it.
++    static var shareMessage: String {
++        """
++        Try Ghostty Dock: every Claude Code session as a tab in one window, coloured by whether it needs you, is running or has finished.
++
++        To install it on a Mac with Apple silicon, open Terminal and paste:
++
++        \(installCommand)
++
++        More: \(DockUpdates.repoPage.absoluteString)
++        """
++    }
++
++    private var shareCard: some View {
++        DockCard(title: "Share with a friend", symbol: "heart.fill", tint: DockPalette.mauve) {
++            Text("Sends an install message by Messages, WhatsApp, Mail or AirDrop. They paste one line into Terminal and it installs, with nothing to build.")
++                .font(.callout).foregroundStyle(DockPalette.text).fixedSize(horizontal: false, vertical: true)
++            Text(Self.installCommand)
++                .font(.caption.monospaced()).foregroundStyle(DockPalette.teal)
++                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
++                .padding(8).frame(maxWidth: .infinity, alignment: .leading)
++                .background(RoundedRectangle(cornerRadius: 8).fill(DockPalette.teal.opacity(0.08)))
++            HStack(spacing: 8) {
++                ShareLink(item: Self.shareMessage, subject: Text("Ghostty Dock"), message: Text(Self.shareMessage)) {
++                    Label("Share…", systemImage: "square.and.arrow.up")
++                }
++                .buttonStyle(DockFilledButton(color: DockPalette.mauve))
++                Button {
++                    NSPasteboard.general.clearContents()
++                    NSPasteboard.general.setString(Self.shareMessage, forType: .string)
++                    shareCopied = true
++                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { shareCopied = false }
++                } label: {
++                    Label(shareCopied ? "Copied" : "Copy message", systemImage: shareCopied ? "checkmark" : "doc.on.doc")
++                }
++                .buttonStyle(DockPillButton(color: DockPalette.mauve))
++            }
 +        }
 +    }
 +
@@ -6498,10 +6545,10 @@ index 0000000..596cc6e
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..befaf2c
+index 0000000..63bb112
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
-@@ -0,0 +1,358 @@
+@@ -0,0 +1,368 @@
 +import AppKit
 +import Combine
 +
@@ -6564,10 +6611,20 @@ index 0000000..befaf2c
 +    static var built: Date? { info("GhosttyDockBuilt").flatMap { ISO8601DateFormatter().date(from: $0) } }
 +    static var ghosttyVersion: String { info("CFBundleShortVersionString") ?? "?" }
 +
++    /// Where get.sh unpacks a release: no clone, update.sh checks releases.
++    static let releaseFolder = FileManager.default.homeDirectoryForCurrentUser
++        .appendingPathComponent(".local/share/ghostty-dock").path
++
++    /// The clone this was built from, else the release it was installed from.
 +    private var script: String? {
-+        guard let source = Self.source else { return nil }
-+        let path = (source as NSString).appendingPathComponent("scripts/update.sh")
-+        return FileManager.default.isExecutableFile(atPath: path) ? path : nil
++        [Self.source, Self.releaseFolder].compactMap { $0 }
++            .map { ($0 as NSString).appendingPathComponent("scripts/update.sh") }
++            .first { FileManager.default.isExecutableFile(atPath: $0) }
++    }
++
++    /// Installed with get.sh rather than built from a clone here.
++    static var fromRelease: Bool {
++        !FileManager.default.fileExists(atPath: (source.map { ($0 as NSString).appendingPathComponent(".git") }) ?? "/nonexistent")
 +    }
 +
 +    private let logURL = FileManager.default.homeDirectoryForCurrentUser
@@ -6710,7 +6767,7 @@ index 0000000..befaf2c
 +    func check() {
 +        guard state != .checking, state != .installing else { return }
 +        guard let script else {
-+            state = .failed("The clone this was built from is gone, so there is nothing to update from.")
++            state = .failed("Neither the clone this was built from nor a release install is here, so there is nothing to update from.")
 +            return
 +        }
 +        state = .checking
@@ -6757,7 +6814,7 @@ index 0000000..befaf2c
 +        let alert = NSAlert()
 +        alert.messageText = latest.map { "Update Ghostty Dock to \($0)?" } ?? "Update Ghostty Dock?"
 +        alert.informativeText = versionNotes + """
-+            Pulls the latest version from GitHub and builds it (a minute or two). \
++            \(Self.fromRelease ? "Downloads the latest release from GitHub" : "Pulls the latest version from GitHub and builds it") (a minute or two). \
 +            Ghostty Dock then restarts once your sessions are quiet, and reopens each one as a tab.
 +            """
 +        alert.addButton(withTitle: "Update")
