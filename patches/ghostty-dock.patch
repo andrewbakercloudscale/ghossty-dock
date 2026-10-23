@@ -5463,10 +5463,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..a494e7d
+index 0000000..61e18ff
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1055 @@
+@@ -0,0 +1,1071 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -6267,8 +6267,9 @@ index 0000000..a494e7d
 +    }
 +}
 +
-+/// A gold glint that runs round a running session's row, so busy ones
-+/// catch the eye without looking like they need you.
++/// A gold glint that runs round a running session's row and a border that
++/// beats like a heart, so busy ones catch the eye without looking like they
++/// need you.
 +struct DockRunningShimmer: View {
 +    static let gold = Color(hex: 0xffc61a)
 +
@@ -6301,6 +6302,21 @@ index 0000000..a494e7d
 +            root.shadowOffset = .zero
 +            root.shadowOpacity = 0.8
 +            root.shadowRadius = 4
++            // A heartbeat every 2 seconds: lub-dub, then rest.
++            let times: [NSNumber] = [0, 0.06, 0.14, 0.2, 0.28, 0.42, 1]
++            func beat(_ keyPath: String, _ values: [CGFloat]) -> CAKeyframeAnimation {
++                let a = CAKeyframeAnimation(keyPath: keyPath)
++                a.values = values
++                a.keyTimes = times
++                a.duration = 2
++                a.repeatCount = .infinity
++                a.isRemovedOnCompletion = false
++                a.timingFunctions = Array(repeating: CAMediaTimingFunction(name: .easeInEaseOut), count: times.count - 1)
++                return a
++            }
++            mask.add(beat("lineWidth", [2.6, 5, 2.8, 4.2, 2.6, 2.6, 2.6]), forKey: "beat")
++            root.add(beat("shadowRadius", [4, 11, 5, 9, 4, 4, 4]), forKey: "beat")
++            root.add(beat("shadowOpacity", [0.8, 1, 0.85, 1, 0.8, 0.8, 0.8]), forKey: "beatGlow")
 +        }
 +        .allowsHitTesting(false)
 +    }
