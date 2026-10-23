@@ -318,10 +318,10 @@ index 0000000..0851575
 +}
 diff --git a/macos/Sources/Features/Dock/DockAbout.swift b/macos/Sources/Features/Dock/DockAbout.swift
 new file mode 100644
-index 0000000..c3a5c02
+index 0000000..f9e5b72
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAbout.swift
-@@ -0,0 +1,429 @@
+@@ -0,0 +1,433 @@
 +import AppKit
 +import SwiftUI
 +
@@ -339,6 +339,7 @@ index 0000000..c3a5c02
 +    static let gitHubProfile = URL(string: "https://github.com/andrewbakercloudscale")!
 +    static let issues = URL(string: "https://github.com/\(DockUpdates.repo)/issues")!
 +    static let ghostty = URL(string: "https://ghostty.org/")!
++    static let post = URL(string: "https://andrewbaker.ninja/2026/10/21/ghostty-dock-one-window-for-every-claude-code-session-with-claude-burst-and-a-live-cost-panel/")!
 +
 +    var body: some View {
 +        ScrollView {
@@ -495,6 +496,8 @@ index 0000000..c3a5c02
 +                Text("Andrew Baker").font(.title3.weight(.semibold)).foregroundStyle(DockPalette.text)
 +                Text("Group Chief Information Officer at Capitec Bank, and the person behind CloudScale Consulting. He writes about technology, leadership and the tools he builds at andrewbaker.ninja.")
 +                    .font(.callout).foregroundStyle(DockPalette.text).fixedSize(horizontal: false, vertical: true)
++                Text("Ghostty Dock started with a row of terminal tabs that said nothing about which Claude Code session was waiting on a question, stuck on a permission prompt or quietly spending money.")
++                    .font(.callout).foregroundStyle(DockPalette.text).fixedSize(horizontal: false, vertical: true)
 +            }
 +            VStack(spacing: 6) {
 +                linkRow("LinkedIn", "linkedin.com/in/andrew-baker-ninja", "person.2.fill", DockPalette.blue, Self.linkedIn)
@@ -508,6 +511,7 @@ index 0000000..c3a5c02
 +    private var project: some View {
 +        DockCard(title: "The project", symbol: "shippingbox", tint: DockPalette.peach) {
 +            VStack(spacing: 6) {
++                linkRow("The story behind it", "andrewbaker.ninja blog post", "doc.richtext.fill", DockPalette.green, Self.post)
 +                linkRow("Source code", "github.com/\(DockUpdates.repo)", "curlybraces", DockPalette.blue, DockUpdates.repoPage)
 +                linkRow("Report a problem or ask for a feature", "GitHub issues", "exclamationmark.bubble.fill", DockPalette.peach, Self.issues)
 +                linkRow("Ghostty", "The terminal it is built on", "terminal.fill", DockPalette.teal, Self.ghostty)
