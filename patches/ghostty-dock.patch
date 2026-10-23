@@ -3772,10 +3772,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..5c41400
+index 0000000..c3eb223
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1130 @@
+@@ -0,0 +1,1161 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -4185,18 +4185,49 @@ index 0000000..5c41400
 +        alert.addButton(withTitle: "Cancel")
 +        switch alert.runModalNearPointer() {
 +        case .alertFirstButtonReturn:
-+            let opener = FileManager.default.homeDirectoryForCurrentUser
-+                .appendingPathComponent(".local/bin/ghostty-dock-open").path
-+            guard FileManager.default.isExecutableFile(atPath: opener) else {
-+                NSWorkspace.shared.open(Self.burstURL)
-+                return
-+            }
-+            DockProcess.launch("/bin/bash", [opener, "--command", Self.burstSetup,
-+                                              FileManager.default.homeDirectoryForCurrentUser.path])
++            runInTab(Self.burstSetup)
 +        case .alertSecondButtonReturn:
 +            NSWorkspace.shared.open(Self.burstURL)
 +        default:
 +            break
++        }
++    }
++
++    /// Runs a command in a new tab in your home folder, so you see what it
++    /// does and can answer it (sudo asks for a password there).
++    func runInTab(_ command: String) {
++        let home = FileManager.default.homeDirectoryForCurrentUser
++        let opener = home.appendingPathComponent(".local/bin/ghostty-dock-open").path
++        guard FileManager.default.isExecutableFile(atPath: opener) else {
++            NSWorkspace.shared.open(Self.burstURL)
++            return
++        }
++        DockProcess.launch("/bin/bash", [opener, "--command", command, home.path])
++    }
++
++    /// Claude Burst's own commands: fix it, take it out of the path, put it back.
++    enum BurstAction { case repair, off, on }
++
++    func burst(_ action: BurstAction) {
++        switch action {
++        case .repair:
++            runInTab("burst-repair")
++        case .on:
++            runInTab("claude-burst enable")
++        case .off:
++            let alert = NSAlert()
++            alert.messageText = "Turn Claude Burst off?"
++            alert.informativeText = """
++                Claude Code goes straight to Anthropic again, as before Claude Burst. \
++                Pauseless Compaction stops until you turn it back on. It runs burst-off \
++                in a new tab, which may ask for your password.
++
++                Turn On puts it back (claude-burst enable).
++                """
++            alert.addButton(withTitle: "Turn Off")
++            alert.addButton(withTitle: "Cancel")
++            guard alert.runModalNearPointer() == .alertFirstButtonReturn else { return }
++            runInTab("burst-off")
 +        }
 +    }
 +
@@ -4908,10 +4939,10 @@ index 0000000..5c41400
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..d3c1107
+index 0000000..344c26f
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,296 @@
+@@ -0,0 +1,307 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -5073,7 +5104,18 @@ index 0000000..d3c1107
 +            Section("Compaction") {
 +                if DockSessions.burstInstalled {
 +                    LabeledContent("Pauseless Compaction") { Text("Claude Burst is set up") }
-+                    Text("Each row's ⤡ button compacts its session in the background while it is at its prompt.")
++                    LabeledContent("Claude Burst") {
++                        HStack {
++                            Button("Repair") { DockSessions.shared.burst(.repair) }
++                                .help("Fix the common ways Claude Burst stops working (burst-repair)")
++                            Button("Turn Off…") { DockSessions.shared.burst(.off) }
++                                .help("Back to normal Claude Code (burst-off)")
++                            Button("Turn On") { DockSessions.shared.burst(.on) }
++                                .help("Put Claude Burst back after Turn Off (claude-burst enable)")
++                        }
++                    }
++                    Text("Each row's ⤡ button compacts its session in the background while it is at its prompt. "
++                         + "Each button runs in a new tab so you can see it work.")
 +                        .font(.callout)
 +                } else {
 +                    LabeledContent("Pauseless Compaction") {
