@@ -325,10 +325,10 @@ index 0000000..0851575
 +}
 diff --git a/macos/Sources/Features/Dock/DockAbout.swift b/macos/Sources/Features/Dock/DockAbout.swift
 new file mode 100644
-index 0000000..038b86c
+index 0000000..89fe133
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAbout.swift
-@@ -0,0 +1,430 @@
+@@ -0,0 +1,428 @@
 +import AppKit
 +import SwiftUI
 +
@@ -345,7 +345,6 @@ index 0000000..038b86c
 +    static let cloudScale = URL(string: "https://cloudscale.consulting/")!
 +    static let gitHubProfile = URL(string: "https://github.com/andrewbakercloudscale")!
 +    static let issues = URL(string: "https://github.com/\(DockUpdates.repo)/issues")!
-+    static let ghostty = URL(string: "https://ghostty.org/")!
 +    static let help = URL(string: "https://cloudscale.consulting/ghostty-dock/")!
 +    static let post = URL(string: "https://andrewbaker.ninja/2026/10/21/ghostty-dock-one-window-for-every-claude-code-session-with-claude-burst-and-a-live-cost-panel/")!
 +
@@ -525,7 +524,6 @@ index 0000000..038b86c
 +                linkRow("The story behind it", "andrewbaker.ninja blog post", "doc.richtext.fill", DockPalette.green, Self.post)
 +                linkRow("Source code", "github.com/\(DockUpdates.repo)", "curlybraces", DockPalette.blue, DockUpdates.repoPage)
 +                linkRow("Report a problem or ask for a feature", "GitHub issues", "exclamationmark.bubble.fill", DockPalette.peach, Self.issues)
-+                linkRow("Ghostty", "The terminal it is built on", "terminal.fill", DockPalette.teal, Self.ghostty)
 +            }
 +        }
 +    }
