@@ -1,5 +1,5 @@
 diff --git a/macos/Sources/App/macOS/AppDelegate.swift b/macos/Sources/App/macOS/AppDelegate.swift
-index b02337e..ee2f058 100644
+index b02337e..b9d017d 100644
 --- a/macos/Sources/App/macOS/AppDelegate.swift
 +++ b/macos/Sources/App/macOS/AppDelegate.swift
 @@ -210,6 +210,11 @@ class AppDelegate: NSObject,
@@ -95,7 +95,7 @@ index b02337e..ee2f058 100644
          // UpdateSimulator.happyPath.simulate(with: updateViewModel)
      }
  
-@@ -970,7 +987,7 @@ class AppDelegate: NSObject,
+@@ -970,12 +987,12 @@ class AppDelegate: NSObject,
      }
  
      @IBAction func showAbout(_ sender: Any?) {
@@ -104,6 +104,13 @@ index b02337e..ee2f058 100644
      }
  
      @IBAction func showHelp(_ sender: Any) {
+-        guard let url = URL(string: "https://ghostty.org/docs") else { return }
+-        NSWorkspace.shared.open(url)
++        // Ghostty Dock's own help; it links on to Ghostty's.
++        NSWorkspace.shared.open(DockAboutView.help)
+     }
+ 
+     @IBAction func toggleSecureInput(_ sender: Any) {
 @@ -1104,6 +1121,8 @@ extension AppDelegate {
          // Note: This COULD Be done all in the xib file, but I find it easier to
          // modify this stuff as code.
@@ -318,10 +325,10 @@ index 0000000..0851575
 +}
 diff --git a/macos/Sources/Features/Dock/DockAbout.swift b/macos/Sources/Features/Dock/DockAbout.swift
 new file mode 100644
-index 0000000..f9e5b72
+index 0000000..de579e2
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAbout.swift
-@@ -0,0 +1,433 @@
+@@ -0,0 +1,440 @@
 +import AppKit
 +import SwiftUI
 +
@@ -339,6 +346,7 @@ index 0000000..f9e5b72
 +    static let gitHubProfile = URL(string: "https://github.com/andrewbakercloudscale")!
 +    static let issues = URL(string: "https://github.com/\(DockUpdates.repo)/issues")!
 +    static let ghostty = URL(string: "https://ghostty.org/")!
++    static let help = URL(string: "https://cloudscale.consulting/ghostty-dock/")!
 +    static let post = URL(string: "https://andrewbaker.ninja/2026/10/21/ghostty-dock-one-window-for-every-claude-code-session-with-claude-burst-and-a-live-cost-panel/")!
 +
 +    var body: some View {
@@ -511,6 +519,7 @@ index 0000000..f9e5b72
 +    private var project: some View {
 +        DockCard(title: "The project", symbol: "shippingbox", tint: DockPalette.peach) {
 +            VStack(spacing: 6) {
++                linkRow("Help", "cloudscale.consulting/ghostty-dock", "questionmark.circle.fill", DockPalette.blue, Self.help)
 +                linkRow("The story behind it", "andrewbaker.ninja blog post", "doc.richtext.fill", DockPalette.green, Self.post)
 +                linkRow("Source code", "github.com/\(DockUpdates.repo)", "curlybraces", DockPalette.blue, DockUpdates.repoPage)
 +                linkRow("Report a problem or ask for a feature", "GitHub issues", "exclamationmark.bubble.fill", DockPalette.peach, Self.issues)
@@ -722,11 +731,16 @@ index 0000000..f9e5b72
 +    }
 +}
 +
-+/// Help menu: About Ghostty Dock and Share with a Friend, under Ghostty Help.
++/// Help menu: Ghostty Dock Help, About Ghostty Dock and Share with a Friend.
 +enum DockHelpMenu {
 +    static func install() {
 +        guard let menu = NSApp.helpMenu ?? NSApp.mainMenu?.items.last?.submenu,
 +              !menu.items.contains(where: { $0.representedObject as? String == "dock" }) else { return }
++        // Ghostty's Help item opens Ghostty Dock's help page (AppDelegate.showHelp).
++        for item in menu.items where item.title == "Ghostty Help" {
++            item.title = "Ghostty Dock Help"
++            item.image = NSImage(systemSymbolName: "questionmark.circle", accessibilityDescription: nil)
++        }
 +        menu.addItem(.separator())
 +        for (title, symbol, action) in [
 +            ("About Ghostty Dock", "info.circle", #selector(Target.about)),

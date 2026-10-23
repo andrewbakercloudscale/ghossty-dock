@@ -6,6 +6,9 @@ finished, idle, shell) and sorted by name so rows stay put. Give a session one o
 20 colours and its row and terminal both take it. Ctrl-Opt-J jumps to the
 next session waiting for you.
 
+**Help:** [cloudscale.consulting/ghostty-dock](https://cloudscale.consulting/ghostty-dock/)
+(also Help → Ghostty Dock Help, ⌘?).
+
 ## Install
 
 ### The easy way (nothing to build)
