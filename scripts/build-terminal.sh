@@ -105,6 +105,10 @@ function stamp_version() {
         /usr/libexec/PlistBuddy -c "Delete :$key" "$plist" 2>/dev/null
         /usr/libexec/PlistBuddy -c "Add :$key string $value" "$plist" || exit 1
     done
+    # A local Xcode build leaves Ghostty's placeholder 0.1 (1); its release
+    # script is what normally sets these.
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${GHOSTTY_TAG#v}" \
+        -c "Set :CFBundleVersion 1.0.$count" "$plist" || exit 1
     echo "== version 1.0.$count ($sha)"
 }
 
