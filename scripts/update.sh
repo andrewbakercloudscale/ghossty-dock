@@ -105,9 +105,15 @@ function newer() {
 
 # The same lines as check(), from GitHub's latest release.
 function check_release() {
-    local json
-    json=$(curl -fsSL --max-time 30 "https://api.github.com/repos/$REPO/releases/latest") ||
-        { printf 'error\tcould not reach GitHub\n'; exit 1; }
+    local json code
+    json=$(curl -sSL --max-time 30 -w '\n%{http_code}' "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null)
+    code=${json##*$'\n'}
+    json=${json%$'\n'*}
+    case "$code" in
+    200) ;;
+    404) printf 'error\tGitHub has no release yet\n'; exit 1 ;;
+    *) printf 'error\tcould not reach GitHub\n'; exit 1 ;;
+    esac
     local tag date sha installed
     tag=$(jq -r '.tag_name // empty' <<<"$json")
     date=$(jq -r '.published_at // empty' <<<"$json")
