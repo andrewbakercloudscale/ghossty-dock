@@ -243,9 +243,9 @@ ordinary macOS defaults (`defaults read consulting.cloudscale.ghosttydock`).
 The ⓘ button at the top of the sidebar (or Ghostty Dock → About Ghostty Dock,
 or Check for Updates…) shows the version
 (`1.0.<commits>` and the commit it was built from), who made it, and links.
-It checks GitHub a minute after launch and every 6 hours; when there is
+It checks GitHub 5 seconds after launch and every 6 hours; when there is
 something new, an **Update** button appears there, in Settings and at the top
-of the sidebar. Update runs `scripts/update.sh --install` in the clone the app
+of the sidebar, and the sidebar's ⓘ turns green and flashes. Update runs `scripts/update.sh --install` in the clone the app
 was built from: pull, rebuild, install, then restart once your sessions are
 quiet (they are resumed as tabs). Log: `~/.local/state/ghostty-dock/update.log`.
 

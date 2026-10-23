@@ -317,7 +317,7 @@ index 0000000..0851575
 +}
 diff --git a/macos/Sources/Features/Dock/DockAbout.swift b/macos/Sources/Features/Dock/DockAbout.swift
 new file mode 100644
-index 0000000..22b4d45
+index 0000000..40006a2
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAbout.swift
 @@ -0,0 +1,397 @@
@@ -446,7 +446,7 @@ index 0000000..22b4d45
 +                Text("This clone has \(updates.ahead) commit\(updates.ahead == 1 ? "" : "s") not on GitHub yet; push them before updating.")
 +                    .font(.callout).foregroundStyle(DockPalette.peach).fixedSize(horizontal: false, vertical: true)
 +            }
-+            Text("Checks run a minute after launch and every 6 hours. " + (DockUpdates.fromRelease
++            Text("Checks run 5 seconds after launch and every 6 hours. " + (DockUpdates.fromRelease
 +                ? "Update downloads GitHub's latest release"
 +                : "Update pulls GitHub's latest into the clone it was built from, rebuilds,")
 +                + " and restarts once your sessions are quiet. They come back as tabs.")
@@ -5274,10 +5274,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..b7b34d7
+index 0000000..abc429d
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1012 @@
+@@ -0,0 +1,1033 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -5621,11 +5621,16 @@ index 0000000..b7b34d7
 +                    Text("Click a session first").padding(14)
 +                }
 +            }
-+            DockHeaderButton(symbol: "gearshape", color: DockPalette.text, tip: "Settings (⌘,)",
++            DockHeaderButton(symbol: "gearshape.fill", color: DockPalette.color(DockTag.amber), tip: "Settings (⌘,)",
 +                             shownTip: $headerTip, tipColor: $headerTipColor) {
 +                DockSettingsWindow.shared.show(near: NSEvent.mouseLocation)
 +            }
-+            DockHeaderButton(symbol: "info.circle", color: DockPalette.teal, tip: "About and updates",
++            DockHeaderButton(symbol: updates.available ? "info.circle.fill" : "info.circle",
++                             color: updates.available ? DockPalette.green : DockPalette.color(DockTag.cyan),
++                             tip: updates.available
++                                 ? "Update available: \(updates.latest ?? "a newer version"). Click for About and Update"
++                                 : "About and updates",
++                             flash: updates.available && updates.state != .installing,
 +                             shownTip: $headerTip, tipColor: $headerTipColor) {
 +                DockAboutWindow.shared.show(near: NSEvent.mouseLocation)
 +            }
@@ -5724,6 +5729,8 @@ index 0000000..b7b34d7
 +    var tip: String
 +    /// A count next to the icon, hidden at 0.
 +    var badge = 0
++    /// Pulses to say something is waiting behind it (an update).
++    var flash = false
 +    @Binding var shownTip: String?
 +    @Binding var tipColor: Color
 +    var action: () -> Void
@@ -5742,15 +5749,29 @@ index 0000000..b7b34d7
 +            .padding(.vertical, 3)
 +            .padding(.horizontal, badge > 0 ? 5 : 3)
 +            .background(Capsule().fill(color.opacity(hover ? 0.3 : badge > 0 ? 0.16 : 0)))
++            .background(flash ? flashLayer : nil)
 +        }
 +        .buttonStyle(.plain)
 +        .onHover { inside in
 +            hover = inside
 +            if inside {
 +                shownTip = tip
-+                // The settings icon is in the text colour; its tip still stands out.
++                // A text-coloured icon is in the text colour; its tip still stands out.
 +                tipColor = color == DockPalette.text ? DockPalette.blue : color
 +            } else if shownTip == tip { shownTip = nil }
++        }
++    }
++
++    /// A capsule of the icon's colour fading in and out, in Core Animation.
++    private var flashLayer: some View {
++        DockLayerAnimation(key: "flash\(color)") { root, b, _ in
++            let l = CAShapeLayer()
++            l.path = CGPath(roundedRect: b, cornerWidth: b.height / 2, cornerHeight: b.height / 2, transform: nil)
++            l.fillColor = NSColor(color).cgColor
++            l.opacity = 0
++            l.add(DockLayerAnimation.repeating("opacity", from: 0.0, to: 0.55, seconds: 0.8,
++                                               reverses: true, timing: .easeInEaseOut), forKey: "flash")
++            root.addSublayer(l)
 +        }
 +    }
 +}
@@ -6696,7 +6717,7 @@ index 0000000..596cc6e
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..63bb112
+index 0000000..a8933ae
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
 @@ -0,0 +1,368 @@
@@ -6781,10 +6802,10 @@ index 0000000..63bb112
 +    private let logURL = FileManager.default.homeDirectoryForCurrentUser
 +        .appendingPathComponent(".local/state/ghostty-dock/update.log")
 +
-+    /// Checks a minute after launch and every 6 hours.
++    /// Checks 5 seconds after launch and every 6 hours.
 +    func start() {
 +        guard timer == nil else { return }
-+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in self?.check() }
++        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.check() }
 +        timer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in self?.check() }
 +        checkInstalled()
 +        installedTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.checkInstalled() }
