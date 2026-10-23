@@ -6,6 +6,54 @@ finished, idle, shell) and sorted by name so rows stay put. Give a session one o
 20 colours and its row and terminal both take it. Ctrl-Opt-J jumps to the
 next session waiting for you.
 
+## Install
+
+### The easy way (nothing to build)
+
+You need a Mac with Apple silicon (M1 or newer) and macOS 13 or later.
+
+1. Open **Terminal** (press Cmd-Space, type `Terminal`, press Return).
+2. Paste this line and press Return:
+
+       curl -fsSL https://raw.githubusercontent.com/andrewbakercloudscale/ghossty-dock/main/get.sh | bash
+
+3. Ghostty Dock opens by itself. It is in `~/Applications` from then on.
+
+- It downloads the latest [release](https://github.com/andrewbakercloudscale/ghossty-dock/releases/latest),
+  installs it and opens the app. Nothing is built, and macOS does not ask
+  before opening it.
+- macOS 15 and later include everything it needs. On macOS 13 or 14, run
+  `brew install jq` first.
+- No Claude Code yet? `curl -fsSL https://claude.ai/install.sh | bash`
+- To update: **About → Update**, or paste the line again.
+- To remove: `bash ~/.local/share/ghostty-dock/install.sh --uninstall && rm -rf ~/.local/share/ghostty-dock`
+- **About → Share with a friend** sends the install line by Messages,
+  WhatsApp, Mail or AirDrop.
+
+### From source
+
+Needs Xcode (for `swift` and `xcodebuild`); the build fetches Ghostty and zig itself.
+
+    git clone https://github.com/andrewbakercloudscale/ghossty-dock.git && cd ghossty-dock
+    ./install.sh                     # hooks, opener, Finder Quick Actions, app
+    scripts/build-terminal.sh        # rebuild the app only
+    ghostty-dock-move --detach       # move sessions from separate Ghostty apps into tabs
+
+### Making a release (maintainers)
+
+    scripts/release.sh               # build/release/Ghostty-Dock-<version>.zip
+    scripts/release.sh --publish     # and a GitHub release with it
+
+The zip holds the app, the scripts and `install.sh`, which installs the
+ready-built app instead of building one. With `DEVELOPER_ID` (a "Developer ID
+Application" certificate) and `NOTARY_PROFILE` (`xcrun notarytool
+store-credentials`) set, it is signed and notarized and opens anywhere;
+without them it is signed for this Mac only, and other Macs must allow it in
+System Settings → Privacy & Security first (`get.sh` downloads with curl,
+which macOS does not quarantine, so it opens either way). Installed from a
+release, Update checks GitHub's latest release and installs it with `get.sh`.
+
+
 ![Ghostty Dock window](docs/window.png)
 
 <img src="docs/statuses.png" width="268" alt="Session sidebar"> <img src="docs/icon.png" width="128" alt="Ghostty Dock icon">
@@ -243,40 +291,6 @@ Burst**, which opens a tab running its one-line setup. Claude Code says what
 will change and waits for your go-ahead:
 
     claude "$(curl -fsSL https://raw.githubusercontent.com/andrewbakercloudscale/claude-burst/main/SETUP_PROMPT.md)"
-
-## Install
-
-### The easy way (nothing to build)
-
-On a Mac with Apple silicon, open Terminal and paste:
-
-    curl -fsSL https://raw.githubusercontent.com/andrewbakercloudscale/ghossty-dock/main/get.sh | bash
-
-It downloads the latest release into `~/.local/share/ghostty-dock`, installs
-it and opens the app. Run it again to update, or use Update in About. macOS
-15 and later include everything it needs; on 13 or 14, `brew install jq`
-first. **About → Share with a friend** sends this line by Messages, WhatsApp,
-Mail or AirDrop.
-
-### From source
-
-    ./install.sh                     # hooks, opener, Finder Quick Actions, app
-    scripts/build-terminal.sh        # rebuild the app only
-    ghostty-dock-move --detach       # move sessions from separate Ghostty apps into tabs
-
-### From a release, without building
-
-    scripts/release.sh               # build/release/Ghostty-Dock-<version>.zip
-    scripts/release.sh --publish     # and a GitHub release with it
-
-The zip holds the app, the scripts and `install.sh`, which installs the
-ready-built app instead of building one. With `DEVELOPER_ID` (a "Developer ID
-Application" certificate) and `NOTARY_PROFILE` (`xcrun notarytool
-store-credentials`) set, it is signed and notarized and opens anywhere;
-without them it is signed for this Mac only, and other Macs must allow it in
-System Settings → Privacy & Security first (`get.sh` downloads with curl,
-which macOS does not quarantine, so it opens either way). Installed from a
-release, Update checks GitHub's latest release and installs it with `get.sh`.
 
 ## Tests
 
