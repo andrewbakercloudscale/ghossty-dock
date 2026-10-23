@@ -1,5 +1,5 @@
 diff --git a/macos/Sources/App/macOS/AppDelegate.swift b/macos/Sources/App/macOS/AppDelegate.swift
-index b02337e..dffc6ff 100644
+index b02337e..ee2f058 100644
 --- a/macos/Sources/App/macOS/AppDelegate.swift
 +++ b/macos/Sources/App/macOS/AppDelegate.swift
 @@ -210,6 +210,11 @@ class AppDelegate: NSObject,
@@ -104,11 +104,12 @@ index b02337e..dffc6ff 100644
      }
  
      @IBAction func showHelp(_ sender: Any) {
-@@ -1104,6 +1121,7 @@ extension AppDelegate {
+@@ -1104,6 +1121,8 @@ extension AppDelegate {
          // Note: This COULD Be done all in the xib file, but I find it easier to
          // modify this stuff as code.
          self.menuAbout?.setImageIfDesired(systemSymbolName: "info.circle")
 +        self.menuAbout?.title = "About Ghostty Dock"
++        DockHelpMenu.install()
          self.menuCheckForUpdates?.setImageIfDesired(systemSymbolName: "square.and.arrow.down")
          self.menuOpenConfig?.setImageIfDesired(systemSymbolName: "gear")
          self.menuReloadConfig?.setImageIfDesired(systemSymbolName: "arrow.trianglehead.2.clockwise.rotate.90")
@@ -317,10 +318,10 @@ index 0000000..0851575
 +}
 diff --git a/macos/Sources/Features/Dock/DockAbout.swift b/macos/Sources/Features/Dock/DockAbout.swift
 new file mode 100644
-index 0000000..40006a2
+index 0000000..c3a5c02
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAbout.swift
-@@ -0,0 +1,397 @@
+@@ -0,0 +1,429 @@
 +import AppKit
 +import SwiftUI
 +
@@ -343,7 +344,6 @@ index 0000000..40006a2
 +        ScrollView {
 +            VStack(alignment: .leading, spacing: 14) {
 +                hero
-+                shareCard
 +                updatesCard
 +                author
 +                project
@@ -371,6 +371,24 @@ index 0000000..40006a2
 +                Text("Every Claude Code session as a tab in one Ghostty window, coloured by whether it needs you, is running or has finished.")
 +                    .font(.callout).foregroundStyle(DockPalette.text)
 +                    .fixedSize(horizontal: false, vertical: true)
++                HStack(spacing: 8) {
++                    ShareLink(item: Self.shareMessage, subject: Text("Ghostty Dock"), message: Text(Self.shareMessage)) {
++                        Label("Share with a friend", systemImage: "square.and.arrow.up")
++                    }
++                    .buttonStyle(DockFilledButton(color: DockPalette.blue))
++                    .help("Send the one-line install by Messages, WhatsApp, Mail or AirDrop")
++                    Button {
++                        NSPasteboard.general.clearContents()
++                        NSPasteboard.general.setString(Self.shareMessage, forType: .string)
++                        shareCopied = true
++                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { shareCopied = false }
++                    } label: {
++                        Label(shareCopied ? "Copied" : "Copy message", systemImage: shareCopied ? "checkmark" : "doc.on.doc")
++                    }
++                    .buttonStyle(DockPillButton(color: DockPalette.blue))
++                    .help(Self.installCommand)
++                }
++                .padding(.top, 4)
 +            }
 +        }
 +    }
@@ -383,11 +401,12 @@ index 0000000..40006a2
 +                    if updates.available && updates.state != .installing {
 +                        versionLine("New", updates.newest, DockPalette.blue)
 +                        versionLine("You have", updates.current, DockPalette.text)
++                        Text(updates.checkedText).font(.caption).foregroundStyle(DockPalette.grey)
 +                    } else {
 +                        Text(status).font(.body.weight(.semibold)).foregroundStyle(statusColor)
-+                        versionLine("You have", updates.current, DockPalette.text)
++                        Text("You have \(DockUpdates.version) · \(updates.checkedText)")
++                            .font(.callout).monospacedDigit().foregroundStyle(DockPalette.grey)
 +                    }
-+                    Text(updates.checkedText).font(.caption).foregroundStyle(DockPalette.grey)
 +                }
 +                Spacer()
 +                if updates.available && updates.state != .installing {
@@ -411,7 +430,8 @@ index 0000000..40006a2
 +                }
 +            }
 +            HStack(spacing: 8) {
-+                pill("All changes", "shippingbox", URL(string: "https://github.com/\(DockUpdates.repo)/commits/main")!)
++                pill("All releases", "shippingbox", URL(string: "https://github.com/\(DockUpdates.repo)/releases")!)
++                pill("All changes", "list.bullet", URL(string: "https://github.com/\(DockUpdates.repo)/commits/main")!)
 +                if updates.available {
 +                    Button { updates.check() } label: { Label("Check again", systemImage: "arrow.clockwise") }
 +                        .buttonStyle(DockPillButton(color: DockPalette.blue))
@@ -467,33 +487,6 @@ index 0000000..40006a2
 +
 +        More: \(DockUpdates.repoPage.absoluteString)
 +        """
-+    }
-+
-+    private var shareCard: some View {
-+        DockCard(title: "Share with a friend", symbol: "heart.fill", tint: DockPalette.mauve) {
-+            Text("Sends an install message by Messages, WhatsApp, Mail or AirDrop. They paste one line into Terminal and it installs, with nothing to build.")
-+                .font(.callout).foregroundStyle(DockPalette.text).fixedSize(horizontal: false, vertical: true)
-+            Text(Self.installCommand)
-+                .font(.caption.monospaced()).foregroundStyle(DockPalette.teal)
-+                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-+                .padding(8).frame(maxWidth: .infinity, alignment: .leading)
-+                .background(RoundedRectangle(cornerRadius: 8).fill(DockPalette.teal.opacity(0.08)))
-+            HStack(spacing: 8) {
-+                ShareLink(item: Self.shareMessage, subject: Text("Ghostty Dock"), message: Text(Self.shareMessage)) {
-+                    Label("Share…", systemImage: "square.and.arrow.up")
-+                }
-+                .buttonStyle(DockFilledButton(color: DockPalette.mauve))
-+                Button {
-+                    NSPasteboard.general.clearContents()
-+                    NSPasteboard.general.setString(Self.shareMessage, forType: .string)
-+                    shareCopied = true
-+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { shareCopied = false }
-+                } label: {
-+                    Label(shareCopied ? "Copied" : "Copy message", systemImage: shareCopied ? "checkmark" : "doc.on.doc")
-+                }
-+                .buttonStyle(DockPillButton(color: DockPalette.mauve))
-+            }
-+        }
 +    }
 +
 +    private var author: some View {
@@ -681,19 +674,25 @@ index 0000000..40006a2
 +    @ViewBuilder var content: Content
 +
 +    var body: some View {
-+        VStack(alignment: .leading, spacing: 10) {
-+            HStack(spacing: 6) {
-+                Image(systemName: symbol).font(.caption.weight(.bold)).foregroundStyle(tint)
-+                Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(DockPalette.text)
++        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
++        return VStack(alignment: .leading, spacing: 0) {
++            // A title bar in the card's colour, as in a Mac settings pane.
++            HStack(spacing: 8) {
++                Image(systemName: symbol).font(.body.weight(.semibold)).foregroundStyle(tint)
++                Text(title).font(.headline).foregroundStyle(DockPalette.text)
 +                Spacer()
 +                trailing
 +            }
-+            content
++            .padding(.horizontal, 14).padding(.vertical, 10)
++            .background(tint.opacity(0.16))
++            Rectangle().fill(tint.opacity(0.35)).frame(height: 1)
++            VStack(alignment: .leading, spacing: 12) { content }
++                .padding(14)
 +        }
-+        .padding(12)
 +        .frame(maxWidth: .infinity, alignment: .topLeading)
-+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(DockPalette.mantle))
-+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(DockPalette.surface, lineWidth: 1.25))
++        .background(DockPalette.mantle)
++        .clipShape(shape)
++        .overlay(shape.strokeBorder(tint.opacity(0.45), lineWidth: 1.5))
 +    }
 +}
 +
@@ -716,6 +715,40 @@ index 0000000..40006a2
 +        NSApp.activate(ignoringOtherApps: true)
 +        window?.makeKeyAndOrderFront(nil)
 +        if DockUpdates.shared.lastCheck == nil { DockUpdates.shared.check() }
++    }
++}
++
++/// Help menu: About Ghostty Dock and Share with a Friend, under Ghostty Help.
++enum DockHelpMenu {
++    static func install() {
++        guard let menu = NSApp.helpMenu ?? NSApp.mainMenu?.items.last?.submenu,
++              !menu.items.contains(where: { $0.representedObject as? String == "dock" }) else { return }
++        menu.addItem(.separator())
++        for (title, symbol, action) in [
++            ("About Ghostty Dock", "info.circle", #selector(Target.about)),
++            ("Share Ghostty Dock with a Friend…", "square.and.arrow.up", #selector(Target.share)),
++        ] {
++            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
++            item.target = Target.shared
++            item.representedObject = "dock"
++            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
++            menu.addItem(item)
++        }
++    }
++
++    final class Target: NSObject {
++        static let shared = Target()
++
++        @objc func about() { DockAboutWindow.shared.show() }
++
++        /// The share sheet, from the About window's top.
++        @objc func share() {
++            DockAboutWindow.shared.show()
++            guard let view = NSApp.keyWindow?.contentView else { return }
++            let anchor = NSRect(x: view.bounds.midX, y: view.bounds.maxY - 150, width: 1, height: 1)
++            NSSharingServicePicker(items: [DockAboutView.shareMessage])
++                .show(relativeTo: anchor, of: view, preferredEdge: .minY)
++        }
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockAgentConfig.swift b/macos/Sources/Features/Dock/DockAgentConfig.swift

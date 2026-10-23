@@ -27,8 +27,8 @@ You need a Mac with Apple silicon (M1 or newer) and macOS 13 or later.
 - No Claude Code yet? `curl -fsSL https://claude.ai/install.sh | bash`
 - To update: **About → Update**, or paste the line again.
 - To remove: `bash ~/.local/share/ghostty-dock/install.sh --uninstall && rm -rf ~/.local/share/ghostty-dock`
-- **About → Share with a friend** sends the install line by Messages,
-  WhatsApp, Mail or AirDrop.
+- **About → Share with a friend** (or Help → Share Ghostty Dock with a
+  Friend…) sends the install line by Messages, WhatsApp, Mail or AirDrop.
 
 ### From source
 
@@ -245,7 +245,7 @@ ordinary macOS defaults (`defaults read consulting.cloudscale.ghosttydock`).
 ## About and updates
 
 The ⓘ button at the top of the sidebar (or Ghostty Dock → About Ghostty Dock,
-or Check for Updates…) shows the version
+Help → About Ghostty Dock, or Check for Updates…) shows the version
 (`1.0.<commits>` and the commit it was built from), who made it, and links.
 It checks GitHub 5 seconds after launch and every 6 hours; when there is
 something new, an **Update** button appears there, in Settings and at the top
