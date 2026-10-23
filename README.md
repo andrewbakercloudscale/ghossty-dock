@@ -296,6 +296,11 @@ will change and waits for your go-ahead:
 
     claude "$(curl -fsSL https://raw.githubusercontent.com/andrewbakercloudscale/claude-burst/main/SETUP_PROMPT.md)"
 
+With Burst set up, Settings → Compaction has **Repair** (`burst-repair`),
+**Turn Off…** (`burst-off`: back to plain Claude Code) and **Turn On**
+(`claude-burst enable`). Each runs in a new tab so you see it work and can
+type a password if asked.
+
 ## Tests
 
     bash tests/hook-test.sh                          # the Claude Code hook
