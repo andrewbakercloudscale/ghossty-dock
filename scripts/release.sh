@@ -61,7 +61,7 @@ function main() {
     rm -rf "$stage" && mkdir -p "$stage/Ghostty Dock" || exit 1
     local dir="$stage/Ghostty Dock"
     ditto "$APP" "$dir/Ghostty Dock.app" || exit 1
-    cp -R "$ROOT/bin" "$ROOT/scripts" "$dir/" && cp "$ROOT/install.sh" "$ROOT/README.md" "$dir/" || exit 1
+    cp -R "$ROOT/bin" "$ROOT/scripts" "$dir/" && cp "$ROOT/install.sh" "$ROOT/get.sh" "$ROOT/README.md" "$dir/" || exit 1
 
     local signed="this Mac only"
     if [ -n "${DEVELOPER_ID:-}" ]; then
@@ -88,9 +88,25 @@ function main() {
 
     if $publish; then
         command -v gh >/dev/null || { echo "Error: gh is required to publish" >&2; exit 1; }
-        gh release create "v$version" "$zip" --target "$(git -C "$ROOT" rev-parse HEAD)" \
-            --title "Ghostty Dock $version" --notes "Built from ${commit}. Signed: ${signed}. Unzip, then run \`bash \"Ghostty Dock/install.sh\"\`." || exit 1
+        # Under a fixed name too, for get.sh's releases/latest/download link.
+        cp "$zip" "$OUT/Ghostty-Dock.zip" || exit 1
+        gh release create "v$version" "$zip" "$OUT/Ghostty-Dock.zip" --target "$(git -C "$ROOT" rev-parse HEAD)" \
+            --title "Ghostty Dock $version" --notes "$(release_notes "$commit" "$signed")" || exit 1
     fi
+}
+
+function release_notes() {
+    cat <<EOM
+Built from $1. Signed: $2. Needs a Mac with Apple silicon.
+
+**Install:** open Terminal and paste
+
+\`\`\`
+curl -fsSL https://raw.githubusercontent.com/andrewbakercloudscale/ghossty-dock/main/get.sh | bash
+\`\`\`
+
+Or download the zip, unzip it, and run \`bash "Ghostty Dock/install.sh"\` (a downloaded zip must first be allowed in System Settings → Privacy & Security unless it is notarized).
+EOM
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

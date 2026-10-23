@@ -6,7 +6,7 @@
 # with the session sidebar built in, scripts/build-terminal.sh) into
 # ~/Applications. From a release zip, the app is already built and is copied.
 
-DEPENDENCIES=(jq perl swift codesign launchctl)
+DEPENDENCIES=(jq perl codesign launchctl)
 SCRIPT_NAME=$(basename "$0")
 ROOT=$(cd "$(dirname "$0")" && pwd)
 BIN_DIR="$HOME/.local/bin"
@@ -41,7 +41,7 @@ options:
                      ghostty-dock-open is gone.
     -h|--help        Show this help message
 
-dependencies: ${DEPENDENCIES[@]}
+dependencies: ${DEPENDENCIES[@]} (and swift to build the app)
 
 EOM
     exit 1
@@ -85,6 +85,7 @@ function main() {
         mkdir -p "$(dirname "$APP")" && rm -rf "$APP" && ditto "$ROOT/Ghostty Dock.app" "$APP" || exit 1
     else
         print_step 4 4 "Build and install the app"
+        exit_on_missing_tools swift
         bash "$ROOT/scripts/build-terminal.sh" --no-open || exit 1
     fi
     print_success "Ghostty Dock is installed: open it from ~/Applications"

@@ -6,6 +6,9 @@
 #
 # The app's Update button runs it: --check to see what is new, --install
 # --detach to install.
+#
+# Installed from a release (get.sh) there is no clone: it checks GitHub's
+# latest release instead, and installs it with get.sh.
 
 SCRIPT_NAME=$(basename "$0")
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -16,6 +19,9 @@ SRC="$ROOT/vendor/ghostty"
 PATCH="patches/ghostty-dock.patch"
 APP="$HOME/Applications/Ghostty Dock.app"
 BRANCH="main"
+REPO="andrewbakercloudscale/ghossty-dock"
+RELEASE=false
+[ -d "$ROOT/.git" ] || RELEASE=true
 
 function usage() {
     cat <<EOM
@@ -48,8 +54,9 @@ function fail() {
 }
 
 function check_dependencies() {
-    local dep
-    for dep in git xcodebuild /usr/libexec/PlistBuddy; do
+    local dep deps=(git xcodebuild /usr/libexec/PlistBuddy)
+    $RELEASE && deps=(curl jq /usr/libexec/PlistBuddy)
+    for dep in "${deps[@]}"; do
         command -v "$dep" >/dev/null 2>&1 || { echo "Error: $dep is required" >&2; exit 1; }
     done
 }
@@ -78,6 +85,44 @@ function check() {
     local since="${installed%+}"
     git -C "$ROOT" cat-file -e "$since^{commit}" 2>/dev/null || since=HEAD
     git -C "$ROOT" log -20 --format='commit%x09%h%x09%cI%x09%s' "$since..origin/$BRANCH"
+}
+
+function installed_version() {
+    /usr/libexec/PlistBuddy -c "Print :GhosttyDockVersion" "$APP/Contents/Info.plist" 2>/dev/null
+}
+
+# True when version $1 (1.0.97) is newer than $2.
+function newer() {
+    local a b i
+    IFS=. read -ra a <<<"$1"
+    IFS=. read -ra b <<<"$2"
+    for i in 0 1 2; do
+        [ "${a[i]:-0}" -gt "${b[i]:-0}" ] 2>/dev/null && return 0
+        [ "${a[i]:-0}" -lt "${b[i]:-0}" ] 2>/dev/null && return 1
+    done
+    return 1
+}
+
+# The same lines as check(), from GitHub's latest release.
+function check_release() {
+    local json
+    json=$(curl -fsSL --max-time 30 "https://api.github.com/repos/$REPO/releases/latest") ||
+        { printf 'error\tcould not reach GitHub\n'; exit 1; }
+    local tag date sha installed
+    tag=$(jq -r '.tag_name // empty' <<<"$json")
+    date=$(jq -r '.published_at // empty' <<<"$json")
+    sha=$(jq -r '.target_commitish // empty' <<<"$json")
+    [ -n "$tag" ] || { printf 'error\tGitHub has no release yet\n'; exit 1; }
+    installed=$(installed_version)
+    printf 'installed\t%s\n' "$(installed_commit)"
+    printf 'latest\t%s\t%s\n' "${tag#v}" "${sha:0:7}"
+    printf 'ahead\t0\n'
+    if newer "${tag#v}" "${installed:-0}"; then
+        printf 'behind\t1\n'
+        printf 'commit\t%s\t%s\tGhostty Dock %s\n' "$tag" "$date" "${tag#v}"
+    else
+        printf 'behind\t0\n'
+    fi
 }
 
 # vendor/ghostty is Ghostty plus the old patch's commits. When the pull
@@ -120,6 +165,12 @@ function install() {
     # Killed or interrupted: say so, so the app's Update button does not wait forever.
     trap 'fail "interrupted"' INT TERM HUP
     log "updating"
+    if $RELEASE; then
+        log "downloading the latest release"
+        bash "$ROOT/get.sh" --no-open >>"$LOG" 2>&1 || fail "the download or install failed; see $LOG"
+        restart "$now"
+        return
+    fi
     [ -z "$(git -C "$ROOT" status --porcelain --untracked-files=no -- . ':!vendor')" ] ||
         fail "this clone has uncommitted changes ($ROOT)"
     fetch >/dev/null || fail "could not reach GitHub"
@@ -132,6 +183,11 @@ function install() {
     log "building (a minute or two)"
     "$ROOT/scripts/build-terminal.sh" --no-open >>"$LOG" 2>&1 || fail "the build failed; see $LOG"
     "$ROOT/install.sh" --skip-app >>"$LOG" 2>&1 || fail "installing the scripts failed; see $LOG"
+    restart "$now"
+}
+
+function restart() {
+    local now="$1"
     log "installed; restarting Ghostty Dock$($now || echo ' once sessions are quiet')"
     local args=()
     $now && args+=(--now)
@@ -177,7 +233,7 @@ function main() {
         exit 0
     fi
     case $mode in
-    check) check ;;
+    check) if $RELEASE; then check_release; else check; fi ;;
     install) install "$now" ;;
     esac
 }
