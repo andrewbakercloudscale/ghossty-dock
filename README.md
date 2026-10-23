@@ -109,6 +109,9 @@ reports each session's status.
   looking at it. Click one to go to its tab. Each can be turned off. The 🔔 in
   the header lists the last 200; going to a session marks its ones read.
 - **Running sessions** have a gold glint running round their row.
+- **Esc stops a turn**: Claude Code runs no hook when you interrupt it, so
+  the Dock reads the transcript and shows the session as idle within a few
+  seconds.
 - **Header buttons** each have their own colour; point at one and the
   counters line says what it does, so no tooltip covers a button.
 - **Loading screen** at startup: a turning gold ring and "Loading…" with how many sessions are back, until they all are (Skip to dismiss).
@@ -149,7 +152,8 @@ reports each session's status.
   it was; after that, the session is resumed in a new tab with its old flags.
 - **Right-click a row** to rename it, pin it to the top or give it a colour.
   These stick to the session, across restarts.
-- **Colour a session** with the 🎨 header button (or right-click → Colour…):
+- **Colour a session** with the 🎨 header button, right-click → Colourise
+  (pick straight from the menu) or right-click → Colour…:
   20 colours that sit well together. Its row is tinted in it and its
   terminal's background takes a little of it, so you can tell at a glance
   which session you are typing in. None takes it off.

@@ -3772,10 +3772,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..5066da3
+index 0000000..5c41400
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1083 @@
+@@ -0,0 +1,1130 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -3956,6 +3956,12 @@ index 0000000..5066da3
 +    /// When a session's transcript was last looked for and not found: each
 +    /// look lists every project folder, so not more than every 10 seconds.
 +    private var transcriptMissed: [String: Date] = [:]
++    /// Busy sessions (running or waiting) by id, with when the hook said so.
++    private var busy: [String: Int] = [:]
++    /// Busy sessions whose user pressed Esc: Claude Code writes the
++    /// interruption to the transcript but runs no Stop hook, so the hook's
++    /// file still says running.
++    private var interrupted: Set<String> = []
 +
 +    private init() {
 +        seen = (try? JSONDecoder().decode([String: Int].self,
@@ -4270,7 +4276,14 @@ index 0000000..5066da3
 +    /// to their transcript in the last 15 minutes, as DockAgents.Agent.live.
 +    private func refreshAgentsRunning() {
 +        let files = rows.compactMap { r in r.sessionId.flatMap { transcript($0) } }
++        let busyFiles = busy.compactMap { sid, since in transcript(sid).map { (sid, $0, since) } }
 +        costQueue.async { [weak self] in
++            let stopped = Set(busyFiles.filter { DockSessions.wasInterrupted($0.1, since: $0.2) }.map(\.0))
++            DispatchQueue.main.async {
++                guard let self, stopped != self.interrupted else { return }
++                self.interrupted = stopped
++                self.refresh()
++            }
 +            let fm = FileManager.default
 +            let now = Date()
 +            var running = 0
@@ -4290,6 +4303,35 @@ index 0000000..5066da3
 +                self.agentsRunning = running
 +            }
 +        }
++    }
++
++    /// The transcript's last message is "[Request interrupted by user…]",
++    /// written after the hook last said busy (a new prompt comes after it).
++    static func wasInterrupted(_ url: URL, since: Int) -> Bool {
++        guard let h = try? FileHandle(forReadingFrom: url) else { return false }
++        defer { try? h.close() }
++        let end = (try? h.seekToEnd()) ?? 0
++        try? h.seek(toOffset: end > 65536 ? end - 65536 : 0)
++        guard let data = try? h.readToEnd() else { return false }
++        for line in data.split(separator: UInt8(ascii: "\n")).reversed() {
++            guard let o = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
++                  let type = o["type"] as? String, type == "user" || type == "assistant",
++                  o["isSidechain"] as? Bool != true else { continue }
++            guard type == "user", let message = o["message"] as? [String: Any] else { return false }
++            let marker = "[Request interrupted by user"
++            var stopped = false
++            if let text = message["content"] as? String { stopped = text.hasPrefix(marker) }
++            for item in message["content"] as? [[String: Any]] ?? [] {
++                let text = item["text"] as? String ?? item["content"] as? String ?? ""
++                if text.hasPrefix(marker) { stopped = true }
++            }
++            guard stopped else { return false }
++            let f = ISO8601DateFormatter()
++            f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
++            guard let at = (o["timestamp"] as? String).flatMap(f.date) else { return true }
++            return Int(at.timeIntervalSince1970) >= since - 1
++        }
++        return false
 +    }
 +
 +    /// Each session's cost so far and context size, read off the main
@@ -4347,6 +4389,8 @@ index 0000000..5066da3
 +        // Sessions some tab is running now: their colour is theirs, never handed on.
 +        let liveSids = Set(sessions.values.compactMap { $0.session_id }.filter { !$0.isEmpty })
 +        var built: [Row] = []
++        var busyNow: [String: Int] = [:]
++        defer { busy = busyNow }
 +        for controller in TerminalController.all {
 +            guard let window = controller.window else { continue }
 +            let id = ObjectIdentifier(controller)
@@ -4362,7 +4406,10 @@ index 0000000..5066da3
 +                let key = surface.id.uuidString
 +                guard let s = sessions[key] else { continue }
 +                var status: Status
++                let sid = s.session_id.flatMap { $0.isEmpty ? nil : $0 }
++                if let sid, s.status == "running" || s.status == "waiting" { busyNow[sid] = s.since }
 +                switch s.status {
++                case _ where sid.map(interrupted.contains) == true: status = .idle
 +                case "running": status = .running
 +                case "waiting": status = .waiting
 +                case "done": status = (seen[key] ?? 0) >= s.since ? .idle : .unread
@@ -5274,10 +5321,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..abc429d
+index 0000000..21cf9e3
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1033 @@
+@@ -0,0 +1,1055 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -5957,6 +6004,16 @@ index 0000000..abc429d
 +                .disabled(model.visibleRows.first?.key == row.key)
 +            Button("Move Down") { model.move(row, by: 1) }
 +                .disabled(model.visibleRows.last?.key == row.key)
++            Menu("Colourise") {
++                ForEach(DockTag.allCases, id: \.self) { tag in
++                    Button { model.setTag(row, tag) } label: {
++                        Image(nsImage: Self.swatch(tag))
++                        Text(row.tag == tag ? "\(tag.label) ✓" : tag.label)
++                    }
++                }
++                Divider()
++                Button("None") { model.setTag(row, nil) }.disabled(row.tag == nil)
++            }
 +            Button("Colour…") { DockColourPanel.show(for: row) }
 +            Divider()
 +            if row.sessionId != nil {
@@ -5975,6 +6032,18 @@ index 0000000..abc429d
 +            }
 +            Button("Close Tab", action: onClose)
 +        }
++    }
++
++    /// A dot of the tag's colour for the menu: menus tint symbol images,
++    /// so it is drawn and not a template.
++    static func swatch(_ tag: DockTag) -> NSImage {
++        let img = NSImage(size: NSSize(width: 12, height: 12), flipped: false) { r in
++            NSColor(DockPalette.color(tag)).setFill()
++            NSBezierPath(ovalIn: r.insetBy(dx: 1, dy: 1)).fill()
++            return true
++        }
++        img.isTemplate = false
++        return img
 +    }
 +
 +    /// The colour you gave the row, or the selection blue.
