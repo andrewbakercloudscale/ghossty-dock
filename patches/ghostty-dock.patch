@@ -3864,10 +3864,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..c3eb223
+index 0000000..aa48996
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1161 @@
+@@ -0,0 +1,1189 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -4113,6 +4113,10 @@ index 0000000..c3eb223
 +        agentTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.refreshAgentsRunning() }
 +        NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil,
 +                                               queue: .main) { [weak self] _ in self?.applySettings() }
++        NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil,
++                                               queue: .main) { [weak self] _ in self?.leftAt = Date() }
++        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil,
++                                               queue: .main) { [weak self] _ in self?.leftAt = nil }
 +        applySettings()
 +    }
 +
@@ -4852,6 +4856,8 @@ index 0000000..c3eb223
 +        let first = lastStatus.isEmpty && !now.isEmpty
 +        // Active with every window minimised or hidden is not looking.
 +        let looking = appActive && NSApp.keyWindow.map { $0.isVisible && !$0.isMiniaturized } == true
++        // You only just switched away: a sound, not the window coming back.
++        let justLeft = !appActive && leftAt.map { Date().timeIntervalSince($0) < Self.justLeftSecs } == true
 +        var next: [String: Status] = [:]
 +        for row in now {
 +            next[row.key] = row.status
@@ -4862,14 +4868,16 @@ index 0000000..c3eb223
 +                if DockSettings.notifyWaiting { post(sid: sid, title: row.name, body: row.prompt ?? "Needs you") }
 +                // Only from another app: never switches tabs under you.
 +                if DockSettings.raiseWaiting && !looking {
-+                    DispatchQueue.main.async { [weak self] in self?.bringToFrontWhenIdle(sid, finished: false) }
++                    if justLeft { chime(unlessNotified: DockSettings.notifyWaiting) }
++                    else { DispatchQueue.main.async { [weak self] in self?.bringToFrontWhenIdle(sid, finished: false) } }
 +                }
 +            } else if row.status == .unread, before == .running || before == .waiting {
 +                let body = "Finished" + (costs[sid].map { " · " + DockCost.format($0) + " so far" } ?? "")
 +                DockNotices.shared.add(title: row.name, body: body, sessionId: sid, waiting: false)
 +                if DockSettings.notifyFinished { post(sid: sid, title: row.name, body: body) }
 +                if DockSettings.raiseFinished && !looking {
-+                    DispatchQueue.main.async { [weak self] in self?.bringToFrontWhenIdle(sid, finished: true) }
++                    if justLeft { chime(unlessNotified: DockSettings.notifyFinished) }
++                    else { DispatchQueue.main.async { [weak self] in self?.bringToFrontWhenIdle(sid, finished: true) } }
 +                }
 +            }
 +        }
@@ -4879,6 +4887,16 @@ index 0000000..c3eb223
 +    /// Sessions waiting to come to the front until you stop typing.
 +    private var raisePending: Set<String> = []
 +    static let raiseIdleSecs = 10.0
++    /// When you last switched to another app, nil while Ghostty Dock is active.
++    private var leftAt: Date?
++    static let justLeftSecs = 3.0
++    /// A heads-up or rise is under way; any other raise is dropped.
++    private var raising = false
++
++    /// The notification already makes a sound when it is on.
++    private func chime(unlessNotified notified: Bool) {
++        if !notified { NSSound(named: "Glass")?.play() }
++    }
 +
 +    /// Seconds since your last key press, click or mouse move, in any app.
 +    static var inputIdleSecs: Double {
@@ -4898,6 +4916,11 @@ index 0000000..c3eb223
 +                raisePending.remove(sid)
 +                return
 +            }
++            // Another raise is under way, or you are back in the window.
++            if raising || NSApp.isActive {
++                raisePending.remove(sid)
++                return
++            }
 +            // Held back while another session is still working, if you asked.
 +            if DockSettings.raiseWhenAllQuiet, rows.contains(where: { $0.status == .running }) {
 +                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { check() }
@@ -4905,21 +4928,25 @@ index 0000000..c3eb223
 +            }
 +            let idle = Self.inputIdleSecs
 +            if idle >= Self.raiseIdleSecs {
-+                // One heads-up at a time.
-+                if DockRaiseHeadsUp.shared.showing {
-+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { check() }
-+                    return
-+                }
 +                // Says it is coming first; typing meanwhile waits again.
++                raising = true
 +                DockRaiseHeadsUp.shared.show(raiseReason(row, finished: finished),
 +                                             on: row.controller?.window?.screen) { [weak self] outcome in
++                    guard let self else { return }
 +                    switch outcome {
-+                    case .later: DispatchQueue.main.asyncAfter(deadline: .now() + 1) { check() }
-+                    case .skip: self?.raisePending.remove(sid)
++                    case .later:
++                        self.raising = false
++                        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { check() }
++                    case .skip:
++                        self.raising = false
++                        self.raisePending.remove(sid)
 +                    case .raise:
-+                        self?.raisePending.remove(sid)
-+                        guard let self, let row = self.rows.first(where: { $0.sessionId == sid }),
-+                              row.status == want, !(NSApp.isActive && row.selected) else { return }
++                        self.raisePending.remove(sid)
++                        guard let row = self.rows.first(where: { $0.sessionId == sid }),
++                              row.status == want, !(NSApp.isActive && row.selected) else {
++                            self.raising = false
++                            return
++                        }
 +                        self.bringToFront(sid, finished: finished)
 +                    }
 +                }
@@ -4937,7 +4964,7 @@ index 0000000..c3eb223
 +    /// switch, then a banner says why it came up.
 +    private func bringToFront(_ sid: String, finished: Bool) {
 +        guard let row = rows.first(where: { $0.sessionId == sid }),
-+              let window = row.controller?.window else { return }
++              let window = row.controller?.window else { raising = false; return }
 +        if NSApp.isHidden { NSApp.unhide(nil) }
 +        if window.isMiniaturized { window.deminiaturize(nil) }
 +        window.tabGroup?.selectedWindow = window
@@ -4960,6 +4987,7 @@ index 0000000..c3eb223
 +            window.alphaValue = 1
 +            if rise { window.setFrame(end, display: true) }
 +            DockRaiseBanner.shared.show(reason, on: window)
++            self.raising = false
 +        })
 +    }
 +
