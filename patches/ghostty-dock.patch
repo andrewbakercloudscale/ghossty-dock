@@ -3302,10 +3302,10 @@ index 0000000..ca0bfa7
 +}
 diff --git a/macos/Sources/Features/Dock/DockRaiseBanner.swift b/macos/Sources/Features/Dock/DockRaiseBanner.swift
 new file mode 100644
-index 0000000..6bc7a28
+index 0000000..c7cf113
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockRaiseBanner.swift
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,228 @@
 +import AppKit
 +import SwiftUI
 +
@@ -3411,6 +3411,127 @@ index 0000000..6bc7a28
 +        .onAppear {
 +            withAnimation(.linear(duration: DockRaiseBanner.seconds)) { left = 0 }
 +        }
++    }
++}
++
++/// Before the Dock brings its window up by itself: a note at the top of the
++/// screen with a three-second countdown, so the switch never comes out of
++/// nowhere. It never takes the keyboard. Typing meanwhile puts the switch
++/// off until you stop again.
++final class DockRaiseHeadsUp {
++    static let shared = DockRaiseHeadsUp()
++    static let seconds = 3.0
++
++    enum Outcome { case raise, skip, later }
++
++    private var panel: NSPanel?
++    private var timer: Timer?
++    private var done: ((Outcome) -> Void)?
++
++    var showing: Bool { panel != nil }
++
++    func show(_ reason: DockRaiseBanner.Reason, on screen: NSScreen?, done: @escaping (Outcome) -> Void) {
++        finish(.later)
++        self.done = done
++        let model = DockRaiseHeadsUpModel()
++        let view = DockRaiseHeadsUpView(reason: reason, model: model,
++                                        onShow: { [weak self] in self?.finish(.raise) },
++                                        onSkip: { [weak self] in self?.finish(.skip) })
++        let host = NSHostingView(rootView: view)
++        let size = host.fittingSize
++        let p = NSPanel(contentRect: NSRect(origin: .zero, size: size),
++                        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
++        p.contentView = host
++        p.isOpaque = false
++        p.backgroundColor = .clear
++        p.hasShadow = true
++        p.level = .statusBar
++        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
++        p.becomesKeyOnlyIfNeeded = true
++        let area = (screen ?? NSScreen.main)?.visibleFrame ?? .zero
++        let end = NSRect(x: area.midX - size.width / 2, y: area.maxY - size.height - 12,
++                         width: size.width, height: size.height)
++        p.setFrame(end.offsetBy(dx: 0, dy: 30), display: false)
++        p.alphaValue = 0
++        p.orderFrontRegardless()
++        panel = p
++        NSAnimationContext.runAnimationGroup { ctx in
++            ctx.duration = 0.5
++            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
++            p.animator().alphaValue = 1
++            p.animator().setFrame(end, display: true)
++        }
++        let start = Date()
++        timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
++            let elapsed = Date().timeIntervalSince(start)
++            model.left = max(0, Self.seconds - elapsed)
++            // A key pressed since it appeared: you are typing somewhere else.
++            if CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown) < elapsed - 0.3 {
++                self?.finish(.later)
++            } else if elapsed >= Self.seconds {
++                self?.finish(.raise)
++            }
++        }
++    }
++
++    private func finish(_ outcome: Outcome) {
++        timer?.invalidate()
++        timer = nil
++        if let p = panel {
++            panel = nil
++            NSAnimationContext.runAnimationGroup({ ctx in
++                ctx.duration = 0.3
++                p.animator().alphaValue = 0
++            }, completionHandler: { p.orderOut(nil) })
++        }
++        let d = done
++        done = nil
++        d?(outcome)
++    }
++}
++
++private final class DockRaiseHeadsUpModel: ObservableObject {
++    @Published var left = DockRaiseHeadsUp.seconds
++}
++
++private struct DockRaiseHeadsUpView: View {
++    var reason: DockRaiseBanner.Reason
++    @ObservedObject var model: DockRaiseHeadsUpModel
++    var onShow: () -> Void
++    var onSkip: () -> Void
++
++    var body: some View {
++        VStack(alignment: .leading, spacing: 8) {
++            HStack(alignment: .center, spacing: 12) {
++                Image(systemName: reason.symbol)
++                    .font(.system(size: 24))
++                    .foregroundStyle(reason.color)
++                VStack(alignment: .leading, spacing: 2) {
++                    Text(reason.title)
++                        .font(.system(size: 14, weight: .semibold))
++                        .foregroundStyle(DockPalette.text)
++                    Text("Ghostty Dock comes up in \(Int(model.left.rounded(.up)))s · typing puts it off")
++                        .font(.system(size: 12))
++                        .monospacedDigit()
++                        .foregroundStyle(DockPalette.text.opacity(0.75))
++                }
++                .frame(width: 300, alignment: .leading)
++                Button("Not now", action: onSkip)
++                    .buttonStyle(DockPillButton(color: DockPalette.text))
++                Button("Show now", action: onShow)
++                    .buttonStyle(DockPillButton(color: reason.color))
++            }
++            GeometryReader { g in
++                Capsule().fill(reason.color.opacity(0.85))
++                    .frame(width: g.size.width * model.left / DockRaiseHeadsUp.seconds, height: 3)
++                    .animation(.linear(duration: 0.2), value: model.left)
++            }
++            .frame(height: 3)
++        }
++        .padding(14)
++        .background(RoundedRectangle(cornerRadius: 14).fill(DockPalette.base))
++        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(reason.color, lineWidth: 2))
++        .environment(\.colorScheme, DockPalette.scheme)
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockSearch.swift b/macos/Sources/Features/Dock/DockSearch.swift
@@ -3651,10 +3772,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..04c41de
+index 0000000..5066da3
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1053 @@
+@@ -0,0 +1,1083 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -4614,8 +4735,24 @@ index 0000000..04c41de
 +            }
 +            let idle = Self.inputIdleSecs
 +            if idle >= Self.raiseIdleSecs {
-+                raisePending.remove(sid)
-+                bringToFront(sid, finished: finished)
++                // One heads-up at a time.
++                if DockRaiseHeadsUp.shared.showing {
++                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { check() }
++                    return
++                }
++                // Says it is coming first; typing meanwhile waits again.
++                DockRaiseHeadsUp.shared.show(raiseReason(row, finished: finished),
++                                             on: row.controller?.window?.screen) { [weak self] outcome in
++                    switch outcome {
++                    case .later: DispatchQueue.main.asyncAfter(deadline: .now() + 1) { check() }
++                    case .skip: self?.raisePending.remove(sid)
++                    case .raise:
++                        self?.raisePending.remove(sid)
++                        guard let self, let row = self.rows.first(where: { $0.sessionId == sid }),
++                              row.status == want, !(NSApp.isActive && row.selected) else { return }
++                        self.bringToFront(sid, finished: finished)
++                    }
++                }
 +            } else {
 +                DispatchQueue.main.asyncAfter(deadline: .now() + max(0.5, Self.raiseIdleSecs - idle)) { check() }
 +            }
@@ -4623,27 +4760,42 @@ index 0000000..04c41de
 +        check()
 +    }
 +
++    static let raiseAnimationSecs = 1.4
++
 +    /// Un-minimises the window and shows session <sid>'s tab, over other
-+    /// apps, fading in with a banner saying why it came up.
++    /// apps: it fades in as it rises into place, slowly enough to see the
++    /// switch, then a banner says why it came up.
 +    private func bringToFront(_ sid: String, finished: Bool) {
 +        guard let row = rows.first(where: { $0.sessionId == sid }),
 +              let window = row.controller?.window else { return }
 +        if NSApp.isHidden { NSApp.unhide(nil) }
 +        if window.isMiniaturized { window.deminiaturize(nil) }
-+        let wasVisible = window.isVisible && window.occlusionState.contains(.visible)
 +        window.tabGroup?.selectedWindow = window
-+        if !wasVisible { window.alphaValue = 0 }
 +        select(row)
++        let end = window.frame
++        // Moved, never resized: the terminal does not reflow as it rises.
++        let rise = !window.styleMask.contains(.fullScreen)
++        window.alphaValue = 0
++        if rise { window.setFrame(end.offsetBy(dx: 0, dy: -60), display: false) }
 +        // macOS may refuse to activate an app the user isn't in; this still
 +        // puts the window above the others.
 +        window.orderFrontRegardless()
-+        if !wasVisible {
-+            NSAnimationContext.runAnimationGroup { ctx in
-+                ctx.duration = 0.35
-+                window.animator().alphaValue = 1
-+            }
-+        }
-+        let reason = finished
++        let reason = raiseReason(row, finished: finished)
++        NSAnimationContext.runAnimationGroup({ ctx in
++            ctx.duration = Self.raiseAnimationSecs
++            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
++            window.animator().alphaValue = 1
++            if rise { window.animator().setFrame(end, display: true) }
++        }, completionHandler: {
++            window.alphaValue = 1
++            if rise { window.setFrame(end, display: true) }
++            DockRaiseBanner.shared.show(reason, on: window)
++        })
++    }
++
++    private func raiseReason(_ row: Row, finished: Bool) -> DockRaiseBanner.Reason {
++        let sid = row.sessionId ?? ""
++        return finished
 +            ? DockRaiseBanner.Reason(symbol: "checkmark.circle.fill", color: DockPalette.blue,
 +                                     title: "\(row.name) is idle",
 +                                     detail: costs[sid].map { "Ready for your next step · " + DockCost.format($0) + " so far" }
@@ -4651,7 +4803,6 @@ index 0000000..04c41de
 +            : DockRaiseBanner.Reason(symbol: "questionmark.bubble.fill", color: DockPalette.peach,
 +                                     title: "\(row.name) needs an answer",
 +                                     detail: row.prompt ?? "Claude is waiting for you")
-+        DockRaiseBanner.shared.show(reason, on: window)
 +    }
 +
 +    static let notificationSessionKey = "ghosttyDockSession"
