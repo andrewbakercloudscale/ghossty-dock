@@ -325,10 +325,10 @@ index 0000000..0851575
 +}
 diff --git a/macos/Sources/Features/Dock/DockAbout.swift b/macos/Sources/Features/Dock/DockAbout.swift
 new file mode 100644
-index 0000000..de579e2
+index 0000000..038b86c
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAbout.swift
-@@ -0,0 +1,440 @@
+@@ -0,0 +1,430 @@
 +import AppKit
 +import SwiftUI
 +
@@ -349,6 +349,8 @@ index 0000000..de579e2
 +    static let help = URL(string: "https://cloudscale.consulting/ghostty-dock/")!
 +    static let post = URL(string: "https://andrewbaker.ninja/2026/10/21/ghostty-dock-one-window-for-every-claude-code-session-with-claude-burst-and-a-live-cost-panel/")!
 +
++    var width: CGFloat = 540
++
 +    var body: some View {
 +        ScrollView {
 +            VStack(alignment: .leading, spacing: 14) {
@@ -363,7 +365,7 @@ index 0000000..de579e2
 +            }
 +            .padding(20)
 +        }
-+        .frame(width: 540)
++        .frame(width: width)
 +        .frame(minHeight: 480, idealHeight: 720)
 +        .background(DockPalette.base)
 +        .environment(\.colorScheme, DockPalette.scheme)
@@ -709,24 +711,12 @@ index 0000000..de579e2
 +    }
 +}
 +
-+/// About in its own window, like a normal Mac app's About box.
++/// About is the last tab of Settings; this opens it there.
 +final class DockAboutWindow {
 +    static let shared = DockAboutWindow()
-+    private var window: NSWindow?
 +
 +    func show(near point: NSPoint? = nil) {
-+        if window == nil {
-+            let w = NSWindow(contentViewController: NSHostingController(rootView: DockAboutView()))
-+            w.title = "About Ghostty Dock"
-+            w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-+            w.isReleasedWhenClosed = false
-+            w.setContentSize(NSSize(width: 540, height: 720))
-+            w.center()
-+            window = w
-+        }
-+        if let point, window?.isVisible == false { window?.place(near: point) }
-+        NSApp.activate(ignoringOtherApps: true)
-+        window?.makeKeyAndOrderFront(nil)
++        DockSettingsWindow.shared.show(near: point, tab: "about")
 +        if DockUpdates.shared.lastCheck == nil { DockUpdates.shared.check() }
 +    }
 +}
@@ -2388,6 +2378,59 @@ index 0000000..e83caf9
 +            Text(body).font(.callout).foregroundStyle(DockPalette.grey)
 +                .fixedSize(horizontal: false, vertical: true)
 +        }
++    }
++}
+diff --git a/macos/Sources/Features/Dock/DockCenteredTitle.swift b/macos/Sources/Features/Dock/DockCenteredTitle.swift
+new file mode 100644
+index 0000000..38589ea
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockCenteredTitle.swift
+@@ -0,0 +1,47 @@
++import AppKit
++
++/// The window title in the middle of the title bar. macOS 26 puts it at the
++/// left, beside the window buttons; with the sidebar there it reads as the
++/// sidebar's heading. AppKit's own title is hidden and a label stands in.
++///
++/// Only the plain and transparent title bar styles: hidden has no title, and
++/// the tabs styles draw their own.
++enum DockCenteredTitle {
++    private static var key = 0
++
++    static func update(_ window: TerminalWindow) {
++        guard applies(to: window),
++              let bar = window.standardWindowButton(.closeButton)?.superview else { return }
++        let label = label(for: window, in: bar)
++        label.stringValue = window.title
++        label.font = window.titlebarFont ?? NSFont.titleBarFont(ofSize: NSFont.systemFontSize)
++        label.textColor = window.isKeyWindow ? .labelColor : .secondaryLabelColor
++    }
++
++    private static func applies(to window: TerminalWindow) -> Bool {
++        guard window.styleMask.contains(.titled) else { return false }
++        if window is HiddenTitlebarTerminalWindow || window is TitlebarTabsVenturaTerminalWindow { return false }
++        if #available(macOS 26.0, *), window is TitlebarTabsTahoeTerminalWindow { return false }
++        return true
++    }
++
++    private static func label(for window: TerminalWindow, in bar: NSView) -> NSTextField {
++        if let old = objc_getAssociatedObject(window, &key) as? NSTextField, old.superview === bar { return old }
++        (objc_getAssociatedObject(window, &key) as? NSTextField)?.removeFromSuperview()
++        window.titleVisibility = .hidden
++        let label = NSTextField(labelWithString: window.title)
++        label.lineBreakMode = .byTruncatingMiddle
++        label.alignment = .center
++        label.translatesAutoresizingMaskIntoConstraints = false
++        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
++        bar.addSubview(label)
++        let anchor = window.standardWindowButton(.closeButton)!
++        NSLayoutConstraint.activate([
++            label.centerXAnchor.constraint(equalTo: bar.centerXAnchor),
++            label.centerYAnchor.constraint(equalTo: anchor.centerYAnchor),
++            label.widthAnchor.constraint(lessThanOrEqualTo: bar.widthAnchor, constant: -240),
++        ])
++        objc_setAssociatedObject(window, &key, label, .OBJC_ASSOCIATION_RETAIN)
++        return label
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockCost.swift b/macos/Sources/Features/Dock/DockCost.swift
@@ -4990,10 +5033,10 @@ index 0000000..c3eb223
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..344c26f
+index 0000000..c7b9de4
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,307 @@
+@@ -0,0 +1,313 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -5079,7 +5122,7 @@ index 0000000..344c26f
 +    @ObservedObject private var updates = DockUpdates.shared
 +    @State private var startAtLogin = SMAppService.mainApp.status == .enabled
 +    @State private var loginError: String?
-+    @AppStorage("dock.settingsTab") private var tab = "sidebar"
++    @AppStorage(DockSettingsWindow.tabKey) private var tab = "sidebar"
 +
 +    /// One short page per tab, so nothing needs scrolling.
 +    var body: some View {
@@ -5089,6 +5132,8 @@ index 0000000..344c26f
 +            page { notifications }.tabItem { Label("Notifications", systemImage: "bell.badge") }.tag("notifications")
 +            page { shortcuts }.tabItem { Label("Shortcuts", systemImage: "keyboard") }.tag("shortcuts")
 +            page { app }.tabItem { Label("App", systemImage: "gearshape") }.tag("app")
++            DockAboutView(width: 500).frame(height: 640)
++                .tabItem { Label("About", systemImage: "info.circle") }.tag("about")
 +        }
 +        .padding(.top, 8)
 +        .frame(width: 500)
@@ -5204,7 +5249,7 @@ index 0000000..344c26f
 +                            Button("Update…") { updates.confirmInstall() }
 +                                .disabled(updates.state == .installing)
 +                        }
-+                        Button("About and Updates…") { DockAboutWindow.shared.show() }
++                        Button("About and Updates…") { tab = "about" }
 +                    }
 +                }
 +                if updates.available, let latest = updates.latest {
@@ -5286,8 +5331,12 @@ index 0000000..344c26f
 +    static let shared = DockSettingsWindow()
 +    private var window: NSWindow?
 +
++    static let tabKey = "dock.settingsTab"
++
 +    /// `near`: the button it was opened from; it opens beside it.
-+    func show(near point: NSPoint? = nil) {
++    /// `tab`: the tab to show, or the one last shown.
++    func show(near point: NSPoint? = nil, tab: String? = nil) {
++        if let tab { UserDefaults.standard.set(tab, forKey: Self.tabKey) }
 +        if window == nil {
 +            let w = NSWindow(contentViewController: NSHostingController(rootView: DockSettingsView()))
 +            w.title = "Ghostty Dock Settings"
@@ -5414,7 +5463,7 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..21cf9e3
+index 0000000..a494e7d
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
 @@ -0,0 +1,1055 @@
@@ -5674,7 +5723,8 @@ index 0000000..21cf9e3
 +    private var headerButtons: some View {
 +        HStack(spacing: 2) {
 +            Text("Sessions").font(.system(size: 12, weight: .semibold)).foregroundStyle(DockPalette.text)
-+            Spacer()
++                .lineLimit(1).fixedSize()
++            Spacer(minLength: 4)
 +            // Always there; green and filled when a newer build is installed.
 +            if updates.state != .installing {
 +                Button { updates.restarting ? updates.confirmRestartNow() : updates.confirmRestart() } label: {
@@ -5746,9 +5796,6 @@ index 0000000..21cf9e3
 +            }
 +            DockHeaderButton(symbol: "plus", color: DockPalette.green, tip: "New tab (⌘T)",
 +                             shownTip: $headerTip, tipColor: $headerTipColor, action: onNewTab)
-+            DockHeaderButton(symbol: "arrow.down.to.line", color: DockPalette.peach,
-+                             tip: "Next session that needs you (⌃⌥J)",
-+                             shownTip: $headerTip, tipColor: $headerTipColor, action: model.jumpToNextWaiting)
 +            DockHeaderButton(symbol: "paintpalette.fill", color: selectedTag.map(DockPalette.color) ?? DockPalette.color(DockTag.pink),
 +                             tip: "Colour this session, its row and its terminal", shownTip: $headerTip,
 +                             tipColor: $headerTipColor) {
@@ -5761,18 +5808,20 @@ index 0000000..21cf9e3
 +                    Text("Click a session first").padding(14)
 +                }
 +            }
-+            DockHeaderButton(symbol: "gearshape.fill", color: DockPalette.color(DockTag.amber), tip: "Settings (⌘,)",
-+                             shownTip: $headerTip, tipColor: $headerTipColor) {
-+                DockSettingsWindow.shared.show(near: NSEvent.mouseLocation)
-+            }
-+            DockHeaderButton(symbol: updates.available ? "info.circle.fill" : "info.circle",
-+                             color: updates.available ? DockPalette.green : DockPalette.color(DockTag.cyan),
++            // About is Settings' last tab; with an update out the gear turns
++            // green, flashes and opens there.
++            DockHeaderButton(symbol: "gearshape.fill",
++                             color: updates.available ? DockPalette.green : DockPalette.color(DockTag.amber),
 +                             tip: updates.available
 +                                 ? "Update available: \(updates.latest ?? "a newer version"). Click for About and Update"
-+                                 : "About and updates",
++                                 : "Settings and About (⌘,)",
 +                             flash: updates.available && updates.state != .installing,
 +                             shownTip: $headerTip, tipColor: $headerTipColor) {
-+                DockAboutWindow.shared.show(near: NSEvent.mouseLocation)
++                if updates.available {
++                    DockAboutWindow.shared.show(near: NSEvent.mouseLocation)
++                } else {
++                    DockSettingsWindow.shared.show(near: NSEvent.mouseLocation)
++                }
 +            }
 +        }
 +    }
@@ -7477,10 +7526,25 @@ index b6e1c63..386c856 100644
      }
  }
 diff --git a/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift b/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift
-index e19d671..ae08f36 100644
+index e19d671..fbe4025 100644
 --- a/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift	
 +++ b/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift	
-@@ -255,6 +255,8 @@ class TerminalWindow: NSWindow {
+@@ -196,12 +196,14 @@ class TerminalWindow: NSWindow {
+     override func becomeKey() {
+         super.becomeKey()
+         resetZoomTabButton.contentTintColor = .controlAccentColor
++        DockCenteredTitle.update(self)
+     }
+ 
+     override func resignKey() {
+         super.resignKey()
+         resetZoomTabButton.contentTintColor = .secondaryLabelColor
+         tabTitleEditor.finishEditing(commit: true)
++        DockCenteredTitle.update(self)
+     }
+ 
+     override func becomeMain() {
+@@ -255,6 +257,8 @@ class TerminalWindow: NSWindow {
          // it. This has been verified to work on macOS 12 to 26
          if isTabBar(childViewController) {
              childViewController.identifier = Self.tabBarIdentifier
@@ -7489,6 +7553,14 @@ index e19d671..ae08f36 100644
              tabBarDidAppear()
          }
      }
+@@ -398,6 +402,7 @@ class TerminalWindow: NSWindow {
+             /// Check ``titlebarFont`` down below
+             /// to see why we need to check `hasMoreThanOneTabs` here
+             titlebarTextField?.usesSingleLineMode = !hasMoreThanOneTabs
++            DockCenteredTitle.update(self)
+         }
+     }
+ 
 diff --git a/macos/Sources/Ghostty/Ghostty.App.swift b/macos/Sources/Ghostty/Ghostty.App.swift
 index 2f0644b..1807a0c 100644
 --- a/macos/Sources/Ghostty/Ghostty.App.swift

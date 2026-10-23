@@ -97,7 +97,8 @@ reports each session's status.
   under the tabs, grey with a dashed outline. Click one to show its window, or
   its **Dock** icon (↙) to restart it in a tab here at once.
   Same as `ghostty-dock-move --pid <pid>`, `--undock <session id>`, `--detach`.
-- Ctrl-Opt-J: jump to the next session that needs you (then finished ones).
+- ⌘⇧J (Ctrl-Opt-J from any app): jump to the next session that needs you (then finished ones).
+- The window title (the session's name) sits in the middle of the title bar.
 - Dock badge: how many sessions need you.
 - **What it's waiting on**: a row that needs you shows the question, or the
   tool call to allow ("Allow Bash: npm test"), so you know before you switch.
@@ -247,12 +248,12 @@ ordinary macOS defaults (`defaults read consulting.cloudscale.ghosttydock`).
 
 ## About and updates
 
-The ⓘ button at the top of the sidebar (or Ghostty Dock → About Ghostty Dock,
-Help → About Ghostty Dock, or Check for Updates…) shows the version
+**About** is the last tab of Settings (⚙︎ at the top of the sidebar, or Ghostty
+Dock → About Ghostty Dock, Help → About Ghostty Dock, or Check for Updates…). It shows the version
 (`1.0.<commits>` and the commit it was built from), who made it, and links.
 It checks GitHub 5 seconds after launch and every 6 hours; when there is
 something new, an **Update** button appears there, in Settings and at the top
-of the sidebar, and the sidebar's ⓘ turns green and flashes. Update runs `scripts/update.sh --install` in the clone the app
+of the sidebar, and the sidebar's ⚙︎ turns green and flashes (click it for About). Update runs `scripts/update.sh --install` in the clone the app
 was built from: pull, rebuild, install, then restart once your sessions are
 quiet (they are resumed as tabs). Log: `~/.local/state/ghostty-dock/update.log`.
 
