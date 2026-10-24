@@ -106,14 +106,30 @@ function describe() {
     printf '%s\t%s\t%s\n' "$cwd" "$sid" "$flags"
 }
 
+# True when the transcript's last turn is over: its last entry is the
+# turn's end marker or "[Request interrupted by user…]".
+function turn_ended() {
+    [ -f "$1" ] || return 1
+    tail -c 65536 "$1" | tail -n +2 | jq -rR '
+        fromjson? | select(.isSidechain != true)
+        | if .type == "system" and .subtype == "turn_duration" then "ended"
+          elif .type == "user" then
+            ([.message.content | if type == "string" then . else (.[]? | .text // (.content | strings) // empty) end]
+             | map(startswith("[Request interrupted by user")) | any | if . then "ended" else "busy" end)
+          elif .type == "assistant" then "busy"
+          else empty end' 2>/dev/null | tail -1 | grep -qx ended
+}
+
 function quiet_secs() {
     local cwd="$1"
     local sid="$2"
     local file
     file="$HOME/.claude/projects/$(sed 's/[^A-Za-z0-9]/-/g' <<<"$cwd")/$sid.jsonl"
     # A session whose transcript saving is off looks quiet forever, so the
-    # hook's status counts too.
-    if grep -lq "\"session_id\":\"$sid\".*\"status\":\"running\"\|\"status\":\"running\".*\"session_id\":\"$sid\"" "$STATE_DIR"/sessions/*.json 2>/dev/null; then
+    # hook's status counts too, unless the transcript shows the turn is over:
+    # an API error or Esc ends it without the hook hearing.
+    if grep -lq "\"session_id\":\"$sid\".*\"status\":\"running\"\|\"status\":\"running\".*\"session_id\":\"$sid\"" "$STATE_DIR"/sessions/*.json 2>/dev/null &&
+        ! turn_ended "$file"; then
         echo 0
         return
     fi
