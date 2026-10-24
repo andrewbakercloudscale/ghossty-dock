@@ -5489,10 +5489,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..61e18ff
+index 0000000..22abe24
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1071 @@
+@@ -0,0 +1,1091 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -5654,6 +5654,11 @@ index 0000000..61e18ff
 +                    onUndock: { model.undock(row) },
 +                    onRestart: { model.restart(row) })
 +            .onTapGesture { model.select(row) }
++            // Raised: a little larger and lifted, drawn above its neighbours.
++            .scaleEffect(row.selected ? 1.025 : 1)
++            .offset(y: row.selected ? -1 : 0)
++            .padding(.vertical, row.selected ? 3 : 0)
++            .zIndex(row.selected ? 1 : 0)
 +            .onDrag { NSItemProvider(object: row.key as NSString) }
 +            .onDrop(of: [.text], delegate: DockRowDrop(target: row.key, hovered: $dropTarget))
 +            .overlay(alignment: .top) { dropLine(dropTarget == row.key).offset(y: -2) }
@@ -6131,15 +6136,30 @@ index 0000000..61e18ff
 +        }
 +        .padding(.horizontal, 8)
 +        .padding(.vertical, 6)
-+        .background(
-+            RoundedRectangle(cornerRadius: 7)
-+                .fill(row.selected ? accent.opacity(0.28)
-+                      : row.tag != nil ? accent.opacity(hover ? 0.24 : 0.16)
-+                      : hover ? DockPalette.base : Color.clear)
-+        )
++        .background {
++            ZStack {
++                // The selected row sits raised on a solid card with a drop shadow.
++                if row.selected {
++                    RoundedRectangle(cornerRadius: 7)
++                        .fill(DockPalette.base)
++                        .shadow(color: .black.opacity(0.18), radius: 1, y: 1)
++                        .shadow(color: .black.opacity(0.32), radius: 7, y: 5)
++                }
++                RoundedRectangle(cornerRadius: 7)
++                    .fill(row.selected ? accent.opacity(0.28)
++                          : row.tag != nil ? accent.opacity(hover ? 0.24 : 0.16)
++                          : hover ? DockPalette.base : Color.clear)
++                // Light along the top edge, like a lit bevel.
++                if row.selected {
++                    RoundedRectangle(cornerRadius: 7)
++                        .strokeBorder(LinearGradient(colors: [.white.opacity(0.55), .white.opacity(0)],
++                                                     startPoint: .top, endPoint: .center), lineWidth: 1)
++                }
++            }
++        }
 +        .overlay {
 +            if row.selected {
-+                RoundedRectangle(cornerRadius: 7).strokeBorder(accent.opacity(0.85), lineWidth: 1.5)
++                RoundedRectangle(cornerRadius: 7).strokeBorder(accent, lineWidth: 2)
 +            } else if row.status == .waiting {
 +                DockAttentionRing()
 +            }
