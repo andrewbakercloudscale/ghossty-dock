@@ -6904,10 +6904,10 @@ index 0000000..cf53b7e
 +}
 diff --git a/macos/Sources/Features/Dock/DockTint.swift b/macos/Sources/Features/Dock/DockTint.swift
 new file mode 100644
-index 0000000..596cc6e
+index 0000000..93e4035
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockTint.swift
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,123 @@
 +import AppKit
 +import GhosttyKit
 +import SwiftUI
@@ -6952,6 +6952,43 @@ index 0000000..596cc6e
 +            }
 +        }
 +        applied = applied.filter { seen.contains($0.key) }
++        publish(rows)
++    }
++
++    /// Where each session's terminal background is written, one file per
++    /// Claude session id holding "#rrggbb". Claude Code fills a mod's pane
++    /// with its own theme's grey, so the usage panel's mod reads this and
++    /// paints its pane the colour of the terminal beside it.
++    static let backgroundsDir = FileManager.default.homeDirectoryForCurrentUser
++        .appendingPathComponent(".local/state/ghostty-dock/backgrounds")
++
++    /// What each session's file holds, so a refresh writes only a change.
++    private var published: [String: Int] = [:]
++
++    private func publish(_ rows: [DockSessions.Row]) {
++        let base = Self.hex(NSColor(DockPalette.base))
++        var want: [String: Int] = [:]
++        for row in rows {
++            guard let sid = row.sessionId, row.controller != nil else { continue }
++            want[sid] = row.tag.map(Self.background) ?? base
++        }
++        guard want != published else { return }
++        let fm = FileManager.default
++        try? fm.createDirectory(at: Self.backgroundsDir, withIntermediateDirectories: true)
++        for (sid, bg) in want where published[sid] != bg {
++            try? String(format: "#%06x\n", bg)
++                .write(to: Self.backgroundsDir.appendingPathComponent(sid), atomically: true, encoding: .utf8)
++        }
++        for sid in published.keys where want[sid] == nil {
++            try? fm.removeItem(at: Self.backgroundsDir.appendingPathComponent(sid))
++        }
++        published = want
++    }
++
++    private static func hex(_ color: NSColor) -> Int {
++        let c = color.usingColorSpace(.sRGB) ?? .black
++        let v = { (x: CGFloat) in Int((x * 255).rounded()) }
++        return v(c.redComponent) << 16 | v(c.greenComponent) << 8 | v(c.blueComponent)
 +    }
 +
 +    /// The theme's background with some of the colour mixed in.
