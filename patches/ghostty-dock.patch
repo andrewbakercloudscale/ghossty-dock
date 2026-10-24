@@ -5572,7 +5572,7 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..d6aed4d
+index 0000000..443d33c
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
 @@ -0,0 +1,1095 @@
@@ -6228,8 +6228,8 @@ index 0000000..d6aed4d
 +                if row.selected {
 +                    RoundedRectangle(cornerRadius: 7)
 +                        .fill(DockPalette.base)
-+                        .shadow(color: .black.opacity(0.18), radius: 1, y: 1)
-+                        .shadow(color: .black.opacity(0.32), radius: 7, y: 5)
++                        .shadow(color: .black.opacity(0.4), radius: 1.5, y: 1.5)
++                        .shadow(color: .black.opacity(0.65), radius: 9, y: 6)
 +                }
 +                RoundedRectangle(cornerRadius: 7)
 +                    .fill(row.selected ? accent.opacity(0.28)
