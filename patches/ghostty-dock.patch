@@ -141,10 +141,10 @@ index ade9bf3..dfbd82b 100644
  // rest of the app.
 diff --git a/macos/Sources/Features/Dock/DockAPI.swift b/macos/Sources/Features/Dock/DockAPI.swift
 new file mode 100644
-index 0000000..0851575
+index 0000000..098a66e
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAPI.swift
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,179 @@
 +import AppKit
 +
 +/// The app's side of the `ghostty-dock` command: requests are JSON files
@@ -221,7 +221,8 @@ index 0000000..0851575
 +        if op == "notify" {
 +            let title = r["title"] as? String ?? "Ghostty Dock"
 +            let body = r["body"] as? String ?? ""
-+            DockNotices.shared.add(title: title, body: body, sessionId: nil, waiting: r["urgent"] as? Bool ?? false)
++            DockNotices.shared.add(title: title, body: body, sessionId: nil, waiting: r["urgent"] as? Bool ?? false,
++                                   source: .script)
 +            model.postExternal(title: title, body: body)
 +            return ["ok": true]
 +        }
@@ -3031,10 +3032,10 @@ index 0000000..6d9cbd4
 +}
 diff --git a/macos/Sources/Features/Dock/DockNotices.swift b/macos/Sources/Features/Dock/DockNotices.swift
 new file mode 100644
-index 0000000..cfcdb9b
+index 0000000..bc033d2
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockNotices.swift
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,162 @@
 +import AppKit
 +import Combine
 +import SwiftUI
@@ -3042,7 +3043,7 @@ index 0000000..cfcdb9b
 +/// Everything Ghostty Dock told you about, newest first, for the bell in the
 +/// sidebar's header.
 +///
-+/// Kept in ~/.local/state/ghostty-dock/notices.json (the last 200), so it
++/// Kept in ~/.local/state/ghostty-dock/notices.json (as many as Settings, Bell keeps), so it
 +/// survives a restart.
 +final class DockNotices: ObservableObject {
 +    static let shared = DockNotices()
@@ -3063,7 +3064,6 @@ index 0000000..cfcdb9b
 +
 +    private let file = FileManager.default.homeDirectoryForCurrentUser
 +        .appendingPathComponent(".local/state/ghostty-dock/notices.json")
-+    private static let keep = 200
 +
 +    private init() {
 +        if let data = try? Data(contentsOf: file),
@@ -3072,9 +3072,23 @@ index 0000000..cfcdb9b
 +        }
 +    }
 +
-+    func add(title: String, body: String, sessionId: String?, waiting: Bool) {
++    /// Where a notice came from, for Settings, Bell.
++    enum Source { case waiting, finished, script }
++
++    func add(title: String, body: String, sessionId: String?, waiting: Bool, source: Source) {
++        switch source {
++        case .waiting: guard DockSettings.bellWaiting else { return }
++        case .finished: guard DockSettings.bellFinished else { return }
++        case .script: guard DockSettings.bellScripts else { return }
++        }
 +        items.insert(Notice(date: Date(), title: title, body: body, sessionId: sessionId, waiting: waiting), at: 0)
-+        if items.count > Self.keep { items.removeLast(items.count - Self.keep) }
++        trim()
++    }
++
++    /// Drops the oldest beyond Settings, Bell, Keep the last.
++    func trim() {
++        let keep = DockSettings.bellKeep
++        if items.count > keep { items.removeLast(items.count - keep) }
 +        save()
 +    }
 +
@@ -3085,7 +3099,8 @@ index 0000000..cfcdb9b
 +
 +    /// Going to a session reads what was said about it.
 +    func readAll(sessionId sid: String) {
-+        guard items.contains(where: { $0.sessionId == sid && !$0.read }) else { return }
++        guard DockSettings.bellReadOnVisit,
++              items.contains(where: { $0.sessionId == sid && !$0.read }) else { return }
 +        markRead { $0.sessionId == sid }
 +    }
 +
@@ -3119,6 +3134,11 @@ index 0000000..cfcdb9b
 +                Spacer()
 +                Button("Mark All Read") { notices.markAllRead() }.disabled(notices.unread == 0)
 +                Button("Clear") { notices.clear() }.disabled(notices.items.isEmpty)
++                Button {
++                    onClose()
++                    DockSettingsWindow.shared.show(near: NSEvent.mouseLocation, tab: "bell")
++                } label: { Image(systemName: "gearshape") }
++                .help("What the bell keeps (Settings, Bell)")
 +            }
 +            .buttonStyle(.borderless)
 +            .font(.system(size: 11))
@@ -3180,10 +3200,10 @@ index 0000000..cfcdb9b
 +}
 diff --git a/macos/Sources/Features/Dock/DockOrdering.swift b/macos/Sources/Features/Dock/DockOrdering.swift
 new file mode 100644
-index 0000000..ca0bfa7
+index 0000000..3cfcd4a
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockOrdering.swift
-@@ -0,0 +1,208 @@
+@@ -0,0 +1,220 @@
 +import Foundation
 +
 +/// What a tab is doing. Raw values are the urgency order: needs you first.
@@ -3209,6 +3229,8 @@ index 0000000..ca0bfa7
 +    // Round the colour wheel, so neighbours in the picker differ.
 +    case red, coral, orange, amber, yellow, lime, green, emerald, teal, cyan
 +    case sky, blue, indigo, violet, purple, magenta, pink, rose, brown, slate
++    // Vivid, for the rows that have to stand out.
++    case scarlet, blaze, gold, volt, neon, aqua, electric, ultra, fuchsia, flamingo
 +
 +    var label: String { rawValue.capitalized }
 +
@@ -3235,6 +3257,16 @@ index 0000000..ca0bfa7
 +        case .rose: return 0xe85d8c
 +        case .brown: return 0xb07f5a
 +        case .slate: return 0x8a9bb0
++        case .scarlet: return 0xff1f3d
++        case .blaze: return 0xff5a00
++        case .gold: return 0xffd000
++        case .volt: return 0xc8ff00
++        case .neon: return 0x39ff14
++        case .aqua: return 0x00ffd0
++        case .electric: return 0x0a84ff
++        case .ultra: return 0x6a2bff
++        case .fuchsia: return 0xff00e1
++        case .flamingo: return 0xff2e93
 +        }
 +    }
 +}
@@ -3864,7 +3896,7 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..c1a1b29
+index 0000000..b88d695
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
 @@ -0,0 +1,1195 @@
@@ -4870,7 +4902,7 @@ index 0000000..c1a1b29
 +            guard !first, let before = lastStatus[row.key], before != row.status,
 +                  !(looking && row.selected), let sid = row.sessionId else { continue }
 +            if row.status == .waiting {
-+                DockNotices.shared.add(title: row.name, body: row.prompt ?? "Needs you", sessionId: sid, waiting: true)
++                DockNotices.shared.add(title: row.name, body: row.prompt ?? "Needs you", sessionId: sid, waiting: true, source: .waiting)
 +                if DockSettings.notifyWaiting { post(sid: sid, title: row.name, body: row.prompt ?? "Needs you") }
 +                // Only from another app: never switches tabs under you.
 +                if DockSettings.raiseWaiting && !looking {
@@ -4879,7 +4911,7 @@ index 0000000..c1a1b29
 +                }
 +            } else if row.status == .unread, before == .running || before == .waiting {
 +                let body = "Finished" + (costs[sid].map { " · " + DockCost.format($0) + " so far" } ?? "")
-+                DockNotices.shared.add(title: row.name, body: body, sessionId: sid, waiting: false)
++                DockNotices.shared.add(title: row.name, body: body, sessionId: sid, waiting: false, source: .finished)
 +                if DockSettings.notifyFinished { post(sid: sid, title: row.name, body: body) }
 +                if DockSettings.raiseFinished && !looking {
 +                    if justLeft { chime(unlessNotified: DockSettings.notifyFinished) }
@@ -5065,10 +5097,10 @@ index 0000000..c1a1b29
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..c7b9de4
+index 0000000..67bb949
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,313 @@
+@@ -0,0 +1,358 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -5096,6 +5128,13 @@ index 0000000..c7b9de4
 +    /// Hold the window back while any session is still running.
 +    static let raiseWhenAllQuietKey = "dock.raiseWhenAllQuiet"
 +    static let notifyFinishedKey = "dock.notifyFinished"
++    static let showBellKey = "dock.bell.show"
++    static let bellKeepKey = "dock.bell.keep"
++    static let bellWaitingKey = "dock.bell.waiting"
++    static let bellFinishedKey = "dock.bell.finished"
++    static let bellScriptsKey = "dock.bell.scripts"
++    static let bellReadOnVisitKey = "dock.bell.readOnVisit"
++    static let bellKeepChoices = [50, 100, 200, 500]
 +
 +    static func register() {
 +        UserDefaults.standard.register(defaults: [
@@ -5110,6 +5149,12 @@ index 0000000..c7b9de4
 +            notifyWaitingKey: true,
 +            showWorkspaceKey: true,
 +            notifyFinishedKey: true,
++            showBellKey: true,
++            bellKeepKey: 200,
++            bellWaitingKey: true,
++            bellFinishedKey: true,
++            bellScriptsKey: true,
++            bellReadOnVisitKey: true,
 +        ])
 +    }
 +
@@ -5133,6 +5178,11 @@ index 0000000..c7b9de4
 +    static var jumpHotKey: Bool { UserDefaults.standard.bool(forKey: jumpHotKeyKey) }
 +    static var dockBadge: Bool { UserDefaults.standard.bool(forKey: dockBadgeKey) }
 +    static var restoreSessions: Bool { UserDefaults.standard.bool(forKey: restoreSessionsKey) }
++    static var bellKeep: Int { max(10, UserDefaults.standard.integer(forKey: bellKeepKey)) }
++    static var bellWaiting: Bool { UserDefaults.standard.bool(forKey: bellWaitingKey) }
++    static var bellFinished: Bool { UserDefaults.standard.bool(forKey: bellFinishedKey) }
++    static var bellScripts: Bool { UserDefaults.standard.bool(forKey: bellScriptsKey) }
++    static var bellReadOnVisit: Bool { UserDefaults.standard.bool(forKey: bellReadOnVisitKey) }
 +}
 +
 +struct DockSettingsView: View {
@@ -5151,6 +5201,12 @@ index 0000000..c7b9de4
 +    @AppStorage(DockSettings.raiseFinishedKey) private var raiseFinished = false
 +    @AppStorage(DockSettings.raiseWhenAllQuietKey) private var raiseWhenAllQuiet = true
 +    @AppStorage(DockSettings.notifyFinishedKey) private var notifyFinished = true
++    @AppStorage(DockSettings.showBellKey) private var showBell = true
++    @AppStorage(DockSettings.bellKeepKey) private var bellKeep = 200
++    @AppStorage(DockSettings.bellWaitingKey) private var bellWaiting = true
++    @AppStorage(DockSettings.bellFinishedKey) private var bellFinished = true
++    @AppStorage(DockSettings.bellScriptsKey) private var bellScripts = true
++    @AppStorage(DockSettings.bellReadOnVisitKey) private var bellReadOnVisit = true
 +    @ObservedObject private var updates = DockUpdates.shared
 +    @State private var startAtLogin = SMAppService.mainApp.status == .enabled
 +    @State private var loginError: String?
@@ -5162,6 +5218,7 @@ index 0000000..c7b9de4
 +            page { sidebar }.tabItem { Label("Sidebar", systemImage: "sidebar.left") }.tag("sidebar")
 +            page { themePage }.tabItem { Label("Theme", systemImage: "paintpalette") }.tag("theme")
 +            page { notifications }.tabItem { Label("Notifications", systemImage: "bell.badge") }.tag("notifications")
++            page { bell }.tabItem { Label("Bell", systemImage: "bell") }.tag("bell")
 +            page { shortcuts }.tabItem { Label("Shortcuts", systemImage: "keyboard") }.tag("shortcuts")
 +            page { app }.tabItem { Label("App", systemImage: "gearshape") }.tag("app")
 +            DockAboutView(width: 500).frame(height: 640)
@@ -5223,7 +5280,27 @@ index 0000000..c7b9de4
 +                Toggle("…only once no session is running (all idle or waiting on me)", isOn: $raiseWhenAllQuiet)
 +                    .disabled(!raiseWaiting && !raiseFinished)
 +                    .padding(.leading, 18)
-+                Text("Not for the session on screen. Click a notification to go to its tab. The window only comes forward while you are in another app or it is minimised, so it never switches tabs as you type. The 🔔 in the sidebar keeps the last 200.")
++                Text("Not for the session on screen. Click a notification to go to its tab. The window only comes forward while you are in another app or it is minimised, so it never switches tabs as you type. The Bell tab sets what the 🔔 in the sidebar keeps.")
++                    .font(.callout)
++            }
++    }
++
++    @ViewBuilder private var bell: some View {
++            Section {
++                Toggle("Show the 🔔 in the sidebar", isOn: $showBell)
++                Picker("Keep the last", selection: $bellKeep) {
++                    ForEach(DockSettings.bellKeepChoices, id: \.self) { Text("\($0)").tag($0) }
++                }
++                .onChange(of: bellKeep) { _ in DockNotices.shared.trim() }
++            }
++            Section("Add to the bell") {
++                Toggle("A session needs me", isOn: $bellWaiting)
++                Toggle("A session finishes", isOn: $bellFinished)
++                Toggle("A script sends one (ghostty-dock notify)", isOn: $bellScripts)
++            }
++            Section {
++                Toggle("Mark a session's notifications read when I go to it", isOn: $bellReadOnVisit)
++                Text("The bell is separate from macOS notifications (Notifications tab): it keeps a list in the sidebar whether or not they are on.")
 +                    .font(.callout)
 +            }
 +    }
@@ -5495,10 +5572,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..22abe24
+index 0000000..d6aed4d
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1091 @@
+@@ -0,0 +1,1095 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -5565,6 +5642,7 @@ index 0000000..22abe24
 +    @AppStorage(DockSettings.sidebarWidthKey) private var width = Double(Self.width)
 +    @AppStorage(DockSettings.showCostKey) private var showCost = true
 +    @AppStorage(DockSettings.showWorkspaceKey) private var showWorkspace = true
++    @AppStorage(DockSettings.showBellKey) private var showBell = true
 +    @State private var dragStart: Double?
 +    @State private var dropTarget: String?
 +    var onNewTab: () -> Void
@@ -5822,6 +5900,7 @@ index 0000000..22abe24
 +                             shownTip: $headerTip, tipColor: $headerTipColor) {
 +                DockAgentsWindow.shared.show(near: NSEvent.mouseLocation)
 +            }
++            if showBell {
 +            DockHeaderButton(symbol: notices.unread > 0 ? "bell.badge.fill" : "bell",
 +                             color: DockPalette.color(DockTag.orange),
 +                             tip: notices.unread > 0 ? "Notifications: \(notices.unread) unread" : "Notifications",
@@ -5830,6 +5909,7 @@ index 0000000..22abe24
 +            }
 +            .popover(isPresented: $showNotices, arrowEdge: .bottom) {
 +                DockNoticeList { showNotices = false }
++            }
 +            }
 +            DockHeaderButton(symbol: "plus", color: DockPalette.green, tip: "New tab (⌘T)",
 +                             shownTip: $headerTip, tipColor: $headerTipColor, action: onNewTab)
@@ -6200,6 +6280,7 @@ index 0000000..22abe24
 +                .disabled(model.visibleRows.last?.key == row.key)
 +            Menu("Colourise") {
 +                ForEach(DockTag.allCases, id: \.self) { tag in
++                    if tag == .scarlet { Divider() }
 +                    Button { model.setTag(row, tag) } label: {
 +                        Image(nsImage: Self.swatch(tag))
 +                        Text(row.tag == tag ? "\(tag.label) ✓" : tag.label)
