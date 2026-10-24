@@ -3864,10 +3864,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..aa48996
+index 0000000..c1a1b29
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1189 @@
+@@ -0,0 +1,1195 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -4432,18 +4432,28 @@ index 0000000..aa48996
 +        }
 +    }
 +
-+    /// The transcript's last message is "[Request interrupted by user…]",
-+    /// written after the hook last said busy (a new prompt comes after it).
++    /// The transcript's last turn is over, after the hook last said busy (a
++    /// new prompt comes after it): its last entry is the turn's end marker
++    /// (an API error ends a turn with no Stop hook) or "[Request interrupted
++    /// by user…]".
 +    static func wasInterrupted(_ url: URL, since: Int) -> Bool {
 +        guard let h = try? FileHandle(forReadingFrom: url) else { return false }
 +        defer { try? h.close() }
 +        let end = (try? h.seekToEnd()) ?? 0
 +        try? h.seek(toOffset: end > 65536 ? end - 65536 : 0)
 +        guard let data = try? h.readToEnd() else { return false }
++        let f = ISO8601DateFormatter()
++        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
++        // Written after the hook last said busy.
++        func current(_ o: [String: Any]) -> Bool {
++            guard let at = (o["timestamp"] as? String).flatMap(f.date) else { return true }
++            return Int(at.timeIntervalSince1970) >= since - 1
++        }
 +        for line in data.split(separator: UInt8(ascii: "\n")).reversed() {
 +            guard let o = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
-+                  let type = o["type"] as? String, type == "user" || type == "assistant",
-+                  o["isSidechain"] as? Bool != true else { continue }
++                  let type = o["type"] as? String, o["isSidechain"] as? Bool != true else { continue }
++            if type == "system", o["subtype"] as? String == "turn_duration" { return current(o) }
++            guard type == "user" || type == "assistant" else { continue }
 +            guard type == "user", let message = o["message"] as? [String: Any] else { return false }
 +            let marker = "[Request interrupted by user"
 +            var stopped = false
@@ -4452,11 +4462,7 @@ index 0000000..aa48996
 +                let text = item["text"] as? String ?? item["content"] as? String ?? ""
 +                if text.hasPrefix(marker) { stopped = true }
 +            }
-+            guard stopped else { return false }
-+            let f = ISO8601DateFormatter()
-+            f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-+            guard let at = (o["timestamp"] as? String).flatMap(f.date) else { return true }
-+            return Int(at.timeIntervalSince1970) >= since - 1
++            return stopped && current(o)
 +        }
 +        return false
 +    }
