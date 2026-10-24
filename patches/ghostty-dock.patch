@@ -2634,6 +2634,588 @@ index 0000000..d751429
 +        dollars >= 100 ? String(format: "$%.0f", dollars) : String(format: "$%.2f", dollars)
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockDiff.swift b/macos/Sources/Features/Dock/DockDiff.swift
+new file mode 100644
+index 0000000..345ec01
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockDiff.swift
+@@ -0,0 +1,268 @@
++import AppKit
++import SwiftUI
++
++/// A session's uncommitted changes: staged, unstaged and new files, against
++/// the last commit. Opened from a row's git line or View Diff.
++final class DockDiffModel: ObservableObject {
++    struct File: Identifiable, Equatable {
++        var id: String { path }
++        var path: String
++        /// The porcelain code: M, A, D, R, ? for new.
++        var code: String
++        var added = 0
++        var removed = 0
++    }
++
++    @Published var folder = ""
++    /// The repository's top folder: git status paths are relative to it.
++    @Published var root = ""
++    @Published var name = ""
++    @Published var branch: String?
++    @Published var files: [File] = []
++    @Published var selected: String?
++    @Published var lines: [Substring] = []
++    @Published var loading = false
++    @Published var error: String?
++    private var generation = 0
++    private static let maxLines = 6000
++
++    func load(folder: String, name: String) {
++        self.folder = folder
++        self.name = name
++        refresh()
++    }
++
++    func refresh() {
++        generation += 1
++        let gen = generation, dir = folder, keep = selected
++        loading = true
++        DispatchQueue.global(qos: .userInitiated).async {
++            let top = DockWorkspace.run("git", ["rev-parse", "--show-toplevel"], in: dir)
++                .map { String(decoding: $0, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
++            let root = top ?? dir
++            let status = top == nil ? nil
++                : DockWorkspace.run("git", ["status", "--porcelain=v1", "--branch", "--untracked-files=all"], in: root)
++            let numstat = DockWorkspace.run("git", ["diff", "HEAD", "--numstat", "--no-renames"], in: root)
++            DispatchQueue.main.async {
++                guard gen == self.generation else { return }
++                self.root = root
++                guard let status else {
++                    self.files = []
++                    self.lines = []
++                    self.loading = false
++                    self.error = "Not a git repository."
++                    return
++                }
++                self.error = nil
++                let (branch, files) = Self.parse(String(decoding: status, as: UTF8.self),
++                                                 numstat: numstat.map { String(decoding: $0, as: UTF8.self) } ?? "")
++                self.branch = branch
++                self.files = files
++                self.loading = false
++                self.select(keep.flatMap { k in files.first { $0.path == k }?.path } ?? files.first?.path)
++            }
++        }
++    }
++
++    func select(_ path: String?) {
++        selected = path
++        generation += 1
++        let gen = generation, dir = root
++        guard let path, let file = files.first(where: { $0.path == path }) else { lines = []; return }
++        DispatchQueue.global(qos: .userInitiated).async {
++            let data: Data?
++            if file.code == "?" {
++                // A new file: git diff --no-index exits 1 when they differ.
++                data = Self.diffNew(path, in: dir)
++            } else {
++                data = DockWorkspace.run("git", ["diff", "HEAD", "--no-color", "--no-ext-diff", "--", path], in: dir)
++                    ?? DockWorkspace.run("git", ["diff", "--no-color", "--no-ext-diff", "--", path], in: dir)
++            }
++            var text = data.map { String(decoding: $0, as: UTF8.self) } ?? ""
++            if text.isEmpty { text = file.code == "D" ? "Deleted." : "No text changes (binary or mode only)." }
++            var lines = text.split(separator: "\n", omittingEmptySubsequences: false)
++            if lines.count > Self.maxLines {
++                let more = lines.count - Self.maxLines
++                lines = Array(lines.prefix(Self.maxLines)) + ["… \(more) more lines not shown"]
++            }
++            DispatchQueue.main.async { if gen == self.generation { self.lines = lines } }
++        }
++    }
++
++    private static func diffNew(_ path: String, in dir: String) -> Data? {
++        var env = ProcessInfo.processInfo.environment
++        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (env["PATH"] ?? "")
++        return DockProcess.run("/usr/bin/env", ["git", "diff", "--no-index", "--no-color", "--", "/dev/null", path],
++                               in: dir, environment: env, timeout: 10, quiet: [1])?.output
++    }
++
++    /// The branch and changed files from `git status --porcelain=v1 --branch`,
++    /// with line counts from `git diff HEAD --numstat`.
++    static func parse(_ status: String, numstat: String) -> (String?, [File]) {
++        var counts: [String: (Int, Int)] = [:]
++        for line in numstat.split(separator: "\n") {
++            let f = line.split(separator: "\t", maxSplits: 2).map(String.init)
++            if f.count == 3 { counts[f[2]] = (Int(f[0]) ?? 0, Int(f[1]) ?? 0) }
++        }
++        var branch: String?
++        var files: [File] = []
++        for line in status.split(separator: "\n") {
++            if line.hasPrefix("## ") {
++                branch = line.dropFirst(3).components(separatedBy: "...").first
++                continue
++            }
++            guard line.count > 3 else { continue }
++            let xy = line.prefix(2)
++            var path = String(line.dropFirst(3))
++            if let arrow = path.range(of: " -> ") { path = String(path[arrow.upperBound...]) }
++            if path.hasPrefix("\""), path.hasSuffix("\""), path.count > 1 { path = String(path.dropFirst().dropLast()) }
++            let code = xy == "??" ? "?" : String(xy.trimmingCharacters(in: .whitespaces).prefix(1))
++            var f = File(path: path, code: code)
++            if let c = counts[path] { (f.added, f.removed) = c }
++            files.append(f)
++        }
++        return (branch, files)
++    }
++}
++
++struct DockDiffView: View {
++    @ObservedObject var model: DockDiffModel
++
++    var body: some View {
++        HSplitView {
++            fileList.frame(minWidth: 220, idealWidth: 280, maxWidth: 420)
++            diff.frame(minWidth: 400)
++        }
++        .background(DockPalette.base)
++        .environment(\.colorScheme, DockPalette.scheme)
++    }
++
++    private var fileList: some View {
++        VStack(alignment: .leading, spacing: 0) {
++            HStack {
++                VStack(alignment: .leading, spacing: 2) {
++                    Text(model.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
++                    Text([model.branch, "\(model.files.count) changed"].compactMap { $0 }.joined(separator: " · "))
++                        .font(.system(size: 11)).foregroundStyle(DockPalette.grey)
++                }
++                Spacer()
++                Button { model.refresh() } label: { Image(systemName: "arrow.clockwise") }
++                    .buttonStyle(.plain).help("Refresh")
++                    .keyboardShortcut("r", modifiers: .command)
++            }
++            .foregroundStyle(DockPalette.text)
++            .padding(10)
++            Divider()
++            if let error = model.error {
++                Text(error).font(.system(size: 12)).foregroundStyle(DockPalette.grey).padding(10)
++            } else if model.files.isEmpty && !model.loading {
++                Text("No uncommitted changes.").font(.system(size: 12)).foregroundStyle(DockPalette.grey).padding(10)
++            }
++            List(model.files, selection: Binding(get: { model.selected }, set: { model.select($0) })) { f in
++                HStack(spacing: 6) {
++                    Text(f.code == "?" ? "N" : f.code)
++                        .font(.system(size: 10, weight: .bold, design: .monospaced))
++                        .foregroundStyle(Self.codeColor(f.code)).frame(width: 12)
++                    VStack(alignment: .leading, spacing: 0) {
++                        Text((f.path as NSString).lastPathComponent).font(.system(size: 12)).lineLimit(1)
++                        let dir = (f.path as NSString).deletingLastPathComponent
++                        if !dir.isEmpty {
++                            Text(dir).font(.system(size: 10)).foregroundStyle(.secondary)
++                                .lineLimit(1).truncationMode(.head)
++                        }
++                    }
++                    Spacer(minLength: 4)
++                    if f.added + f.removed > 0 {
++                        Text("+\(f.added)").foregroundColor(DockPalette.green)
++                        + Text(" −\(f.removed)").foregroundColor(Color(hex: 0xf0566a))
++                    }
++                }
++                .font(.system(size: 10.5, design: .monospaced))
++                .tag(f.path)
++                .contextMenu {
++                    Button("Open") { open(f.path) }
++                    Button("Show in Finder") {
++                        NSWorkspace.shared.activateFileViewerSelecting([url(f.path)])
++                    }
++                }
++            }
++            .listStyle(.sidebar)
++        }
++    }
++
++    private var diff: some View {
++        ScrollView([.vertical, .horizontal]) {
++            LazyVStack(alignment: .leading, spacing: 0) {
++                ForEach(Array(model.lines.enumerated()), id: \.offset) { _, line in
++                    Text(line.isEmpty ? " " : String(line))
++                        .font(.system(size: 12, design: .monospaced))
++                        .foregroundStyle(Self.lineColor(line))
++                        .frame(maxWidth: .infinity, alignment: .leading)
++                        .padding(.horizontal, 10)
++                        .background(Self.lineBackground(line))
++                        .textSelection(.enabled)
++                }
++            }
++            .padding(.vertical, 8)
++            .fixedSize(horizontal: true, vertical: false)
++            .frame(minWidth: 400, alignment: .leading)
++        }
++        .background(DockPalette.base)
++    }
++
++    private func url(_ path: String) -> URL { URL(fileURLWithPath: model.root).appendingPathComponent(path) }
++    private func open(_ path: String) { NSWorkspace.shared.open(url(path)) }
++
++    private static func isHeader(_ l: Substring) -> Bool {
++        l.hasPrefix("diff --git") || l.hasPrefix("index ") || l.hasPrefix("+++") || l.hasPrefix("---")
++            || l.hasPrefix("new file") || l.hasPrefix("deleted file")
++    }
++
++    static func lineColor(_ l: Substring) -> Color {
++        if isHeader(l) { return DockPalette.grey }
++        if l.hasPrefix("@@") { return DockPalette.blue }
++        if l.hasPrefix("+") { return DockPalette.green }
++        if l.hasPrefix("-") { return Color(hex: 0xf0566a) }
++        return DockPalette.text
++    }
++
++    static func lineBackground(_ l: Substring) -> Color {
++        if isHeader(l) { return .clear }
++        if l.hasPrefix("+") { return DockPalette.green.opacity(0.12) }
++        if l.hasPrefix("-") { return Color(hex: 0xf0566a).opacity(0.12) }
++        if l.hasPrefix("@@") { return DockPalette.blue.opacity(0.08) }
++        return .clear
++    }
++
++    static func codeColor(_ c: String) -> Color {
++        switch c {
++        case "?", "A": return DockPalette.green
++        case "D": return Color(hex: 0xf0566a)
++        default: return DockPalette.peach
++        }
++    }
++}
++
++/// The diff in its own window, reused for whichever session asks.
++final class DockDiffWindow {
++    static let shared = DockDiffWindow()
++    private var window: NSWindow?
++    private let model = DockDiffModel()
++
++    func show(folder: String, name: String) {
++        model.selected = nil
++        model.load(folder: folder, name: name)
++        if window == nil {
++            let w = NSWindow(contentViewController: NSHostingController(rootView: DockDiffView(model: model)))
++            w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
++            w.isReleasedWhenClosed = false
++            w.setContentSize(NSSize(width: 1100, height: 720))
++            w.setFrameAutosaveName("GhosttyDockDiff")
++            if !w.setFrameUsingName("GhosttyDockDiff") { w.center() }
++            window = w
++        }
++        window?.title = "Changes in \(name)"
++        NSApp.activate(ignoringOtherApps: true)
++        window?.makeKeyAndOrderFront(nil)
++    }
++}
+diff --git a/macos/Sources/Features/Dock/DockHistory.swift b/macos/Sources/Features/Dock/DockHistory.swift
+new file mode 100644
+index 0000000..dc823e4
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockHistory.swift
+@@ -0,0 +1,302 @@
++import AppKit
++import SwiftUI
++
++/// Sessions closed in the last three months, newest first, for the History
++/// panel at the foot of the sidebar. Kept in history.json beside the other
++/// state. The first run fills it from Claude Code's transcripts, taking each
++/// one's last write as when it closed.
++final class DockHistory: ObservableObject {
++    static let shared = DockHistory()
++    static let keepDays = 90
++
++    struct Entry: Codable, Identifiable, Equatable {
++        var id: String { sessionId }
++        var sessionId: String
++        var name: String
++        var folder: String
++        var flags = ""
++        var closedAt: Date
++    }
++
++    @Published private(set) var entries: [Entry] = []
++
++    private let file = FileManager.default.homeDirectoryForCurrentUser
++        .appendingPathComponent(".local/state/ghostty-dock/history.json")
++    private static let backfilledKey = "dock.history.backfilled"
++
++    private init() {
++        if let data = try? Data(contentsOf: file),
++           let saved = try? JSONDecoder().decode([Entry].self, from: data) {
++            entries = Self.pruned(saved)
++        }
++        if !UserDefaults.standard.bool(forKey: Self.backfilledKey) { backfill() }
++    }
++
++    /// Records a session whose tab was closed.
++    func add(_ c: DockSessions.Closed) {
++        entries.removeAll { $0.sessionId == c.sessionId }
++        entries.insert(Entry(sessionId: c.sessionId, name: c.name, folder: c.folder, flags: c.flags,
++                             closedAt: Date()), at: 0)
++        entries = Self.pruned(entries)
++        save()
++    }
++
++    /// Forgets a session: it was reopened, or removed from the list.
++    func remove(_ sessionId: String) {
++        guard entries.contains(where: { $0.sessionId == sessionId }) else { return }
++        entries.removeAll { $0.sessionId == sessionId }
++        save()
++    }
++
++    func reopen(_ e: Entry) {
++        DockSessions.shared.reopen(DockSessions.Closed(sessionId: e.sessionId, name: e.name,
++                                                       folder: e.folder, flags: e.flags))
++    }
++
++    /// The entries not open now that match every word of `query`.
++    func shown(_ query: String, open: Set<String>) -> [Entry] {
++        let words = query.lowercased().split(separator: " ").map(String.init)
++        return entries.filter { e in
++            !open.contains(e.sessionId)
++                && words.allSatisfy { e.name.lowercased().contains($0) || e.folder.lowercased().contains($0) }
++        }
++    }
++
++    private static func pruned(_ list: [Entry]) -> [Entry] {
++        let since = Date().addingTimeInterval(-Double(keepDays) * 86_400)
++        return list.filter { $0.closedAt > since }.sorted { $0.closedAt > $1.closedAt }
++    }
++
++    private func save() {
++        let list = entries
++        DispatchQueue.global(qos: .utility).async { [file] in
++            try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
++                                                     withIntermediateDirectories: true)
++            if let data = try? JSONEncoder().encode(list) { try? data.write(to: file, options: .atomic) }
++        }
++    }
++
++    // MARK: Filling it the first time
++
++    /// Interactive sessions (not claude -p) whose transcript was written to
++    /// in the last three months.
++    private func backfill() {
++        DispatchQueue.global(qos: .utility).async { [weak self] in
++            let found = Self.fromTranscripts()
++            DispatchQueue.main.async {
++                guard let self else { return }
++                let known = Set(self.entries.map(\.sessionId))
++                self.entries = Self.pruned(self.entries + found.filter { !known.contains($0.sessionId) })
++                self.save()
++                UserDefaults.standard.set(true, forKey: Self.backfilledKey)
++            }
++        }
++    }
++
++    private static func fromTranscripts() -> [Entry] {
++        let fm = FileManager.default
++        let projects = fm.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
++        let since = Date().addingTimeInterval(-Double(keepDays) * 86_400)
++        var out: [Entry] = []
++        let dirs = (try? fm.contentsOfDirectory(at: projects, includingPropertiesForKeys: nil)) ?? []
++        for dir in dirs {
++            let files = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey]))
++                ?? []
++            for f in files where f.pathExtension == "jsonl" {
++                guard let at = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
++                      at > since, let e = entry(f, closedAt: at) else { continue }
++                out.append(e)
++            }
++        }
++        return out
++    }
++
++    /// Reads the start of a transcript for its folder and how it was started,
++    /// and the start and end for the name it was given with /rename.
++    private static func entry(_ url: URL, closedAt: Date) -> Entry? {
++        guard let h = try? FileHandle(forReadingFrom: url) else { return nil }
++        defer { try? h.close() }
++        let head = String(decoding: h.readData(ofLength: 65_536), as: UTF8.self)
++        guard head.contains("\"entrypoint\":\"cli\"") else { return nil }
++        let size = (try? h.seekToEnd()) ?? 0
++        var tail = ""
++        if size > 65_536 {
++            try? h.seek(toOffset: size - 65_536)
++            tail = String(decoding: h.readDataToEndOfFile(), as: UTF8.self)
++        }
++        guard let cwd = value("cwd", in: head) else { return nil }
++        let name = value("customTitle", in: tail, last: true) ?? value("customTitle", in: head, last: true)
++            ?? (cwd as NSString).lastPathComponent
++        return Entry(sessionId: url.deletingPathExtension().lastPathComponent, name: name, folder: cwd,
++                     closedAt: closedAt)
++    }
++
++    /// The string value of `"key":"…"` in JSON lines, first or last.
++    private static func value(_ key: String, in text: String, last: Bool = false) -> String? {
++        let lines = text.split(separator: "\n").filter { $0.contains("\"\(key)\":\"") }
++        for line in last ? lines.reversed() : lines {
++            guard let o = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
++                  let v = o[key] as? String, !v.isEmpty else { continue }
++            return v
++        }
++        return nil
++    }
++}
++
++/// The History panel at the foot of the sidebar: click its bar to open it,
++/// search, and click a session to reopen it.
++struct DockHistoryPanel: View {
++    @ObservedObject private var history = DockHistory.shared
++    @ObservedObject private var model = DockSessions.shared
++    @AppStorage("dock.history.open") private var open = false
++    @AppStorage("dock.history.height") private var height = 280.0
++    @State private var query = ""
++    @State private var dragStart: Double?
++
++    var body: some View {
++        let shown = history.shown(query, open: Set(model.rows.compactMap(\.sessionId)))
++        VStack(spacing: 0) {
++            if open { resizeBar }
++            bar(count: shown.count)
++            if open {
++                HStack(spacing: 6) {
++                    Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(DockPalette.grey)
++                    TextField("Search closed sessions", text: $query)
++                        .textFieldStyle(.plain).font(.system(size: 12)).foregroundStyle(DockPalette.text)
++                    if !query.isEmpty {
++                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
++                            .buttonStyle(.plain).foregroundStyle(DockPalette.grey)
++                    }
++                }
++                .padding(.horizontal, 8).padding(.vertical, 5)
++                .background(RoundedRectangle(cornerRadius: 6).fill(DockPalette.base))
++                .padding(.horizontal, 8).padding(.bottom, 6)
++                list(shown).frame(height: CGFloat(height))
++            }
++        }
++        .background(DockPalette.mantle)
++        .overlay(alignment: .top) { Rectangle().fill(DockPalette.greyLine).frame(height: 1) }
++    }
++
++    private func bar(count: Int) -> some View {
++        Button {
++            withAnimation(.easeOut(duration: 0.15)) { open.toggle() }
++        } label: {
++            HStack(spacing: 6) {
++                Image(systemName: "clock.arrow.circlepath").font(.system(size: 11, weight: .semibold))
++                Text("History").font(.system(size: 11.5, weight: .semibold))
++                Text("\(count)").font(.system(size: 10.5)).monospacedDigit().foregroundStyle(DockPalette.grey)
++                Spacer()
++                Image(systemName: open ? "chevron.down" : "chevron.up").font(.system(size: 9, weight: .bold))
++            }
++            .foregroundStyle(DockPalette.text)
++            .padding(.horizontal, 12).padding(.vertical, 7)
++            .contentShape(Rectangle())
++        }
++        .buttonStyle(.plain)
++        .dockTip("Sessions closed in the last 3 months")
++    }
++
++    /// Drag to make the list taller or shorter.
++    private var resizeBar: some View {
++        Color.clear.frame(height: 5).contentShape(Rectangle())
++            .onHover { inside in if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() } }
++            .gesture(DragGesture(coordinateSpace: .global)
++                .onChanged { g in
++                    let start = dragStart ?? height
++                    dragStart = start
++                    height = min(700, max(120, start - g.translation.height))
++                }
++                .onEnded { _ in dragStart = nil })
++    }
++
++    private func list(_ shown: [DockHistory.Entry]) -> some View {
++        ScrollView {
++            LazyVStack(alignment: .leading, spacing: 1) {
++                if shown.isEmpty {
++                    Text(query.isEmpty ? "Closed sessions show here." : "No closed session matches.")
++                        .font(.system(size: 11)).foregroundStyle(DockPalette.grey)
++                        .padding(.horizontal, 12).padding(.vertical, 8)
++                }
++                ForEach(Self.sections(shown), id: \.title) { section in
++                    Text(section.title)
++                        .font(.system(size: 10.5, weight: .semibold)).foregroundStyle(DockPalette.grey)
++                        .padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 2)
++                    ForEach(section.entries) { e in DockHistoryRow(entry: e) }
++                }
++            }
++            .padding(.horizontal, 6).padding(.bottom, 6)
++        }
++    }
++
++    struct Section { var title: String; var entries: [DockHistory.Entry] }
++
++    /// Today, Yesterday, the last 7 days, then each month.
++    static func sections(_ list: [DockHistory.Entry]) -> [Section] {
++        let cal = Calendar.current
++        let month = DateFormatter()
++        month.setLocalizedDateFormatFromTemplate("MMMM yyyy")
++        var out: [Section] = []
++        for e in list {
++            let title: String
++            if cal.isDateInToday(e.closedAt) { title = "Today" }
++            else if cal.isDateInYesterday(e.closedAt) { title = "Yesterday" }
++            else if Date().timeIntervalSince(e.closedAt) < 7 * 86_400 { title = "Last 7 days" }
++            else { title = month.string(from: e.closedAt) }
++            if out.last?.title == title { out[out.count - 1].entries.append(e) }
++            else { out.append(Section(title: title, entries: [e])) }
++        }
++        return out
++    }
++}
++
++struct DockHistoryRow: View {
++    var entry: DockHistory.Entry
++    @State private var hover = false
++
++    var body: some View {
++        HStack(spacing: 8) {
++            VStack(alignment: .leading, spacing: 1) {
++                Text(entry.name).font(.system(size: 12)).foregroundStyle(DockPalette.text)
++                    .lineLimit(1).truncationMode(.middle)
++                Text((entry.folder as NSString).abbreviatingWithTildeInPath)
++                    .font(.system(size: 10)).foregroundStyle(DockPalette.grey)
++                    .lineLimit(1).truncationMode(.head)
++            }
++            Spacer(minLength: 4)
++            Text(Self.when(entry.closedAt)).font(.system(size: 10)).monospacedDigit()
++                .foregroundStyle(DockPalette.grey)
++            if hover {
++                Image(systemName: "arrow.uturn.backward.circle.fill")
++                    .font(.system(size: 13)).foregroundStyle(DockPalette.green)
++            }
++        }
++        .padding(.horizontal, 8).padding(.vertical, 4)
++        .background(RoundedRectangle(cornerRadius: 6).fill(hover ? DockPalette.base : Color.clear))
++        .contentShape(Rectangle())
++        .onHover { hover = $0 }
++        .onTapGesture { DockHistory.shared.reopen(entry) }
++        .help("Reopen \(entry.name) in a new tab\n\((entry.folder as NSString).abbreviatingWithTildeInPath)")
++        .contextMenu {
++            Button("Reopen in a New Tab") { DockHistory.shared.reopen(entry) }
++            Button("Show in Finder") {
++                NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: entry.folder)
++            }
++            Button("Copy Session ID") {
++                NSPasteboard.general.clearContents()
++                NSPasteboard.general.setString(entry.sessionId, forType: .string)
++            }
++            Divider()
++            Button("Remove from History") { DockHistory.shared.remove(entry.sessionId) }
++        }
++    }
++
++    /// "14:05" today, "Tue 14:05" this week, else "12 May".
++    static func when(_ d: Date) -> String {
++        let f = DateFormatter()
++        if Calendar.current.isDateInToday(d) { f.timeStyle = .short }
++        else if Date().timeIntervalSince(d) < 7 * 86_400 { f.setLocalizedDateFormatFromTemplate("EEE HH:mm") }
++        else { f.setLocalizedDateFormatFromTemplate("d MMM") }
++        return f.string(from: d)
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockHotKey.swift b/macos/Sources/Features/Dock/DockHotKey.swift
 new file mode 100644
 index 0000000..4b8472f
@@ -3896,10 +4478,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..b88d695
+index 0000000..f6091ae
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1195 @@
+@@ -0,0 +1,1197 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -4795,6 +5377,7 @@ index 0000000..b88d695
 +                }
 +            }
 +            closed.append(c)
++            DockHistory.shared.add(c)
 +            if closed.count > 20 { closed.removeFirst() }
 +        }
 +        lastRows = Dictionary(now.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
@@ -4823,6 +5406,7 @@ index 0000000..b88d695
 +            return false
 +        }
 +        DockLog.sessions.notice("reopen \(c.name, privacy: .public) (\(c.sessionId, privacy: .public))")
++        DockHistory.shared.remove(c.sessionId)
 +        return DockProcess.launch("/bin/bash", [opener, "--command",
 +                                                "caffeinate -i claude --resume \(c.sessionId) \(c.flags)", c.folder],
 +                                  log: DockLog.sessions)
@@ -5572,10 +6156,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..443d33c
+index 0000000..ac1413f
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1095 @@
+@@ -0,0 +1,1105 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -5691,6 +6275,7 @@ index 0000000..443d33c
 +                .padding(.horizontal, 6)
 +                .padding(.vertical, 4)
 +            }
++            DockHistoryPanel()
 +        }
 +        .frame(width: CGFloat(width.clamped(to: Self.widthRange)))
 +        .frame(maxHeight: .infinity)
@@ -6135,6 +6720,10 @@ index 0000000..443d33c
 +    var onRestart: () -> Void
 +    @State private var hover = false
 +    @State private var hoverClose = false
++    @State private var hoverGit = false
++
++    private var folder: String { row.project ?? row.detail }
++    private func viewDiff() { DockDiffWindow.shared.show(folder: folder, name: row.name) }
 +
 +    var body: some View {
 +        HStack(spacing: 9) {
@@ -6163,6 +6752,10 @@ index 0000000..443d33c
 +                        .foregroundStyle(DockPalette.text.opacity(0.75))
 +                        .lineLimit(1)
 +                        .truncationMode(.middle)
++                        .underline(hoverGit && (workspace?.dirty ?? 0) > 0)
++                        .onHover { hoverGit = $0 }
++                        .onTapGesture { if (workspace?.dirty ?? 0) > 0 { viewDiff() } else { DockSessions.shared.select(row) } }
++                        .dockTip((workspace?.dirty ?? 0) > 0 ? "View the uncommitted changes" : "No uncommitted changes")
 +                }
 +                // What it is waiting on, so you know before you switch.
 +                if let prompt = row.prompt {
@@ -6274,6 +6867,7 @@ index 0000000..443d33c
 +                    NSWorkspace.shared.open(URL(string: "http://localhost:\(port)")!)
 +                }
 +            }
++            Button("View Diff") { viewDiff() }.disabled(folder.isEmpty)
 +            Button("Move Up") { model.move(row, by: -1) }
 +                .disabled(model.visibleRows.first?.key == row.key)
 +            Button("Move Down") { model.move(row, by: 1) }
