@@ -318,9 +318,16 @@ function restart() {
     log "$(grep -c . <<<"$sessions") session(s) to resume ($(conditions "$pid"))"
     $dry && { printf '%s' "$sessions"; return 0; }
     trap 'rm -f "$STATUS"' EXIT
+    # One restart at a time: a newer one replaces any still waiting.
+    local other
+    for other in $(pgrep -f "$SCRIPT_NAME --foreground"); do
+        [ "$other" != "$$" ] && kill -TERM "$other" 2>/dev/null && log "replaced the restart already waiting ($other)"
+    done
     $now || wait_until_quiet "$sessions" || return 1
     wait_for_display
-    wait_for_input_idle
+    # Restart Now was just clicked, so the mouse is moving: waiting for
+    # the input to go idle would look like nothing happened.
+    $now || wait_for_input_idle
 
     # What scripts/undo.sh reopens if this goes wrong.
     local c s f
