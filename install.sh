@@ -2,7 +2,8 @@
 
 # Installs Ghostty Dock: the opener and the Claude Code hook into
 # ~/.local/bin, the hook into ~/.claude/settings.json, the "Launch ... in
-# Ghostty" Finder Quick Actions switched to open tabs, and the app (Ghostty
+# Ghostty" Finder Quick Actions added if missing and switched to open tabs,
+# and the app (Ghostty
 # with the session sidebar built in, scripts/build-terminal.sh) into
 # ~/Applications. From a release zip, the app is already built and is copied.
 
@@ -74,6 +75,7 @@ function main() {
     print_step 2 4 "Claude Code hooks in $SETTINGS"
     install_hooks || exit 1
     print_step 3 4 "Finder Quick Actions open tabs"
+    add_quick_actions || exit 1
     switch_quick_actions || exit 1
     if $skip_app; then
         print_warning "skipped the app (--skip-app)"
@@ -137,6 +139,24 @@ function install_hooks() {
         return 1
     }
     print_success "hooked ${HOOK_EVENTS[*]} (backup: $backup)"
+}
+
+# Adds the two Quick Actions Settings → Shortcuts → In Finder gives keys
+# to, from Resources/quick-actions, when they are not there (claude-burst
+# installs its own; those are kept).
+function add_quick_actions() {
+    local src name added=0
+    for src in "$ROOT/Resources/quick-actions"/*.workflow; do
+        [ -d "$src" ] || continue
+        name=$(basename "$src")
+        [ -e "$SERVICES/$name" ] && continue
+        mkdir -p "$SERVICES" && ditto "$src" "$SERVICES/$name" || return 1
+        echo "  - ${name%.workflow}"
+        added=$((added + 1))
+    done
+    # Tells the Services menu to read them again, so they work straight away.
+    ((added > 0)) && /System/Library/CoreServices/pbs -flush >/dev/null 2>&1
+    print_success "$added Quick Action(s) added"
 }
 
 # Rewrites the `open -na Ghostty.app ... -e "<launcher>" "$folder" &` line of

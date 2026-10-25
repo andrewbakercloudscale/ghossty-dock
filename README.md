@@ -188,6 +188,12 @@ reports each session's status.
 While the sidebar is hidden, ⌘1–9 and the next/previous keys are Ghostty's
 own again (tab order). Everything else in Ghostty (⌘T, ⌘W, splits) is unchanged.
 
+**In Finder:** right-click a folder → **Quick Actions** → **Launch Claude Code
+in Ghostty** or **Continue last Claude Code session in Ghostty** opens it as a
+tab. `install.sh` adds both if they are missing. Settings → Shortcuts → In
+Finder gives each a key (**Add Shortcut**, **Remove Shortcut**), with a picture
+of the menu.
+
 ## Command line and scripting
 
 `ghostty-dock` drives the running app, for scripts and other agents:
