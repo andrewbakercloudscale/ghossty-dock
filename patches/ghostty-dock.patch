@@ -3030,10 +3030,10 @@ index 0000000..345ec01
 +}
 diff --git a/macos/Sources/Features/Dock/DockFinderShortcuts.swift b/macos/Sources/Features/Dock/DockFinderShortcuts.swift
 new file mode 100644
-index 0000000..077edfc
+index 0000000..fee8caa
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockFinderShortcuts.swift
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,217 @@
 +import AppKit
 +import SwiftUI
 +
@@ -3194,16 +3194,17 @@ index 0000000..077edfc
 +    @ObservedObject private var model = DockFinderShortcutsModel.shared
 +
 +    var body: some View {
-+        HStack(alignment: .top, spacing: 14) {
++        // The menu opens over the folder, where it was right-clicked.
++        ZStack(alignment: .topLeading) {
 +            VStack(spacing: 4) {
 +                Image(nsImage: NSWorkspace.shared.icon(for: .folder))
 +                    .resizable().frame(width: 44, height: 44)
 +                Text("my-repo")
 +                    .font(.system(size: 11, weight: .medium)).foregroundStyle(.white)
++                    .lineLimit(1).fixedSize()
 +                    .padding(.horizontal, 6).padding(.vertical, 1)
 +                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.accentColor))
 +            }
-+            .padding(.top, 6)
 +            HStack(alignment: .top, spacing: -6) {
 +                menu([("Open", nil, false), ("Get Info", nil, false), ("Rename", nil, false),
 +                      ("-", nil, false), ("Quick Actions", nil, true), ("Services", nil, false)],
@@ -3211,8 +3212,9 @@ index 0000000..077edfc
 +                menu(DockFinderShortcuts.items.map {
 +                    (DockFinderShortcuts.label($0), model.values[$0.id].map(DockFinderShortcuts.display), false)
 +                }, chevronOn: [])
-+                .padding(.top, 74)
++                .padding(.top, 66)
 +            }
++            .padding(.leading, 30).padding(.top, 26)
 +        }
 +        .padding(12)
 +        .frame(maxWidth: .infinity, alignment: .leading)
@@ -3234,7 +3236,7 @@ index 0000000..077edfc
 +                            Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
 +                        }
 +                    }
-+                    .font(.system(size: 12))
++                    .font(.system(size: 11))
 +                    .foregroundStyle(row.2 ? .white : .primary)
 +                    .padding(.horizontal, 8).padding(.vertical, 3)
 +                    .background(RoundedRectangle(cornerRadius: 4).fill(row.2 ? Color.accentColor : .clear))
