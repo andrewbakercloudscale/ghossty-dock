@@ -221,9 +221,13 @@ function save() {
     open_sessions "$pid" >"$SAVED.tmp" && mv "$SAVED.tmp" "$SAVED"
 }
 
+# Only a session in a terminal counts: Claude Burst's handover writer runs
+# `claude -p --resume <sid> --fork-session` with no terminal as a session
+# exits, and taking that for the session being back left its tab unopened.
 function running_anywhere() {
     local sid="$1"
-    ps -axo command= | grep -qE "^(caffeinate -i )?claude .*--(session-id|resume) $sid( |$)"
+    ps -axo tty=,command= | grep -vE "^ *\?\? | -p | --print " \
+        | grep -qE "^ *[^ ]+ +(caffeinate -i )?claude .*--(session-id|resume) $sid( |$)"
 }
 
 function restore() {
