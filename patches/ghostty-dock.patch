@@ -2381,7 +2381,7 @@ index 0000000..e83caf9
 +}
 diff --git a/macos/Sources/Features/Dock/DockAnswer.swift b/macos/Sources/Features/Dock/DockAnswer.swift
 new file mode 100644
-index 0000000..a96c48e
+index 0000000..3725d37
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAnswer.swift
 @@ -0,0 +1,114 @@
@@ -2464,7 +2464,7 @@ index 0000000..a96c48e
 +        answer(row, a)
 +    }
 +
-+    private func press(_ key: Ghostty.Input.Key, on surface: Ghostty.Surface) {
++    @MainActor private func press(_ key: Ghostty.Input.Key, on surface: Ghostty.Surface) {
 +        surface.sendKeyEvent(Ghostty.Input.KeyEvent(key: key, action: .press, mods: []))
 +        surface.sendKeyEvent(Ghostty.Input.KeyEvent(key: key, action: .release, mods: []))
 +    }
@@ -3030,10 +3030,10 @@ index 0000000..345ec01
 +}
 diff --git a/macos/Sources/Features/Dock/DockHistory.swift b/macos/Sources/Features/Dock/DockHistory.swift
 new file mode 100644
-index 0000000..dc823e4
+index 0000000..64d426d
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockHistory.swift
-@@ -0,0 +1,302 @@
+@@ -0,0 +1,308 @@
 +import AppKit
 +import SwiftUI
 +
@@ -3219,13 +3219,19 @@ index 0000000..dc823e4
 +            withAnimation(.easeOut(duration: 0.15)) { open.toggle() }
 +        } label: {
 +            HStack(spacing: 6) {
++                // Coloured like the header's buttons, so it reads as one.
 +                Image(systemName: "clock.arrow.circlepath").font(.system(size: 11, weight: .semibold))
++                    .foregroundStyle(DockPalette.teal)
 +                Text("History").font(.system(size: 11.5, weight: .semibold))
-+                Text("\(count)").font(.system(size: 10.5)).monospacedDigit().foregroundStyle(DockPalette.grey)
++                    .foregroundStyle(DockPalette.text)
++                Text("\(count)").font(.system(size: 10.5, weight: .semibold)).monospacedDigit()
++                    .foregroundStyle(DockPalette.teal)
++                    .padding(.horizontal, 6).padding(.vertical, 1)
++                    .background(Capsule().fill(DockPalette.teal.opacity(0.15)))
 +                Spacer()
 +                Image(systemName: open ? "chevron.down" : "chevron.up").font(.system(size: 9, weight: .bold))
++                    .foregroundStyle(DockPalette.teal)
 +            }
-+            .foregroundStyle(DockPalette.text)
 +            .padding(.horizontal, 12).padding(.vertical, 7)
 +            .contentShape(Rectangle())
 +        }
