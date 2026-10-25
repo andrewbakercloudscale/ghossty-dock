@@ -6501,10 +6501,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..a59b73e
+index 0000000..c28ec74
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1104 @@
+@@ -0,0 +1,1110 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -6715,6 +6715,12 @@ index 0000000..a59b73e
 +                    .fixedSize(horizontal: false, vertical: true)
 +                    .help("Ghostty Dock restarts into the new build once every session has been quiet "
 +                          + "for 10 seconds and you have not typed for 10 (typing starts the count again)")
++                if updates.restarting, line != "Restarting now…" {
++                    Button("Cancel Restart") { updates.cancelRestart() }
++                        .buttonStyle(.bordered)
++                        .controlSize(.small)
++                        .help("Stop the restart; the sessions carry on as they are")
++                }
 +            }
 +            // What the header button under the pointer does, in the
 +            // counters' place while you point at it, so it covers no button.
@@ -8052,10 +8058,10 @@ index 0000000..93e4035
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..a8933ae
+index 0000000..79b0ed0
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
-@@ -0,0 +1,368 @@
+@@ -0,0 +1,371 @@
 +import AppKit
 +import Combine
 +
@@ -8213,20 +8219,23 @@ index 0000000..a8933ae
 +        alert.addButton(withTitle: "Cancel Restart")
 +        let answer = alert.runModalNearPointer()
 +        guard answer != .alertSecondButtonReturn else { return }
++        guard answer == .alertFirstButtonReturn else { cancelRestart(); return }
 +        Self.stopWaitingRestart()
-+        guard answer == .alertFirstButtonReturn else {
-+            DockLog.restart.notice("restart cancelled")
-+            DockLog.remove(statusURL)
-+            restartClicked = nil
-+            restarting = false
-+            readRestartStatus()
-+            return
-+        }
 +        let restarter = FileManager.default.homeDirectoryForCurrentUser
 +            .appendingPathComponent(".local/bin/ghostty-dock-restart").path
 +        restartClicked = Date()
 +        DockLog.restart.notice("restart now")
 +        DockProcess.launch("/bin/bash", [restarter, "--now"], log: DockLog.restart)
++    }
++
++    /// Stops the restart that is waiting; the sessions carry on as they are.
++    func cancelRestart() {
++        Self.stopWaitingRestart()
++        DockLog.restart.notice("restart cancelled")
++        DockLog.remove(statusURL)
++        restartClicked = nil
++        restarting = false
++        readRestartStatus()
 +    }
 +
 +    /// Ends the ghostty-dock-restart that is waiting for quiet sessions.
