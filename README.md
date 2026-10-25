@@ -245,6 +245,7 @@ Five tabs: **Sidebar** (with Compaction), **Theme**, **Notifications**,
 | Bring the window to the front when a session needs me / finishes | off | Un-minimises Ghostty Dock and shows that session's tab, over whatever app you are in. Never while you are already looking at Ghostty Dock, so it can't switch tabs as you type. It waits until you have not typed or moved the mouse for 10 seconds, then a note at the top of the screen says it is coming up in 3 seconds (**Show now**, **Not now**; typing puts it off again). The window then fades in as it rises into place over about a second and a half, with a banner for 5 seconds saying which session and why. |
 | …only once no session is running | on | Holds the window back until every session is idle or waiting on you, so it comes up once, when there is nothing left to wait for. |
 | Reopen Claude sessions when Ghostty Dock starts | on | The app records its open sessions every 10 seconds; after a quit, crash or update they come back as tabs with `claude --resume`. Sessions already running elsewhere are skipped. |
+| Keep tabs running when Ghostty Dock quits | on | Every tab runs in a small holder (`ghostty-dock-hold`, inside the app) instead of in the app itself. Closing a tab ends what runs in it, as usual; a quit, crash or restart does not. Shells, dev servers and Claude sessions carry on, and the next app reattaches a tab to each, replaying the last 4 MB of its output so scrollback and search still work. Applies to tabs opened after you change it. |
 | Open Ghostty Dock at login | off | Adds it to macOS Login Items. |
 | Version / About and Updates… | | The version, and an **Update…** button when GitHub has something newer. |
 | Edit Ghostty Config… | | Fonts, colours and keys live in Ghostty's own config file. |
@@ -272,6 +273,10 @@ flashing red ⏳ replaces the Restart button and an orange line under the
 header says what for: "Restart waits for ghostty-dock to finish", then a
 countdown ("Restarting in 8s"). Click the ⏳ to restart now (what is running
 is interrupted) or cancel the restart.
+
+With **Keep tabs running** on, a restart only waits for the sessions that are
+not held (tabs opened before you turned it on). Held tabs are never stopped:
+the app goes, and the new one reattaches them.
 
 ## Pairs well with: Claude Code Cost Sidebar
 

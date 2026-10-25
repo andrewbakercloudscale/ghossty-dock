@@ -107,6 +107,12 @@ function main() {
     check "ids inherited outside Ghostty Dock are ignored" "$state/sessions/tty-ttys008.json" '.name' "undocked"
     check "inherited ids leave the Dock row alone" "$state/sessions/srf-0A1B-2C3D.json" '.status' "running"
 
+    # Reattached by a restart: the holder names the tab it is in now.
+    mkdir -p "$state/hold" && echo "NEW-SURF" >"$state/hold/abc123.surface"
+    GHOSTTY_DOCK_TEST_LINEAGE="444 - ttys007" GHOSTTY_DOCK_HOLD="abc123" GHOSTTY_DOCK_SURFACE="OLD-SURF" \
+        fire '{"hook_event_name":"UserPromptSubmit","session_id":"s7","cwd":"/h/held"}'
+    check "a held session writes to the tab it is reattached to" "$state/sessions/srf-NEW-SURF.json" '.name' "held"
+
     GHOSTTY_DOCK_TEST_LINEAGE="- - -" fire '{"hook_event_name":"Stop","session_id":"s4","cwd":"/z"}'
     check "no terminal falls back to session id" "$state/sessions/sid-s4.json" '.status' "done"
 

@@ -5,7 +5,10 @@
 # for a while, quits the app, starts it again and reopens each session as a
 # tab with `claude --resume <id>` and its original flags.
 #
-# Plain shell tabs are not reopened. Runs detached, because the session that
+# Tabs run under ghostty-dock-hold (Settings: Keep tabs running) are not
+# stopped at all: the app goes, their holders keep them running, and the new
+# app reattaches a tab to each, shells and dev servers included. Only the
+# others are waited for and resumed. Runs detached, because the session that
 # starts it is one of those restarted.
 #
 # The app also calls it (installed as ghostty-dock-restart): --save every few
@@ -27,6 +30,7 @@ STATUS="$STATE_DIR/restart-status"
 RESTARTING="$STATE_DIR/restarting.tsv"
 OPENER="$HOME/.local/bin/ghostty-dock-open"
 APP_BIN="$HOME/Applications/Ghostty Dock.app/Contents/MacOS/ghostty"
+HOLD="${GHOSTTY_DOCK_HOLD_BIN:-$HOME/Applications/Ghostty Dock.app/Contents/MacOS/ghostty-dock-hold}"
 QUIET_SECS=10
 GIVE_UP_SECS=$((4 * 3600))
 # No restart until the keyboard and mouse have been still this long, so it
@@ -69,11 +73,13 @@ function app_pid() {
     ps -axo pid=,command= | awk -v bin="$APP_BIN" '{ pid = $1; $1 = ""; sub(/^ /, "") } index($0, bin) == 1 && (length($0) == length(bin) || substr($0, length(bin) + 1, 1) == " ") { print pid; exit }'
 }
 
-# Prints the pid of every claude under the app, however it was started
-# (`claude`, `claude --continue`, a full path, ...).
+# Prints the pid of every claude under any of the given pids, however it was
+# started (`claude`, `claude --continue`, a full path, ...).
 function claudes_under() {
-    local root="$1"
-    ps -axo pid=,ppid=,command= | awk -v root="$root" '
+    local roots="$*"
+    [ -z "$roots" ] && return 0
+    ps -axo pid=,ppid=,command= | awk -v roots="$roots" '
+        BEGIN { n = split(roots, r, " "); for (i = 1; i <= n; i++) root[r[i]] = 1 }
         { parent[$1] = $2; cmd[$1] = $0 }
         END {
             for (p in cmd) {
@@ -81,9 +87,20 @@ function claudes_under() {
                 # A headless claude -p (a git hook or build script) belongs to no tab.
                 if (cmd[p] ~ / (-p|--print)( |$)/) continue
                 q = p
-                while (q > 1) { q = parent[q]; if (q == root) { print p; break } }
+                while (q > 1) { q = parent[q]; if (q in root) { print p; break } }
             }
         }'
+}
+
+# Prints "<name>\t<holder pid>\t<attached 1/0>\t<folder>\t<started>\t..." for
+# every running holder, oldest first.
+function holders() {
+    [ -x "$HOLD" ] || return 0
+    "$HOLD" list "$@" 2>/dev/null | sort -t$'\t' -k5n
+}
+
+function holder_pids() {
+    holders | cut -f2 | tr '\n' ' '
 }
 
 # The session a claude pid is on, from the hook's state: for claudes started
@@ -198,11 +215,11 @@ function wait_for_input_idle() {
     done
 }
 
-# Prints "<cwd>\t<session id>\t<flags>" for every claude in the app.
+# Prints "<cwd>\t<session id>\t<flags>" for every claude under the given
+# pids: the app's for the sessions it runs itself, the holders' for the rest.
 function open_sessions() {
-    local pid="$1"
     local cpid
-    for cpid in $(claudes_under "$pid"); do
+    for cpid in $(claudes_under "$@"); do
         describe "$cpid"
     done | awk -F'\t' '$2 == "" || !seen[$2]++'
 }
@@ -218,7 +235,9 @@ function save() {
     local pid
     pid=$(app_pid)
     [ -z "$pid" ] && return 0
-    open_sessions "$pid" >"$SAVED.tmp" && mv "$SAVED.tmp" "$SAVED"
+    # Held sessions too: a reboot ends their holders, and then they are
+    # resumed like the rest.
+    open_sessions "$pid" $(holder_pids) >"$SAVED.tmp" && mv "$SAVED.tmp" "$SAVED"
 }
 
 # Only a session in a terminal counts: Claude Burst's handover writer runs
@@ -232,12 +251,28 @@ function running_anywhere() {
 
 function restore() {
     restarting && { log "restore: skipped, a restart is reopening the sessions"; return 0; }
+    reattach_all
     [ -s "$SAVED" ] || return 0
     local sessions
     sessions=$(cat "$SAVED")
     rm -f "$SAVED"
     log "restore: $(conditions)"
-    reopen_all "$sessions"
+    reopen_all "$sessions" "$(open_sessions $(holder_pids) | cut -f2)"
+}
+
+# Opens a tab on every holder left without one, so what ran in the tabs
+# before a quit, crash or restart is back with its output.
+function reattach_all() {
+    local name hpid attached cwd rest n=0
+    while IFS=$'\t' read -r name hpid attached cwd rest; do
+        [ -n "$name" ] && [ "$attached" = 0 ] || continue
+        [ -d "$cwd" ] || cwd="$HOME"
+        "$OPENER" --command "'$HOLD' attach $name" "$cwd" >>"$LOG" 2>&1 \
+            || log "$(basename "$cwd"): reattaching failed"
+        n=$((n + 1))
+    done < <(holders --detached)
+    [ "$n" -gt 0 ] && log "reattached $n tab(s)"
+    return 0
 }
 
 # Reopens what missing-sessions.tsv lists.
@@ -250,13 +285,16 @@ function reopen_missing() {
     reopen_all "$sessions"
 }
 
-# Opens the sessions not already running, then checks they started.
+# Opens the sessions not already running, then checks they started. The
+# second argument lists ids already back in a holder.
 function reopen_all() {
     local sessions="$1"
+    local held="${2:-}"
     local cwd sid flags todo=""
     while IFS=$'\t' read -r cwd sid flags; do
         [ -z "$sid" ] || [ ! -d "$cwd" ] && continue
         running_anywhere "$sid" && continue
+        grep -qxF "$sid" <<<"$held" && continue
         todo+="$cwd"$'\t'"$sid"$'\t'"$flags"$'\n'
     done <<<"$sessions"
     [ -n "$todo" ] && resume_all "$todo"
@@ -333,9 +371,10 @@ function restart() {
     pid=$(app_pid)
     [ -z "$pid" ] && { log "Ghostty Dock is not running"; return 1; }
 
-    local sessions cpid
+    local sessions held cpid
     sessions=$(open_sessions "$pid")
-    log "$(grep -c . <<<"$sessions") session(s) to resume ($(conditions "$pid"))"
+    held=$(open_sessions $(holder_pids))
+    log "$(grep -c . <<<"$sessions") session(s) to resume, $(holders | grep -c .) held tab(s) to reattach ($(conditions "$pid"))"
     $dry && { printf '%s' "$sessions"; return 0; }
     trap 'rm -f "$STATUS" "$RESTARTING"' EXIT
     # One restart at a time: a newer one replaces any still waiting.
@@ -353,13 +392,15 @@ function restart() {
     local c s f
     while IFS=$'\t' read -r c s f; do
         [ -n "$s" ] && printf '%s\t%s\t%s\n' "$s" "$c" "$f" >>"$STATE_DIR/sessions-snapshot.tsv"
-    done <<<"$sessions"
-    printf '%s\n' "$sessions" >"$RESTARTING"
+    done <<<"$sessions"$'\n'"$held"
+    printf '%s\n' "$sessions" "$held" | grep . >"$RESTARTING"
     # A --save the app started just before it quit would otherwise write
     # back the sessions as they exit, for the new app to reopen twice.
     pkill -f "$SCRIPT_NAME --save" 2>/dev/null
     log "quitting Ghostty Dock ($pid)"
     status quitting
+    # The holders keep their tabs' programs running rather than hang them up.
+    mkdir -p "$STATE_DIR/hold" && echo "$pid" >"$STATE_DIR/hold/quitting"
     for cpid in $(claudes_under "$pid"); do kill -TERM "$cpid" 2>/dev/null; done
     sleep 3
     kill -TERM "$pid" 2>/dev/null
@@ -372,7 +413,8 @@ function restart() {
 
     # The opener starts the app with window-save-state=never, so it comes up
     # with only these tabs.
-    resume_all "$sessions"
+    reattach_all
+    [ -n "$sessions" ] && resume_all "$sessions"
     rm -f "$RESTARTING"
     log "done"
 }
