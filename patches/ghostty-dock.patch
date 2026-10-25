@@ -6156,10 +6156,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..ac1413f
+index 0000000..edf5c99
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1105 @@
+@@ -0,0 +1,1132 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -6838,7 +6838,7 @@ index 0000000..ac1413f
 +        }
 +        .overlay {
 +            if row.selected {
-+                RoundedRectangle(cornerRadius: 7).strokeBorder(accent, lineWidth: 2)
++                DockSelectedPulse(color: accent)
 +            } else if row.status == .waiting {
 +                DockAttentionRing()
 +            }
@@ -7029,21 +7029,48 @@ index 0000000..ac1413f
 +            root.shadowOffset = .zero
 +            root.shadowOpacity = 0.8
 +            root.shadowRadius = 4
-+            // A heartbeat every 2 seconds: lub-dub, then rest.
-+            let times: [NSNumber] = [0, 0.06, 0.14, 0.2, 0.28, 0.42, 1]
-+            func beat(_ keyPath: String, _ values: [CGFloat]) -> CAKeyframeAnimation {
-+                let a = CAKeyframeAnimation(keyPath: keyPath)
-+                a.values = values
-+                a.keyTimes = times
-+                a.duration = 2
-+                a.repeatCount = .infinity
-+                a.isRemovedOnCompletion = false
-+                a.timingFunctions = Array(repeating: CAMediaTimingFunction(name: .easeInEaseOut), count: times.count - 1)
-+                return a
-+            }
-+            mask.add(beat("lineWidth", [2.6, 5, 2.8, 4.2, 2.6, 2.6, 2.6]), forKey: "beat")
-+            root.add(beat("shadowRadius", [4, 11, 5, 9, 4, 4, 4]), forKey: "beat")
-+            root.add(beat("shadowOpacity", [0.8, 1, 0.85, 1, 0.8, 0.8, 0.8]), forKey: "beatGlow")
++            mask.add(dockHeartbeat("lineWidth", [2.6, 5, 2.8, 4.2, 2.6, 2.6, 2.6]), forKey: "beat")
++            root.add(dockHeartbeat("shadowRadius", [4, 11, 5, 9, 4, 4, 4]), forKey: "beat")
++            root.add(dockHeartbeat("shadowOpacity", [0.8, 1, 0.85, 1, 0.8, 0.8, 0.8]), forKey: "beatGlow")
++        }
++        .allowsHitTesting(false)
++    }
++}
++
++/// A heartbeat every 2 seconds: lub-dub, then rest.
++func dockHeartbeat(_ keyPath: String, _ values: [CGFloat]) -> CAKeyframeAnimation {
++    let times: [NSNumber] = [0, 0.06, 0.14, 0.2, 0.28, 0.42, 1]
++    let a = CAKeyframeAnimation(keyPath: keyPath)
++    a.values = values
++    a.keyTimes = times
++    a.duration = 2
++    a.repeatCount = .infinity
++    a.isRemovedOnCompletion = false
++    a.timingFunctions = Array(repeating: CAMediaTimingFunction(name: .easeInEaseOut), count: times.count - 1)
++    return a
++}
++
++/// The selected row's border swells and thins like a heartbeat, so the
++/// session you are working in is easy to spot.
++struct DockSelectedPulse: View {
++    var color: Color
++
++    var body: some View {
++        let c = NSColor(color).cgColor
++        DockLayerAnimation(key: "\(c)") { root, b, _ in
++            let ring = CAShapeLayer()
++            ring.frame = b
++            ring.path = DockLayerAnimation.border(b, radius: 7, width: 2)
++            ring.fillColor = nil
++            ring.strokeColor = c
++            ring.lineWidth = 2
++            ring.shadowColor = c
++            ring.shadowOffset = .zero
++            ring.shadowOpacity = 0.9
++            ring.shadowRadius = 2
++            root.addSublayer(ring)
++            ring.add(dockHeartbeat("lineWidth", [2, 5, 2.5, 4, 2, 2, 2]), forKey: "beat")
++            ring.add(dockHeartbeat("shadowRadius", [2, 8, 3, 6, 2, 2, 2]), forKey: "beatGlow")
 +        }
 +        .allowsHitTesting(false)
 +    }
