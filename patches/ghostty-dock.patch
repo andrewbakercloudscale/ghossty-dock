@@ -3028,6 +3028,145 @@ index 0000000..345ec01
 +        window?.makeKeyAndOrderFront(nil)
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockFinderShortcuts.swift b/macos/Sources/Features/Dock/DockFinderShortcuts.swift
+new file mode 100644
+index 0000000..f1f1e70
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockFinderShortcuts.swift
+@@ -0,0 +1,133 @@
++import AppKit
++import SwiftUI
++
++/// Keyboard shortcuts for the Finder Quick Actions that open a folder in
++/// Ghostty Dock. macOS keeps a Service's shortcut in the pbs domain's
++/// NSServicesStatus (what System Settings → Keyboard → Shortcuts → Services
++/// writes), so setting one here is the same as setting it there.
++enum DockFinderShortcuts {
++    struct Item: Identifiable {
++        let title: String
++        /// The Quick Action's name, as in ~/Library/Services.
++        let service: String
++        var id: String { service }
++    }
++
++    static let items = [
++        Item(title: "Restore Last Session in Ghostty", service: "Continue last Claude Code session in Ghostty"),
++        Item(title: "Open in Ghostty", service: "Launch Claude Code in Ghostty"),
++    ]
++
++    private static let domain = "pbs" as CFString
++    private static let statusKey = "NSServicesStatus" as CFString
++
++    private static func key(_ item: Item) -> String { "(null) - \(item.service) - runWorkflowAsService" }
++
++    static func installed(_ item: Item) -> Bool {
++        FileManager.default.fileExists(atPath: FileManager.default.homeDirectoryForCurrentUser
++            .appendingPathComponent("Library/Services/\(item.service).workflow").path)
++    }
++
++    private static func status() -> [String: Any] {
++        CFPreferencesCopyAppValue(statusKey, domain) as? [String: Any] ?? [:]
++    }
++
++    /// The shortcut in macOS's form ("@~^r": ⌘⌥⌃R), or nil for none.
++    static func shortcut(_ item: Item) -> String? {
++        let entry = status()[key(item)] as? [String: Any]
++        let k = (entry?["NSKeyEquivalent"] as? [String: Any])?["default"] as? String
++        return k?.isEmpty == false ? k : nil
++    }
++
++    static func setShortcut(_ item: Item, _ equivalent: String?) {
++        var all = status()
++        var entry = all[key(item)] as? [String: Any] ?? [:]
++        entry["NSMenuItem"] = ["default": item.service]
++        entry["NSKeyEquivalent"] = ["default": equivalent ?? ""]
++        entry["enabled_services_menu"] = true
++        entry["enabled_context_menu"] = true
++        all[key(item)] = entry
++        CFPreferencesSetAppValue(statusKey, all as CFDictionary, domain)
++        CFPreferencesAppSynchronize(domain)
++        // Tells the Services menu to read it again, so it works straight away.
++        _ = DockProcess.run("/System/Library/CoreServices/pbs", ["-flush"], timeout: 10, log: DockLog.files)
++    }
++
++    /// macOS's form for a key press, or nil without ⌘ or ⌃ (a shortcut on
++    /// its own key or ⌥ alone would type over Finder's own keys).
++    static func equivalent(_ e: NSEvent) -> String? {
++        let m = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
++        guard m.contains(.command) || m.contains(.control),
++              let c = e.charactersIgnoringModifiers?.lowercased(), c.count == 1,
++              c.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.union(.punctuationCharacters).contains($0) })
++        else { return nil }
++        var s = ""
++        if m.contains(.command) { s += "@" }
++        if m.contains(.option) { s += "~" }
++        if m.contains(.control) { s += "^" }
++        if m.contains(.shift) { s += "$" }
++        return s + c
++    }
++
++    /// "@~^r" as "⌃⌥⌘R", in the order macOS menus show them.
++    static func display(_ equivalent: String) -> String {
++        var s = ""
++        if equivalent.contains("^") { s += "⌃" }
++        if equivalent.contains("~") { s += "⌥" }
++        if equivalent.contains("$") { s += "⇧" }
++        if equivalent.contains("@") { s += "⌘" }
++        return s + String(equivalent.drop { "@~^$".contains($0) }).uppercased()
++    }
++}
++
++/// Click, then press the keys. Esc cancels; Delete clears.
++struct DockShortcutRecorder: View {
++    let item: DockFinderShortcuts.Item
++    @State private var value: String?
++    @State private var recording = false
++    @State private var monitor: Any?
++
++    var body: some View {
++        HStack(spacing: 6) {
++            Button(recording ? "Press keys…" : value.map(DockFinderShortcuts.display) ?? "Record Shortcut") {
++                recording ? stop() : start()
++            }
++            .monospaced(value != nil && !recording)
++            if value != nil && !recording {
++                Button {
++                    DockFinderShortcuts.setShortcut(item, nil)
++                    value = nil
++                } label: { Image(systemName: "xmark.circle.fill") }
++                .buttonStyle(.plain).foregroundStyle(.secondary)
++                .help("Remove the shortcut")
++            }
++        }
++        .onAppear { value = DockFinderShortcuts.shortcut(item) }
++        .onDisappear { stop() }
++    }
++
++    private func start() {
++        recording = true
++        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
++            switch e.keyCode {
++            case 53: stop() // Esc
++            case 51, 117: // Delete, Forward Delete
++                DockFinderShortcuts.setShortcut(item, nil)
++                value = nil
++                stop()
++            default:
++                guard let k = DockFinderShortcuts.equivalent(e) else { NSSound.beep(); return nil }
++                DockFinderShortcuts.setShortcut(item, k)
++                value = k
++                stop()
++            }
++            return nil
++        }
++    }
++
++    private func stop() {
++        recording = false
++        if let monitor { NSEvent.removeMonitor(monitor) }
++        monitor = nil
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockHistory.swift b/macos/Sources/Features/Dock/DockHistory.swift
 new file mode 100644
 index 0000000..64d426d
@@ -5863,10 +6002,10 @@ index 0000000..6115af9
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..6b7bcec
+index 0000000..c78f986
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,369 @@
+@@ -0,0 +1,382 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -6115,6 +6254,19 @@ index 0000000..6b7bcec
 +                    LabeledContent(title) { Text(keys).monospaced() }
 +                }
 +                Text("⌘1–9 and the next/previous keys follow the sidebar's order while it is showing.")
++                    .font(.callout)
++            }
++            Section("In Finder") {
++                ForEach(DockFinderShortcuts.items) { item in
++                    LabeledContent(item.title) {
++                        if DockFinderShortcuts.installed(item) {
++                            DockShortcutRecorder(item: item)
++                        } else {
++                            Text("Quick Action not installed").foregroundStyle(.secondary)
++                        }
++                    }
++                }
++                Text("Select a folder in Finder and press the shortcut. Use ⌘ or ⌃ with a key; Esc cancels, Delete removes it. Also in System Settings → Keyboard → Shortcuts → Services.")
 +                    .font(.callout)
 +            }
 +    }
