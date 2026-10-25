@@ -4478,10 +4478,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..f6091ae
+index 0000000..3d94896
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1197 @@
+@@ -0,0 +1,1226 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -4939,6 +4939,35 @@ index 0000000..f6091ae
 +            guard alert.runModalNearPointer() == .alertFirstButtonReturn else { return }
 +            runInTab("burst-off")
 +        }
++    }
++
++    static let costPanelSetup = "claude \"$(curl -fsSL https://raw.githubusercontent.com/andrewbakercloudscale/claude-code-cost-sidebar/main/SETUP_PROMPT.md)\""
++    static let costPanelRemove = "curl -fsSL https://raw.githubusercontent.com/andrewbakercloudscale/claude-code-cost-sidebar/main/claude-panel-uninstall.sh | bash && rm -rf \"$HOME/claude-code-cost-sidebar\""
++
++    /// The Claude Code Cost Sidebar's setup leaves its panel script here.
++    static var costPanelInstalled: Bool {
++        FileManager.default.fileExists(atPath: FileManager.default.homeDirectoryForCurrentUser
++            .appendingPathComponent(".local/bin/ccusage-panel.sh").path)
++    }
++
++    /// Installs the usage panel in a new tab, where its setup prompt asks
++    /// before changing anything.
++    func installCostPanel() {
++        runInTab(Self.costPanelSetup)
++    }
++
++    func removeCostPanel() {
++        let alert = NSAlert()
++        alert.messageText = "Remove the cost usage panel?"
++        alert.informativeText = """
++            Runs its uninstaller in a new tab: it removes exactly what setup installed \
++            (the usage-panel mod, its scripts in ~/.local/bin, its hooks and ~/.zshrc block) \
++            and backs up each file it edits. Panels already open keep running until closed.
++            """
++        alert.addButton(withTitle: "Remove")
++        alert.addButton(withTitle: "Cancel")
++        guard alert.runModalNearPointer() == .alertFirstButtonReturn else { return }
++        runInTab(Self.costPanelRemove)
 +    }
 +
 +    /// Brings an undocked session's own Ghostty window to the front.
@@ -5681,10 +5710,10 @@ index 0000000..f6091ae
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..67bb949
+index 0000000..6b7bcec
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,358 @@
+@@ -0,0 +1,369 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -5833,6 +5862,17 @@ index 0000000..67bb949
 +                Text("Drag a row by its grip (⋮⋮ on the right) to move it, or right-click → Move Up/Down; the sort becomes “As you drag them”. Right-click also renames, pins or colours it.")
 +                    .font(.callout)
 +                Toggle("Also show Ghostty's tab bar", isOn: $showTabBar)
++            }
++            Section("Cost usage panel") {
++                LabeledContent("Claude Code Cost Sidebar") {
++                    if DockSessions.costPanelInstalled {
++                        Button("Remove…") { DockSessions.shared.removeCostPanel() }
++                    } else {
++                        Button("Install…") { DockSessions.shared.installCostPanel() }
++                    }
++                }
++                Text("A live panel beside each Claude session: its cost, $/hour, context and spend by day. Each button runs in a new tab so you can see it work.")
++                    .font(.callout)
 +            }
 +            compaction
 +    }
