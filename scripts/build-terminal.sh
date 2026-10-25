@@ -126,6 +126,9 @@ function package_app() {
         -c "Delete :CFBundleIconName" "$plist" || exit 1
     cp "$ROOT/Resources/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns" || exit 1
     stamp_version "$plist"
+    # The holder every tab runs in, so tabs outlive the app (hold/).
+    clang -O2 -Wall -arch arm64 -arch x86_64 -mmacosx-version-min=13.0 \
+        -o "$app/Contents/MacOS/ghostty-dock-hold" "$ROOT/hold/ghostty-dock-hold.c" || exit 1
 
     source "$ROOT/scripts/sign-id.sh"
     echo "== sign: $DOCK_SIGN_ID"

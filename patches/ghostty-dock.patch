@@ -1,5 +1,5 @@
 diff --git a/macos/Sources/App/macOS/AppDelegate.swift b/macos/Sources/App/macOS/AppDelegate.swift
-index b02337e..b9d017d 100644
+index b02337e..d1b9629 100644
 --- a/macos/Sources/App/macOS/AppDelegate.swift
 +++ b/macos/Sources/App/macOS/AppDelegate.swift
 @@ -210,6 +210,11 @@ class AppDelegate: NSObject,
@@ -24,7 +24,27 @@ index b02337e..b9d017d 100644
          }
  
          // Setup our menu
-@@ -574,6 +582,9 @@ class AppDelegate: NSObject,
+@@ -356,7 +364,8 @@ class AppDelegate: NSObject,
+             // is possible to have other windows in a few scenarios:
+             //   - if we're opening a URL since `application(_:openFile:)` is called before this.
+             //   - if we're restoring from persisted state
+-            if TerminalController.all.isEmpty && derivedConfig.initialWindow {
++            // Ghostty Dock: the tabs the last app left running open instead.
++            if TerminalController.all.isEmpty && derivedConfig.initialWindow && !DockHold.leftRunning {
+                 undoManager.disableUndoRegistration()
+                 _ = TerminalController.newWindow(ghostty)
+                 undoManager.enableUndoRegistration()
+@@ -427,6 +436,9 @@ class AppDelegate: NSObject,
+     }
+ 
+     func applicationWillTerminate(_ notification: Notification) {
++        // Ghostty Dock: the tabs' holders keep running, for the next app.
++        DockHold.quitting()
++
+         // We have no notifications we want to persist after death,
+         // so remove them all now. In the future we may want to be
+         // more selective and only remove surface-targeted notifications.
+@@ -574,6 +586,9 @@ class AppDelegate: NSObject,
      }
  
      private func localEventKeyDown(_ event: NSEvent) -> NSEvent? {
@@ -34,7 +54,7 @@ index b02337e..b9d017d 100644
          // If the tab overview is visible and escape is pressed, close it.
          // This can't POSSIBLY be right and is probably a FirstResponder problem
          // that we should handle elsewhere in our program. But this works and it
-@@ -796,13 +807,9 @@ class AppDelegate: NSObject,
+@@ -796,13 +811,9 @@ class AppDelegate: NSObject,
          DispatchQueue.main.async { self.syncAppearance(config: config) }
  
          // Decide whether to hide/unhide app from dock and app switcher
@@ -51,7 +71,7 @@ index b02337e..b9d017d 100644
  
          // If we have configuration errors, we need to show them.
          let c = ConfigurationErrorsController.sharedInstance
-@@ -894,6 +901,12 @@ class AppDelegate: NSObject,
+@@ -894,6 +905,12 @@ class AppDelegate: NSObject,
          didReceive: UNNotificationResponse,
          withCompletionHandler: () -> Void
      ) {
@@ -64,7 +84,7 @@ index b02337e..b9d017d 100644
          ghostty.handleUserNotification(response: didReceive)
          withCompletionHandler()
      }
-@@ -903,7 +916,8 @@ class AppDelegate: NSObject,
+@@ -903,7 +920,8 @@ class AppDelegate: NSObject,
          willPresent: UNNotification,
          withCompletionHandler: (UNNotificationPresentationOptions) -> Void
      ) {
@@ -74,7 +94,7 @@ index b02337e..b9d017d 100644
          let options: UNNotificationPresentationOptions = shouldPresent ? [.banner, .sound] : []
          withCompletionHandler(options)
      }
-@@ -941,7 +955,7 @@ class AppDelegate: NSObject,
+@@ -941,7 +959,7 @@ class AppDelegate: NSObject,
      // MARK: - IB Actions
  
      @IBAction func openConfig(_ sender: Any?) {
@@ -83,7 +103,7 @@ index b02337e..b9d017d 100644
      }
  
      @IBAction func reloadConfig(_ sender: Any?) {
-@@ -949,7 +963,10 @@ class AppDelegate: NSObject,
+@@ -949,7 +967,10 @@ class AppDelegate: NSObject,
      }
  
      @IBAction func checkForUpdates(_ sender: Any?) {
@@ -95,7 +115,7 @@ index b02337e..b9d017d 100644
          // UpdateSimulator.happyPath.simulate(with: updateViewModel)
      }
  
-@@ -970,12 +987,12 @@ class AppDelegate: NSObject,
+@@ -970,12 +991,12 @@ class AppDelegate: NSObject,
      }
  
      @IBAction func showAbout(_ sender: Any?) {
@@ -111,7 +131,7 @@ index b02337e..b9d017d 100644
      }
  
      @IBAction func toggleSecureInput(_ sender: Any) {
-@@ -1104,6 +1121,8 @@ extension AppDelegate {
+@@ -1104,6 +1125,8 @@ extension AppDelegate {
          // Note: This COULD Be done all in the xib file, but I find it easier to
          // modify this stuff as code.
          self.menuAbout?.setImageIfDesired(systemSymbolName: "info.circle")
@@ -3565,6 +3585,67 @@ index 0000000..64d426d
 +        return f.string(from: d)
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockHold.swift b/macos/Sources/Features/Dock/DockHold.swift
+new file mode 100644
+index 0000000..d6fa65f
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockHold.swift
+@@ -0,0 +1,55 @@
++import Foundation
++
++/// Ghostty Dock: runs every terminal through ghostty-dock-hold, a small
++/// holder outside the app, so a quit, crash or restart does not stop what
++/// is running in it. The next app reattaches a tab to each holder left
++/// without one (ghostty-dock-restart --restore), replaying its output.
++enum DockHold {
++    static let binary = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/ghostty-dock-hold").path
++
++    static var holdDir: URL {
++        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/state/ghostty-dock/hold")
++    }
++
++    /// The command a new terminal runs: its own command, or the login
++    /// shell, inside a holder. A reattach is left as it is.
++    static func wrap(_ command: String?) -> String? {
++        guard DockSettings.holdSessions,
++              FileManager.default.isExecutableFile(atPath: binary) else { return command }
++        if let command, command.contains("ghostty-dock-hold") { return command }
++        let hold = quote(binary)
++        guard let command, !command.isEmpty else {
++            return "\(hold) new --login -- \(quote(loginShell))"
++        }
++        return "\(hold) new -- /bin/sh -c \(quote(command))"
++    }
++
++    /// Whether the last app left tabs running for this one to reattach,
++    /// asked once as the app starts: those tabs come back instead of the
++    /// saved windows and the empty first window.
++    static let leftRunning: Bool = {
++        guard DockSettings.holdSessions, DockSettings.restoreSessions,
++              FileManager.default.isExecutableFile(atPath: binary) else { return false }
++        let out = DockProcess.run(binary, ["list", "--detached"], timeout: 5)?.text ?? ""
++        return !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
++    }()
++
++    /// Lets the holders know the app is going, not their tabs being closed:
++    /// they keep running for the next app to reattach.
++    static func quitting() {
++        try? FileManager.default.createDirectory(at: holdDir, withIntermediateDirectories: true)
++        try? "\(getpid())\n".write(to: holdDir.appendingPathComponent("quitting"), atomically: true, encoding: .utf8)
++    }
++
++    private static var loginShell: String {
++        if let pw = getpwuid(getuid()), let shell = pw.pointee.pw_shell {
++            let s = String(cString: shell)
++            if !s.isEmpty { return s }
++        }
++        return ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
++    }
++
++    private static func quote(_ s: String) -> String {
++        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockHotKey.swift b/macos/Sources/Features/Dock/DockHotKey.swift
 new file mode 100644
 index 0000000..4b8472f
@@ -4836,10 +4917,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..6115af9
+index 0000000..3a49455
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1250 @@
+@@ -0,0 +1,1255 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -5123,6 +5204,11 @@ index 0000000..6115af9
 +                DockLog.restart.notice("restoring the sessions open before the last quit")
 +                DispatchQueue.global(qos: .utility).async {
 +                    _ = DockProcess.run("/bin/bash", [restarter, "--restore"], timeout: 300, log: DockLog.restart)
++                }
++            } else if FileManager.default.isExecutableFile(atPath: DockHold.binary) {
++                // Nothing will reattach the tabs the last app left running.
++                DispatchQueue.global(qos: .utility).async {
++                    _ = DockProcess.run(DockHold.binary, ["kill-detached"], timeout: 30, log: DockLog.restart)
 +                }
 +            }
 +            self.saveTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
@@ -6092,10 +6178,10 @@ index 0000000..6115af9
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..0c2e51a
+index 0000000..36e2d29
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,383 @@
+@@ -0,0 +1,390 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -6110,6 +6196,7 @@ index 0000000..0c2e51a
 +    static let dockBadgeKey = "dock.dockBadge"
 +    static let sidebarWidthKey = "dock.sidebarWidth"
 +    static let restoreSessionsKey = "dock.restoreSessions"
++    static let holdSessionsKey = "dock.holdSessions"
 +    static let themeKey = "dock.theme"
 +    static let groupingKey = "dock.grouping"
 +    static let manualOrderKey = "dock.manualOrder"
@@ -6139,6 +6226,7 @@ index 0000000..0c2e51a
 +            jumpHotKeyKey: true,
 +            dockBadgeKey: true,
 +            restoreSessionsKey: true,
++            holdSessionsKey: true,
 +            groupingKey: Grouping.none.rawValue,
 +            showCostKey: true,
 +            notifyWaitingKey: true,
@@ -6173,6 +6261,7 @@ index 0000000..0c2e51a
 +    static var jumpHotKey: Bool { UserDefaults.standard.bool(forKey: jumpHotKeyKey) }
 +    static var dockBadge: Bool { UserDefaults.standard.bool(forKey: dockBadgeKey) }
 +    static var restoreSessions: Bool { UserDefaults.standard.bool(forKey: restoreSessionsKey) }
++    static var holdSessions: Bool { UserDefaults.standard.bool(forKey: holdSessionsKey) }
 +    static var bellKeep: Int { max(10, UserDefaults.standard.integer(forKey: bellKeepKey)) }
 +    static var bellWaiting: Bool { UserDefaults.standard.bool(forKey: bellWaitingKey) }
 +    static var bellFinished: Bool { UserDefaults.standard.bool(forKey: bellFinishedKey) }
@@ -6187,6 +6276,7 @@ index 0000000..0c2e51a
 +    @AppStorage(DockSettings.jumpHotKeyKey) private var jumpHotKey = true
 +    @AppStorage(DockSettings.dockBadgeKey) private var dockBadge = true
 +    @AppStorage(DockSettings.restoreSessionsKey) private var restoreSessions = true
++    @AppStorage(DockSettings.holdSessionsKey) private var holdSessions = true
 +    @AppStorage(DockSettings.themeKey) private var theme = ""
 +    @AppStorage(DockSettings.groupingKey) private var grouping = DockSettings.Grouping.none
 +    @AppStorage(DockSettings.showCostKey) private var showCost = true
@@ -6366,6 +6456,9 @@ index 0000000..0c2e51a
 +            Section {
 +                Toggle("Reopen Claude sessions when Ghostty Dock starts", isOn: $restoreSessions)
 +                Text("After a quit or crash, every session that was open comes back as a tab with claude --resume.")
++                    .font(.callout)
++                Toggle("Keep tabs running when Ghostty Dock quits", isOn: $holdSessions)
++                Text("Each tab runs in a small holder outside the app, so a quit, crash or restart does not stop it. Shells, dev servers and Claude sessions carry on, and come back as tabs with their scrollback. Applies to tabs opened after you change it.")
 +                    .font(.callout)
 +                Toggle("Open Ghostty Dock at login", isOn: $startAtLogin)
 +                    .onChange(of: startAtLogin) { on in setLogin(on) }
@@ -8736,6 +8829,21 @@ index 0000000..9be71a4
 +        return pr
 +    }
 +}
+diff --git a/macos/Sources/Features/Terminal/TerminalRestorable.swift b/macos/Sources/Features/Terminal/TerminalRestorable.swift
+index aab51f6..b96bbf4 100644
+--- a/macos/Sources/Features/Terminal/TerminalRestorable.swift
++++ b/macos/Sources/Features/Terminal/TerminalRestorable.swift
+@@ -98,7 +98,9 @@ class TerminalWindowRestoration: NSObject, NSWindowRestoration {
+         // no matter what. Note its safe to use "ghostty.config" directly here
+         // because window restoration is only ever invoked on app start so we
+         // don't have to deal with config reloads.
+-        if appDelegate.ghostty.config.windowSaveState == "never" {
++        // Ghostty Dock: nor when the last app's tabs are still running,
++        // to be reattached: restoring would open each a second time.
++        if appDelegate.ghostty.config.windowSaveState == "never" || DockHold.leftRunning {
+             completionHandler(nil, nil)
+             return
+         }
 diff --git a/macos/Sources/Features/Terminal/TerminalView.swift b/macos/Sources/Features/Terminal/TerminalView.swift
 index b6e1c63..386c856 100644
 --- a/macos/Sources/Features/Terminal/TerminalView.swift
@@ -8857,7 +8965,7 @@ index 160894b..0853534 100644
  
              // TODO: we'd probably do some config loading here... for now we'd
 diff --git a/macos/Sources/Ghostty/Surface View/SurfaceView.swift b/macos/Sources/Ghostty/Surface View/SurfaceView.swift
-index 47503dc..f4efe44 100644
+index 47503dc..efb5f22 100644
 --- a/macos/Sources/Ghostty/Surface View/SurfaceView.swift	
 +++ b/macos/Sources/Ghostty/Surface View/SurfaceView.swift	
 @@ -218,7 +218,11 @@ extension Ghostty {
@@ -8872,7 +8980,17 @@ index 47503dc..f4efe44 100644
                  }
  
                  // If we're part of a split view and don't have focus, we put a semi-transparent
-@@ -730,6 +734,13 @@ extension Ghostty {
+@@ -724,12 +728,23 @@ extension Ghostty {
+             return try workingDirectory.withCString { cWorkingDir in
+                 config.working_directory = cWorkingDir
+ 
++                // Ghostty Dock: every terminal runs inside a holder that outlives the app.
++#if os(macOS)
++                let command = DockHold.wrap(command)
++#endif
+                 return try command.withCString { cCommand in
+                     config.command = cCommand
+ 
                      return try initialInput.withCString { cInput in
                          config.initial_input = cInput
  

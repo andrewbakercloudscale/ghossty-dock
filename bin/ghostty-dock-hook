@@ -24,6 +24,7 @@ environment:
     GHOSTTY_DOCK_STATE         state directory (default ~/.local/state/ghostty-dock)
     GHOSTTY_DOCK_SURFACE       set by Ghostty Dock on every terminal it runs
     DOCK_TAB_ID                set by ghostty-dock-open on the tab it creates
+    GHOSTTY_DOCK_HOLD          set by ghostty-dock-hold on the program it holds
     GHOSTTY_DOCK_TEST_LINEAGE  "claude_pid ghostty_pid tty", skips the process walk (tests)
 
 dependencies: ${DEPENDENCIES[@]}
@@ -143,6 +144,13 @@ function session_key() {
     local tty="$1"
     local input="$2"
     local ghostty_pid="$3"
+    # Under ghostty-dock-hold the program keeps the surface it started in,
+    # but a restart reattaches it to a new one: the holder records which.
+    if [ -n "${GHOSTTY_DOCK_HOLD:-}" ]; then
+        local held
+        held=$(cat "$STATE_DIR/hold/${GHOSTTY_DOCK_HOLD//[^A-Za-z0-9]/}.surface" 2>/dev/null)
+        [ -n "$held" ] && GHOSTTY_DOCK_SURFACE="$held"
+    fi
     # A stock Ghostty started from inside a Ghostty Dock tab inherits that
     # tab's ids; trusting them would overwrite the tab's row.
     local exe
