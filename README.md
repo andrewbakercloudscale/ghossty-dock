@@ -112,7 +112,7 @@ reports each session's status.
 - **Notifications** when a session needs you or finishes, unless you are
   looking at it. Click one to go to its tab. Each can be turned off. The 🔔 in
   the header lists the last 200; going to a session marks its ones read.
-- **Running sessions** have a gold glint running round their row.
+- **The tab you are in** has a gold ring; **other running sessions** have a chrome one. A glint runs round the ring while the session works.
 - **Esc stops a turn**: Claude Code runs no hook when you interrupt it, so
   the Dock reads the transcript and shows the session as idle within a few
   seconds.

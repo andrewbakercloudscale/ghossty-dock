@@ -6501,10 +6501,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..fa3d964
+index 0000000..a59b73e
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1132 @@
+@@ -0,0 +1,1104 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -7181,15 +7181,16 @@ index 0000000..fa3d964
 +                }
 +            }
 +        }
++        // One ring per row, and nothing that beats: gold marks the tab you
++        // are in (its glint runs while it works), chrome the others at work.
 +        .overlay {
 +            if row.selected {
-+                DockSelectedPulse(color: accent)
++                DockRunningShimmer(metal: .gold, moving: row.status == .running)
++            } else if row.status == .running {
++                DockRunningShimmer(metal: .chrome, moving: true)
 +            } else if row.status == .waiting {
 +                DockAttentionRing()
 +            }
-+        }
-+        .overlay {
-+            if row.status == .running { DockRunningShimmer() }
 +        }
 +        .overlay(alignment: .leading) {
 +            if row.selected || row.tag != nil {
@@ -7339,83 +7340,54 @@ index 0000000..fa3d964
 +    }
 +}
 +
-+/// A gold glint that runs round a running session's row and a border that
-+/// beats like a heart, so busy ones catch the eye without looking like they
-+/// need you.
++/// A metal ring round a row: gold for the tab you are in, chrome for the
++/// others while they work. A glint runs round it while the session is busy;
++/// it is steady otherwise. No pulse: a slow sweep is enough to catch the eye.
 +struct DockRunningShimmer: View {
++    enum Metal { case gold, chrome }
 +    static let gold = Color(hex: 0xffc61a)
 +
++    var metal: Metal
++    var moving: Bool
++
 +    var body: some View {
-+        DockLayerAnimation(key: "shimmer") { root, b, _ in
-+            let gold = NSColor(Self.gold)
++        DockLayerAnimation(key: "\(metal)-\(moving)") { root, b, _ in
++            let base, shine, shade: NSColor
++            switch metal {
++            case .gold:
++                base = NSColor(Self.gold); shine = NSColor(Color(hex: 0xfffbe6)); shade = base.withAlphaComponent(0.45)
++            case .chrome:
++                // Dark and light steel, so it reads as metal on a light or dark theme.
++                base = NSColor(Color(hex: 0xa7afba)); shine = .white; shade = NSColor(Color(hex: 0x6c7480)).withAlphaComponent(0.7)
++            }
 +            let side = hypot(b.width, b.height)
 +            let sweep = CAGradientLayer()
 +            sweep.type = .conic
 +            sweep.startPoint = CGPoint(x: 0.5, y: 0.5)
 +            sweep.endPoint = CGPoint(x: 1, y: 0.5)
-+            sweep.colors = [gold.withAlphaComponent(0.45), gold.withAlphaComponent(0.45), gold,
-+                            NSColor(Color(hex: 0xfffbe6)), gold, gold.withAlphaComponent(0.45)].map(\.cgColor)
++            sweep.colors = [shade, shade, base, shine, base, shade].map(\.cgColor)
 +            sweep.bounds = CGRect(x: 0, y: 0, width: side, height: side)
 +            sweep.position = CGPoint(x: b.midX, y: b.midY)
-+            sweep.add(DockLayerAnimation.repeating("transform.rotation.z", from: 0, to: -2 * Double.pi,
-+                                                   seconds: 2.6), forKey: "spin")
++            if moving {
++                sweep.add(DockLayerAnimation.repeating("transform.rotation.z", from: 0, to: -2 * Double.pi,
++                                                       seconds: 2.6), forKey: "spin")
++            }
 +            let band = CALayer()
 +            band.frame = b
 +            band.addSublayer(sweep)
++            let width: CGFloat = metal == .gold ? 2.6 : 2
 +            let mask = CAShapeLayer()
 +            mask.frame = b
-+            mask.path = DockLayerAnimation.border(b, radius: 7, width: 2.6)
++            mask.path = DockLayerAnimation.border(b, radius: 7, width: width)
 +            mask.fillColor = nil
 +            mask.strokeColor = NSColor.black.cgColor
-+            mask.lineWidth = 2.6
++            mask.lineWidth = width
 +            band.mask = mask
 +            root.addSublayer(band)
-+            root.shadowColor = gold.cgColor
++            root.shadowColor = metal == .gold ? base.cgColor : NSColor.black.cgColor
 +            root.shadowOffset = .zero
-+            root.shadowOpacity = 0.8
-+            root.shadowRadius = 4
-+            mask.add(dockHeartbeat("lineWidth", [2.6, 5, 2.8, 4.2, 2.6, 2.6, 2.6]), forKey: "beat")
-+            root.add(dockHeartbeat("shadowRadius", [4, 11, 5, 9, 4, 4, 4]), forKey: "beat")
-+            root.add(dockHeartbeat("shadowOpacity", [0.8, 1, 0.85, 1, 0.8, 0.8, 0.8]), forKey: "beatGlow")
-+        }
-+        .allowsHitTesting(false)
-+    }
-+}
-+
-+/// A heartbeat every 2 seconds: lub-dub, then rest.
-+func dockHeartbeat(_ keyPath: String, _ values: [CGFloat]) -> CAKeyframeAnimation {
-+    let times: [NSNumber] = [0, 0.06, 0.14, 0.2, 0.28, 0.42, 1]
-+    let a = CAKeyframeAnimation(keyPath: keyPath)
-+    a.values = values
-+    a.keyTimes = times
-+    a.duration = 2
-+    a.repeatCount = .infinity
-+    a.isRemovedOnCompletion = false
-+    a.timingFunctions = Array(repeating: CAMediaTimingFunction(name: .easeInEaseOut), count: times.count - 1)
-+    return a
-+}
-+
-+/// The selected row's border swells and thins like a heartbeat, so the
-+/// session you are working in is easy to spot.
-+struct DockSelectedPulse: View {
-+    var color: Color
-+
-+    var body: some View {
-+        let c = NSColor(color).cgColor
-+        DockLayerAnimation(key: "\(c)") { root, b, _ in
-+            let ring = CAShapeLayer()
-+            ring.frame = b
-+            ring.path = DockLayerAnimation.border(b, radius: 7, width: 2)
-+            ring.fillColor = nil
-+            ring.strokeColor = c
-+            ring.lineWidth = 2
-+            ring.shadowColor = c
-+            ring.shadowOffset = .zero
-+            ring.shadowOpacity = 0.9
-+            ring.shadowRadius = 2
-+            root.addSublayer(ring)
-+            ring.add(dockHeartbeat("lineWidth", [2, 5, 2.5, 4, 2, 2, 2]), forKey: "beat")
-+            ring.add(dockHeartbeat("shadowRadius", [2, 8, 3, 6, 2, 2, 2]), forKey: "beatGlow")
++            root.shadowOpacity = metal == .gold ? 0.8 : 0.25
++            root.shadowRadius = metal == .gold ? 4 : 2
 +        }
 +        .allowsHitTesting(false)
 +    }
