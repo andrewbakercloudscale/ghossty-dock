@@ -2379,6 +2379,126 @@ index 0000000..e83caf9
 +        }
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockAnswer.swift b/macos/Sources/Features/Dock/DockAnswer.swift
+new file mode 100644
+index 0000000..a96c48e
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockAnswer.swift
+@@ -0,0 +1,114 @@
++import AppKit
++import UserNotifications
++
++/// What a waiting session asks that can be answered without switching to
++/// it: a permission (allow or deny), or one single-choice question. Written
++/// by ghostty-dock-hook as the state file's "ask".
++struct DockAsk: Codable, Equatable {
++    var kind: String
++    var options: [String]?
++
++    var isPermission: Bool { kind == "permission" }
++    /// The question's choices; empty for a permission.
++    var choices: [String] { kind == "question" ? Array((options ?? []).prefix(4)) : [] }
++}
++
++/// Answers a waiting session from the sidebar or its notification by
++/// pressing the keys Claude Code's prompt takes: Return allows (the first
++/// choice is highlighted), Escape denies, and a choice is the down arrow
++/// that many times, then Return.
++extension DockSessions {
++    enum Answer: Equatable {
++        case allow, deny, choice(Int)
++
++        /// For a notification action's identifier, and back.
++        var id: String {
++            switch self {
++            case .allow: return "dock.allow"
++            case .deny: return "dock.deny"
++            case let .choice(i): return "dock.choice.\(i)"
++            }
++        }
++
++        init?(id: String) {
++            switch id {
++            case "dock.allow": self = .allow
++            case "dock.deny": self = .deny
++            default:
++                guard id.hasPrefix("dock.choice."), let i = Int(id.dropFirst("dock.choice.".count)) else { return nil }
++                self = .choice(i)
++            }
++        }
++    }
++
++    static let notificationSinceKey = "ghosttyDockSince"
++
++    /// Sends the answer only while the row still asks what it asked when the
++    /// button was drawn (the same wait, by its start time), so a stale button
++    /// never types into a prompt it was not meant for.
++    @MainActor func answer(_ row: Row, _ a: Answer) {
++        guard let now = rows.first(where: { $0.id == row.id }), now.status == .waiting,
++              now.since == row.since, let ask = now.ask, let key = now.askSurface,
++              let surface = now.controller?.surfaceTree.first(where: { $0.id.uuidString == key })?.surfaceModel
++        else { NSSound.beep(); return }
++        switch a {
++        case .allow:
++            guard ask.isPermission else { NSSound.beep(); return }
++            press(.enter, on: surface)
++        case .deny:
++            guard ask.isPermission else { NSSound.beep(); return }
++            press(.escape, on: surface)
++        case let .choice(i):
++            guard ask.choices.indices.contains(i) else { NSSound.beep(); return }
++            for _ in 0..<i { press(.arrowDown, on: surface) }
++            press(.enter, on: surface)
++        }
++        if let sid = now.sessionId {
++            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["ghostty-dock-" + sid])
++        }
++    }
++
++    /// From a notification's action button.
++    @MainActor func answer(sessionId: String, since: Int?, actionId: String) {
++        guard let a = Answer(id: actionId),
++              let row = rows.first(where: { $0.sessionId == sessionId }),
++              since == nil || row.since.map({ Int($0.timeIntervalSince1970) }) == since
++        else { NSSound.beep(); return }
++        answer(row, a)
++    }
++
++    private func press(_ key: Ghostty.Input.Key, on surface: Ghostty.Surface) {
++        surface.sendKeyEvent(Ghostty.Input.KeyEvent(key: key, action: .press, mods: []))
++        surface.sendKeyEvent(Ghostty.Input.KeyEvent(key: key, action: .release, mods: []))
++    }
++
++    /// The notification category with this ask's buttons, registered with
++    /// macOS on first use. Nil when there is nothing to answer.
++    static func category(for ask: DockAsk?) -> String? {
++        guard let ask else { return nil }
++        let actions: [UNNotificationAction]
++        let id: String
++        if ask.isPermission {
++            id = "dock.ask.permission"
++            actions = [UNNotificationAction(identifier: Answer.allow.id, title: "Allow"),
++                       UNNotificationAction(identifier: Answer.deny.id, title: "Deny", options: [.destructive])]
++        } else if !ask.choices.isEmpty {
++            id = "dock.ask." + ask.choices.joined(separator: "\u{1f}")
++            actions = ask.choices.enumerated().map { i, label in
++                UNNotificationAction(identifier: Answer.choice(i).id, title: label)
++            }
++        } else {
++            return nil
++        }
++        categoryLock.lock()
++        defer { categoryLock.unlock() }
++        if registered[id] == nil {
++            registered[id] = UNNotificationCategory(identifier: id, actions: actions, intentIdentifiers: [])
++            UNUserNotificationCenter.current().setNotificationCategories(Set(registered.values))
++        }
++        return id
++    }
++
++    private static var registered: [String: UNNotificationCategory] = [:]
++    private static let categoryLock = NSLock()
++}
 diff --git a/macos/Sources/Features/Dock/DockCenteredTitle.swift b/macos/Sources/Features/Dock/DockCenteredTitle.swift
 new file mode 100644
 index 0000000..38589ea
@@ -3357,7 +3477,7 @@ index 0000000..db9ed48
 +}
 diff --git a/macos/Sources/Features/Dock/DockLoadingView.swift b/macos/Sources/Features/Dock/DockLoadingView.swift
 new file mode 100644
-index 0000000..5c3bff6
+index 0000000..9400815
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockLoadingView.swift
 @@ -0,0 +1,66 @@
@@ -3414,9 +3534,9 @@ index 0000000..5c3bff6
 +                }
 +
 +                Button("Skip") { model.skipLoading() }
-+                    .buttonStyle(.plain)
-+                    .font(.system(size: 11))
-+                    .foregroundStyle(DockPalette.text.opacity(0.5))
++                    .buttonStyle(.bordered)
++                    .controlSize(.large)
++                    .keyboardShortcut(.cancelAction)
 +            }
 +        }
 +        .environment(\.colorScheme, DockPalette.scheme)
@@ -3782,10 +3902,10 @@ index 0000000..bc033d2
 +}
 diff --git a/macos/Sources/Features/Dock/DockOrdering.swift b/macos/Sources/Features/Dock/DockOrdering.swift
 new file mode 100644
-index 0000000..3cfcd4a
+index 0000000..60e0e0f
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockOrdering.swift
-@@ -0,0 +1,220 @@
+@@ -0,0 +1,223 @@
 +import Foundation
 +
 +/// What a tab is doing. Raw values are the urgency order: needs you first.
@@ -3808,11 +3928,14 @@ index 0000000..3cfcd4a
 +
 +/// A colour you give a row, to mark it or to group by.
 +enum DockTag: String, CaseIterable, Codable {
-+    // Round the colour wheel, so neighbours in the picker differ.
-+    case red, coral, orange, amber, yellow, lime, green, emerald, teal, cyan
-+    case sky, blue, indigo, violet, purple, magenta, pink, rose, brown, slate
-+    // Vivid, for the rows that have to stand out.
-+    case scarlet, blaze, gold, volt, neon, aqua, electric, ultra, fuchsia, flamingo
++    // Round the colour wheel by hue, red to pink, then the two neutrals:
++    // the picker shows them in this order. Saved by name, so reordering is safe.
++    case scarlet, red, coral, blaze, orange
++    case amber, gold, yellow, volt, lime
++    case neon, green, emerald, aqua, teal
++    case cyan, sky, electric, blue, indigo
++    case ultra, violet, purple, magenta, fuchsia
++    case pink, flamingo, rose, brown, slate
 +
 +    var label: String { rawValue.capitalized }
 +
@@ -4478,10 +4601,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..3d94896
+index 0000000..6115af9
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1226 @@
+@@ -0,0 +1,1250 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -4519,6 +4642,10 @@ index 0000000..3d94896
 +        var project: String?
 +        /// What it is waiting on: the question, or the tool call to allow.
 +        var prompt: String?
++        /// What can be answered from the sidebar: allow or deny, or a choice.
++        var ask: DockAsk?
++        /// The terminal (of the tab's splits) that is asking.
++        var askSurface: String?
 +        var pinned = false
 +        var tag: DockTag?
 +        var renamed = false
@@ -4532,6 +4659,7 @@ index 0000000..3d94896
 +            a.id == b.id && a.key == b.key && a.name == b.name && a.detail == b.detail && a.status == b.status
 +                && a.since == b.since && a.selected == b.selected && a.sessionId == b.sessionId
 +                && a.started == b.started && a.project == b.project && a.prompt == b.prompt
++                && a.ask == b.ask && a.askSurface == b.askSurface
 +                && a.pinned == b.pinned && a.tag == b.tag && a.renamed == b.renamed
 +                && a.failed == b.failed && a.pid == b.pid
 +        }
@@ -4678,8 +4806,13 @@ index 0000000..3d94896
 +        }
 +        collapsed = Set((UserDefaults.standard.string(forKey: DockSettings.collapsedKey) ?? "")
 +            .split(separator: "\n").map(String.init))
-+        expected = ((try? String(contentsOf: stateDir.appendingPathComponent("open-sessions.tsv"), encoding: .utf8)) ?? "")
-+            .split(separator: "\n").filter { $0.contains("\t") }.count
++        // A restart lists what it is reopening; a quit or crash, what was open.
++        let record = ["restarting.tsv", "open-sessions.tsv"].lazy
++            .compactMap { try? String(contentsOf: self.stateDir.appendingPathComponent($0), encoding: .utf8) }.first
++        expected = Set((record ?? "").split(separator: "\n").compactMap { line -> Substring? in
++            let f = line.split(separator: "\t", omittingEmptySubsequences: false)
++            return f.count >= 2 && f[0].hasPrefix("/") && !f[1].isEmpty ? f[1] : nil
++        }).count
 +    }
 +
 +    /// Sessions back with their cost read, for the Loading… screen.
@@ -5007,6 +5140,7 @@ index 0000000..3d94896
 +        var session_id: String?
 +        var project: String?
 +        var prompt: String?
++        var ask: DockAsk?
 +    }
 +
 +    /// The creation date of session <id>'s transcript, in any project folder.
@@ -5177,7 +5311,7 @@ index 0000000..3d94896
 +
 +            // A tab with splits is one row: its most urgent session.
 +            var best: (status: Status, since: Int, name: String, key: String, sid: String?,
-+                       project: String?, prompt: String?, pid: Int32?)?
++                       project: String?, prompt: String?, pid: Int32?, ask: DockAsk?)?
 +            for surface in controller.surfaceTree {
 +                let key = surface.id.uuidString
 +                guard let s = sessions[key] else { continue }
@@ -5200,7 +5334,7 @@ index 0000000..3d94896
 +                }
 +                if best == nil || status < best!.status {
 +                    best = (status, s.since, s.name, key, s.session_id.flatMap { $0.isEmpty ? nil : $0 },
-+                            s.project, s.prompt, s.claude_pid)
++                            s.project, s.prompt, s.claude_pid, s.ask)
 +                }
 +            }
 +
@@ -5227,6 +5361,8 @@ index 0000000..3d94896
 +                             started: best?.sid.flatMap(started),
 +                             project: best?.project,
 +                             prompt: best?.status == .waiting ? best?.prompt : nil,
++                             ask: best?.status == .waiting ? best?.ask : nil,
++                             askSurface: best?.status == .waiting ? best?.key : nil,
 +                             pinned: m?.pinned ?? false,
 +                             tag: m?.tag,
 +                             renamed: m?.name != nil,
@@ -5243,6 +5379,16 @@ index 0000000..3d94896
 +            let first = tabs.compactMap { ($0.windowController as? TerminalController).map(ObjectIdentifier.init) }
 +                .compactMap { order.firstIndex(of: $0) }.min() ?? 0
 +            return (first, tabs.firstIndex(of: w) ?? 0)
++        }
++        // Two sessions with the same name (two on one repo) are numbered in
++        // tab order, so they can be told apart and keep their numbers
++        // whatever the sort. A name you gave a row is left as it is.
++        let same = Dictionary(grouping: built.indices.filter { built[$0].sessionId != nil && !built[$0].renamed },
++                              by: { built[$0].name })
++        for (_, rows) in same where rows.count > 1 {
++            for (n, i) in rows.sorted(by: { place(built[$0]) < place(built[$1]) }).enumerated() {
++                built[i].name += " (\(n + 1))"
++            }
 +        }
 +        built = DockOrdering.sorted(built, order: DockSettings.order, manual: DockSettings.manualOrder) { r in
 +            let p = place(r)
@@ -5452,7 +5598,8 @@ index 0000000..3d94896
 +        let text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
 +        return text.split(separator: "\n").compactMap { line in
 +            let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
-+            guard f.count >= 2, !f[1].isEmpty else { return nil }
++            // A folder, not an id shifted into its place by an old restart.
++            guard f.count >= 2, !f[1].isEmpty, f[0].hasPrefix("/") else { return nil }
 +            return Closed(sessionId: f[1], name: (f[0] as NSString).lastPathComponent, folder: f[0],
 +                          flags: f.count > 2 ? f[2] : "")
 +        }
@@ -6196,7 +6343,7 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..edf5c99
+index 0000000..fa3d964
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
 @@ -0,0 +1,1132 @@
@@ -6569,7 +6716,7 @@ index 0000000..edf5c99
 +    }
 +}
 +
-+/// 20 colours for a session, and None. The row and its terminal take it.
++/// 30 colours for a session, by hue, and None. The row and its terminal take it.
 +struct DockColourPicker: View {
 +    var row: DockSessions.Row
 +    var done: () -> Void

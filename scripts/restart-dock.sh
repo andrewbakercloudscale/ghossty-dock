@@ -22,6 +22,9 @@ SAVED="$STATE_DIR/open-sessions.tsv"
 MISSING="$STATE_DIR/missing-sessions.tsv"
 # What a restart is waiting for, for the app to show: "<what>\t<deadline>\t<names>".
 STATUS="$STATE_DIR/restart-status"
+# The sessions a restart is bringing back, while it runs: --save and
+# --restore leave them alone, and the app's Loading screen counts them.
+RESTARTING="$STATE_DIR/restarting.tsv"
 OPENER="$HOME/.local/bin/ghostty-dock-open"
 APP_BIN="$HOME/Applications/Ghostty Dock.app/Contents/MacOS/ghostty"
 QUIET_SECS=10
@@ -93,7 +96,9 @@ function hook_session() {
 }
 
 # Prints "<cwd>\t<session id>\t<flags>" for a claude pid; the session id is
-# empty when it cannot be told, and that claude is not resumed.
+# empty when it cannot be told, and that claude is not resumed. Prints
+# nothing without a folder (a claude that is exiting): read splits on tabs
+# and runs empty fields together, so the id would be taken for the folder.
 function describe() {
     local cpid="$1"
     local args sid flags cwd
@@ -103,6 +108,7 @@ function describe() {
         sid=$(sed -E 's/.*--(session-id|resume) ([^ ]+).*/\2/' <<<"$args")
     flags=$(sed -E 's/^([^ ]*\/)?claude ?//; s/--(session-id|resume) [^ ]+ ?//; s/(^| )(--continue|-c)( |$)/\1/; s/ +$//' <<<"$args")
     cwd=$(lsof -a -p "$cpid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+    [ -d "$cwd" ] || return 0
     printf '%s\t%s\t%s\n' "$cwd" "$sid" "$flags"
 }
 
@@ -198,10 +204,17 @@ function open_sessions() {
     local cpid
     for cpid in $(claudes_under "$pid"); do
         describe "$cpid"
-    done
+    done | awk -F'\t' '$2 == "" || !seen[$2]++'
+}
+
+# True while a restart is quitting the app and reopening its sessions; a
+# marker left by one that died is ignored after 10 minutes.
+function restarting() {
+    [ -n "$(find "$RESTARTING" -mmin -10 2>/dev/null)" ]
 }
 
 function save() {
+    restarting && return 0
     local pid
     pid=$(app_pid)
     [ -z "$pid" ] && return 0
@@ -214,6 +227,7 @@ function running_anywhere() {
 }
 
 function restore() {
+    restarting && { log "restore: skipped, a restart is reopening the sessions"; return 0; }
     [ -s "$SAVED" ] || return 0
     local sessions
     sessions=$(cat "$SAVED")
@@ -237,7 +251,7 @@ function reopen_all() {
     local sessions="$1"
     local cwd sid flags todo=""
     while IFS=$'\t' read -r cwd sid flags; do
-        [ -z "$sid" ] && continue
+        [ -z "$sid" ] || [ ! -d "$cwd" ] && continue
         running_anywhere "$sid" && continue
         todo+="$cwd"$'\t'"$sid"$'\t'"$flags"$'\n'
     done <<<"$sessions"
@@ -274,6 +288,8 @@ function resume_all() {
     local cwd sid flags
     while IFS=$'\t' read -r cwd sid flags; do
         [ -z "$sid" ] && continue
+        # Once only: never a second tab on a session already back.
+        running_anywhere "$sid" && continue
         log "resuming $(basename "$cwd")"
         "$OPENER" --command "caffeinate -i claude --resume $sid $flags" "$cwd" >>"$LOG" 2>&1 \
             || log "$(basename "$cwd"): opening the tab failed"
@@ -317,7 +333,7 @@ function restart() {
     sessions=$(open_sessions "$pid")
     log "$(grep -c . <<<"$sessions") session(s) to resume ($(conditions "$pid"))"
     $dry && { printf '%s' "$sessions"; return 0; }
-    trap 'rm -f "$STATUS"' EXIT
+    trap 'rm -f "$STATUS" "$RESTARTING"' EXIT
     # One restart at a time: a newer one replaces any still waiting.
     local other
     for other in $(pgrep -f "$SCRIPT_NAME --foreground"); do
@@ -334,6 +350,10 @@ function restart() {
     while IFS=$'\t' read -r c s f; do
         [ -n "$s" ] && printf '%s\t%s\t%s\n' "$s" "$c" "$f" >>"$STATE_DIR/sessions-snapshot.tsv"
     done <<<"$sessions"
+    printf '%s\n' "$sessions" >"$RESTARTING"
+    # A --save the app started just before it quit would otherwise write
+    # back the sessions as they exit, for the new app to reopen twice.
+    pkill -f "$SCRIPT_NAME --save" 2>/dev/null
     log "quitting Ghostty Dock ($pid)"
     status quitting
     for cpid in $(claudes_under "$pid"); do kill -TERM "$cpid" 2>/dev/null; done
@@ -349,6 +369,7 @@ function restart() {
     # The opener starts the app with window-save-state=never, so it comes up
     # with only these tabs.
     resume_all "$sessions"
+    rm -f "$RESTARTING"
     log "done"
 }
 
