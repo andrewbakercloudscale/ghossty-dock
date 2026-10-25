@@ -236,6 +236,10 @@ def clip: tostring | split("\n")[0] | if length > 160 then .[0:157] + "..." else
    elif $ev == "SessionEnd" then
      (if ($in.reason // "") == "clear" then null else "ended" end)
    else null end) as $st
+# A permission notification for a question already shown keeps the
+# question: AskUserQuestion is asked first in PreToolUse.
+| ($ev == "Notification" and $o.status == "waiting" and $o.event == "PreToolUse"
+   and $o.session_id == $in.session_id) as $keep
 | if $st == null then empty
   else
     (now | floor) as $now
@@ -255,15 +259,29 @@ def clip: tostring | split("\n")[0] | if length > 160 then .[0:157] + "..." else
         claude_pid: num($claude_pid),
         ghostty_pid: num($ghostty_pid),
         tty: (if $tty == "-" then null else $tty end),
-        event: $ev,
+        event: (if $keep then $o.event else $ev end),
         tool: ($in.tool_name // null),
         prompt: (if $st != "waiting" then null
+                 elif $keep then $o.prompt
                  elif $ev == "PreToolUse" and $in.tool_name == "AskUserQuestion" then
                    ($in.tool_input.questions[0].question // "A question for you" | clip)
                  elif $ev == "PreToolUse" then "Plan ready for review"
                  elif $nt == "permission_prompt" or ($msg | test("permission"; "i")) then
                    (if $pending != "" then "Allow " + $pending else $msg end | clip)
-                 else ($msg | clip) end)
+                 else ($msg | clip) end),
+        # What the sidebar can answer for you without switching: a permission
+        # (allow or deny), or one single-choice question and its options.
+        ask: (if $st != "waiting" then null
+              elif $keep then $o.ask
+              elif $ev == "PreToolUse" and $in.tool_name == "AskUserQuestion" then
+                (($in.tool_input.questions // []) as $q
+                 | if ($q | length) == 1 and (($q[0].multiSelect // false) | not)
+                      and (($q[0].options // []) | length) > 0
+                   then {kind: "question", options: [$q[0].options[:4][] | .label // "" | tostring | .[0:40]]}
+                   else null end)
+              elif $ev == "PreToolUse" then null
+              elif $nt == "permission_prompt" or ($msg | test("permission"; "i")) then {kind: "permission"}
+              else null end)
       }
   end
 JQ
