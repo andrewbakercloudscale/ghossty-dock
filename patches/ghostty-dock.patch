@@ -6507,10 +6507,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..1ad191c
+index 0000000..9943c45
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1110 @@
+@@ -0,0 +1,1123 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -7372,6 +7372,21 @@ index 0000000..1ad191c
 +                // Dark and light steel, so it reads as metal on a light or dark theme.
 +                base = NSColor(Color(hex: 0xa7afba)); shine = .white; shade = NSColor(Color(hex: 0x6c7480)).withAlphaComponent(0.7)
 +            }
++            // Still: plain gold edging and a drop shadow, no glint.
++            if !moving {
++                let edge = CAShapeLayer()
++                edge.frame = b
++                edge.path = DockLayerAnimation.border(b, radius: 7, width: 2.6)
++                edge.fillColor = nil
++                edge.strokeColor = base.cgColor
++                edge.lineWidth = 2.6
++                root.addSublayer(edge)
++                root.shadowColor = NSColor.black.cgColor
++                root.shadowOffset = CGSize(width: 0, height: -2)
++                root.shadowOpacity = 0.3
++                root.shadowRadius = 4
++                return
++            }
 +            let side = hypot(b.width, b.height)
 +            let sweep = CAGradientLayer()
 +            sweep.type = .conic
@@ -7380,10 +7395,8 @@ index 0000000..1ad191c
 +            sweep.colors = [shade, shade, base, shine, base, shade].map(\.cgColor)
 +            sweep.bounds = CGRect(x: 0, y: 0, width: side, height: side)
 +            sweep.position = CGPoint(x: b.midX, y: b.midY)
-+            if moving {
-+                sweep.add(DockLayerAnimation.repeating("transform.rotation.z", from: 0, to: -2 * Double.pi,
-+                                                       seconds: 2.6), forKey: "spin")
-+            }
++            sweep.add(DockLayerAnimation.repeating("transform.rotation.z", from: 0, to: -2 * Double.pi,
++                                                   seconds: 2.6), forKey: "spin")
 +            let band = CALayer()
 +            band.frame = b
 +            band.addSublayer(sweep)
