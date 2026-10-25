@@ -125,6 +125,8 @@ function package_app() {
         -c "Set :CFBundleIconFile AppIcon" \
         -c "Delete :CFBundleIconName" "$plist" || exit 1
     cp "$ROOT/Resources/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns" || exit 1
+    # Find Agents' catalogue, from Plexiform (scripts/import-agent-catalog.py).
+    cp -R "$ROOT/Resources/agent-catalog" "$app/Contents/Resources/agent-catalog" || exit 1
     stamp_version "$plist"
     # The holder every tab runs in, so tabs outlive the app (hold/).
     clang -O2 -Wall -arch arm64 -arch x86_64 -mmacosx-version-min=13.0 \
