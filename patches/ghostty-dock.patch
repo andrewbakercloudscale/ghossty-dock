@@ -4047,10 +4047,10 @@ index 0000000..bc033d2
 +}
 diff --git a/macos/Sources/Features/Dock/DockOrdering.swift b/macos/Sources/Features/Dock/DockOrdering.swift
 new file mode 100644
-index 0000000..60e0e0f
+index 0000000..907dc43
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockOrdering.swift
-@@ -0,0 +1,223 @@
+@@ -0,0 +1,229 @@
 +import Foundation
 +
 +/// What a tab is doing. Raw values are the urgency order: needs you first.
@@ -4073,40 +4073,46 @@ index 0000000..60e0e0f
 +
 +/// A colour you give a row, to mark it or to group by.
 +enum DockTag: String, CaseIterable, Codable {
-+    // Round the colour wheel by hue, red to pink, then the two neutrals:
-+    // the picker shows them in this order. Saved by name, so reordering is safe.
-+    case scarlet, red, coral, blaze, orange
-+    case amber, gold, yellow, volt, lime
-+    case neon, green, emerald, aqua, teal
-+    case cyan, sky, electric, blue, indigo
-+    case ultra, violet, purple, magenta, fuchsia
-+    case pink, flamingo, rose, brown, slate
++    // The picker's colours, round the wheel by hue, then the two neutrals.
++    // Saved by name, so reordering is safe.
++    case red, orange, yellow, lime, green, teal, sky
++    case blue, indigo, purple, magenta, pink, brown, slate
++    // No longer offered, as each was too like one above; rows given one
++    // keep it.
++    case scarlet, coral, blaze, amber, gold, volt, neon, emerald, aqua, cyan
++    case electric, ultra, violet, fuchsia, flamingo, rose
++
++    /// What the picker and the Colourise menu offer: no two alike.
++    static let offered: [DockTag] = [
++        .red, .orange, .yellow, .lime, .green, .teal, .sky,
++        .blue, .indigo, .purple, .magenta, .pink, .brown, .slate,
++    ]
 +
 +    var label: String { rawValue.capitalized }
 +
 +    /// Bright enough on a dark theme, deep enough on a light one.
 +    var hex: Int {
 +        switch self {
-+        case .red: return 0xf0566a
-+        case .coral: return 0xff7f66
-+        case .orange: return 0xf5913e
-+        case .amber: return 0xf2b33d
-+        case .yellow: return 0xe8c547
-+        case .lime: return 0xa8d14f
-+        case .green: return 0x4cc46a
-+        case .emerald: return 0x2fb38a
-+        case .teal: return 0x2bb3b3
-+        case .cyan: return 0x3cc3e6
-+        case .sky: return 0x5aa9f0
-+        case .blue: return 0x4a90e8
-+        case .indigo: return 0x6b72e8
-+        case .violet: return 0x8c6cf0
-+        case .purple: return 0xa66cf0
-+        case .magenta: return 0xd35fd6
-+        case .pink: return 0xf06cb4
-+        case .rose: return 0xe85d8c
-+        case .brown: return 0xb07f5a
++        case .red: return 0xf03e3e
++        case .orange: return 0xff8c1a
++        case .yellow: return 0xf5c400
++        case .lime: return 0x9ed62b
++        case .green: return 0x2fb350
++        case .teal: return 0x14b8a6
++        case .sky: return 0x4cc3f5
++        case .blue: return 0x2f6df0
++        case .indigo: return 0x5b45e0
++        case .purple: return 0xa25cf0
++        case .magenta: return 0xe035d0
++        case .pink: return 0xff7aa8
++        case .brown: return 0xa0714a
 +        case .slate: return 0x8a9bb0
++        case .coral: return 0xff7f66
++        case .amber: return 0xf2b33d
++        case .emerald: return 0x2fb38a
++        case .cyan: return 0x3cc3e6
++        case .violet: return 0x8c6cf0
++        case .rose: return 0xe85d8c
 +        case .scarlet: return 0xff1f3d
 +        case .blaze: return 0xff5a00
 +        case .gold: return 0xffd000
@@ -6501,7 +6507,7 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..c28ec74
+index 0000000..1ad191c
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
 @@ -0,0 +1,1110 @@
@@ -6890,8 +6896,8 @@ index 0000000..c28ec74
 +        VStack(alignment: .leading, spacing: 10) {
 +            Text("Colour for \(row.name)").font(.system(size: 12, weight: .semibold))
 +                .foregroundStyle(DockPalette.text).lineLimit(1)
-+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(26), spacing: 8), count: 5), spacing: 8) {
-+                ForEach(DockTag.allCases, id: \.self) { tag in
++            LazyVGrid(columns: Array(repeating: GridItem(.fixed(26), spacing: 8), count: 7), spacing: 8) {
++                ForEach(DockTag.offered + (row.tag.map { DockTag.offered.contains($0) ? [] : [$0] } ?? []), id: \.self) { tag in
 +                    Button {
 +                        DockSessions.shared.setTag(row, tag)
 +                        done()
@@ -7225,8 +7231,8 @@ index 0000000..c28ec74
 +            Button("Move Down") { model.move(row, by: 1) }
 +                .disabled(model.visibleRows.last?.key == row.key)
 +            Menu("Colourise") {
-+                ForEach(DockTag.allCases, id: \.self) { tag in
-+                    if tag == .scarlet { Divider() }
++                ForEach(DockTag.offered + (row.tag.map { DockTag.offered.contains($0) ? [] : [$0] } ?? []), id: \.self) { tag in
++                    if tag == .blue || !DockTag.offered.contains(tag) { Divider() }
 +                    Button { model.setTag(row, tag) } label: {
 +                        Image(nsImage: Self.swatch(tag))
 +                        Text(row.tag == tag ? "\(tag.label) ✓" : tag.label)
