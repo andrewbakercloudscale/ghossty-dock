@@ -152,6 +152,13 @@ reports each session's status.
   ![Agents window: four tiles, then each session's agents](docs/agents.png)
 
   ![Agents Set Up: every agent definition, with an editor](docs/agent-setup.png)
+- **Daily Recap (⌘⇧Y or the 📅 button)**: what the day's sessions did. Tiles
+  for spend, how long Claude worked, prompts, sessions, files changed and
+  commits, then one card per repo (sessions in its subfolders and worktrees
+  count toward it), most spent first: each session by its first prompt (click
+  to go to it, or reopen it if closed), the files Claude edited, and your
+  commits that day on any branch. ‹ › step back through earlier days. Read
+  from the transcripts and git when it opens; nothing is tracked.
 - **Reopen closed (⌘⇧T)**: within a few seconds Ghostty brings the tab back as
   it was; after that, the session is resumed in a new tab with its old flags.
 - **Right-click a row** to rename it, pin it to the top or give it a colour.
@@ -183,6 +190,7 @@ reports each session's status.
 | ⌘⇧S | Show or hide the sidebar |
 | ⌘P | Find a session by name, folder or question |
 | ⌘⇧A | Agents across all sessions |
+| ⌘⇧Y | Daily recap |
 | ⌘⇧T | Reopen the last closed session |
 
 While the sidebar is hidden, ⌘1–9 and the next/previous keys are Ghostty's

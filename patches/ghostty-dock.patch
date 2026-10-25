@@ -4679,6 +4679,448 @@ index 0000000..c7cf113
 +        .environment(\.colorScheme, DockPalette.scheme)
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockRecap.swift b/macos/Sources/Features/Dock/DockRecap.swift
+new file mode 100644
+index 0000000..430e17d
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockRecap.swift
+@@ -0,0 +1,436 @@
++import AppKit
++import SwiftUI
++
++/// Ghostty Dock: what a day's Claude Code sessions did, per repo: spend,
++/// prompts, how long Claude worked, the files it changed and the commits
++/// made. Read from the transcripts and git when the window opens, so it
++/// needs no tracking of its own.
++enum DockRecap {
++    struct Session: Identifiable, Equatable {
++        var id: String
++        var folder: String
++        /// The day's first prompt, to tell sessions in one repo apart.
++        var firstPrompt = ""
++        var spend = 0.0
++        var prompts = 0
++        var workedMs = 0
++    }
++
++    struct Commit: Equatable, Hashable {
++        var hash: String
++        var subject: String
++    }
++
++    struct Project: Identifiable, Equatable {
++        var id: String { folder }
++        var folder: String
++        var name: String
++        var sessions: [Session] = []
++        var files: [String] = []
++        var commits: [Commit] = []
++        var spend: Double { sessions.reduce(0) { $0 + $1.spend } }
++        var prompts: Int { sessions.reduce(0) { $0 + $1.prompts } }
++        var workedMs: Int { sessions.reduce(0) { $0 + $1.workedMs } }
++    }
++
++    struct Day: Equatable {
++        var start: Date
++        var projects: [Project] = []
++        var spend: Double { projects.reduce(0) { $0 + $1.spend } }
++        var prompts: Int { projects.reduce(0) { $0 + $1.prompts } }
++        var workedMs: Int { projects.reduce(0) { $0 + $1.workedMs } }
++        var sessions: Int { projects.reduce(0) { $0 + $1.sessions.count } }
++        var files: Int { projects.reduce(0) { $0 + $1.files.count } }
++        var commits: Int { projects.reduce(0) { $0 + $1.commits.count } }
++    }
++
++    private static let editTools: Set<String> = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
++
++    /// The day starting at `start` (local midnight).
++    static func compute(start: Date, projectsDir: URL = FileManager.default.homeDirectoryForCurrentUser
++        .appendingPathComponent(".claude/projects")) -> Day {
++        let end = Calendar.current.date(byAdding: .day, value: 1, to: start)!
++        let iso = ISO8601DateFormatter()
++        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
++        iso.timeZone = TimeZone(identifier: "UTC")
++        // Transcript timestamps are all "2026-10-25T08:26:54.474Z": as text
++        // they sort as times do, so a line is placed without parsing it.
++        let from = iso.string(from: start), to = iso.string(from: end)
++
++        var sessions: [String: Session] = [:]
++        var files: [String: Set<String>] = [:]
++        var seen = Set<String>()
++        let fm = FileManager.default
++        for dir in (try? fm.contentsOfDirectory(at: projectsDir, includingPropertiesForKeys: nil)) ?? [] {
++            for url in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] {
++                guard url.pathExtension == "jsonl", modified(url) >= start else { continue }
++                let sid = url.deletingPathExtension().lastPathComponent
++                // Its agents' transcripts count toward it.
++                let agents = ((try? fm.contentsOfDirectory(at: dir.appendingPathComponent("\(sid)/subagents"),
++                                                           includingPropertiesForKeys: nil)) ?? [])
++                    .filter { $0.pathExtension == "jsonl" && modified($0) >= start }
++                for file in [url] + agents {
++                    scan(file, sid: sid, from: from, to: to, sessions: &sessions, files: &files, seen: &seen)
++                }
++            }
++        }
++
++        // One entry per repo: sessions in its subfolders and worktrees too.
++        let worked = sessions.values.filter { !$0.folder.isEmpty && ($0.spend > 0 || $0.prompts > 0) }
++        let folders = Array(Set(worked.map(\.folder)))
++        let roots = parallel(folders) { repoRoot($0) ?? $0 }
++        let rootOf = Dictionary(uniqueKeysWithValues: zip(folders, roots))
++        var projects: [String: Project] = [:]
++        for s in worked {
++            let root = rootOf[s.folder] ?? s.folder
++            var p = projects[root] ?? Project(folder: root, name: (root as NSString).lastPathComponent)
++            p.sessions.append(s)
++            let edited = files[s.id] ?? []
++            p.files = Array(Set(p.files).union(edited.map { relative($0, to: root) })).sorted()
++            projects[root] = p
++        }
++        let keys = Array(projects.keys)
++        for (root, found) in zip(keys, parallel(keys) { commits(in: $0, start: start, end: end) }) {
++            projects[root]?.commits = found
++        }
++        var day = Day(start: start)
++        day.projects = projects.values
++            .map { p in var p = p; p.sessions.sort { $0.spend > $1.spend }; return p }
++            .sorted { $0.spend > $1.spend }
++        return day
++    }
++
++    /// git, a few repos at a time.
++    private static func parallel<T>(_ items: [String], _ body: (String) -> T) -> [T] {
++        var out = [T?](repeating: nil, count: items.count)
++        let lock = NSLock()
++        DispatchQueue.concurrentPerform(iterations: items.count) { i in
++            let v = body(items[i])
++            lock.lock(); out[i] = v; lock.unlock()
++        }
++        return out.map { $0! }
++    }
++
++    private static func modified(_ url: URL) -> Date {
++        (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
++    }
++
++    private static let stampKey = Data("\"timestamp\":\"".utf8)
++
++    private static func scan(_ url: URL, sid: String, from: String, to: String,
++                             sessions: inout [String: Session], files: inout [String: Set<String>],
++                             seen: inout Set<String>) {
++        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return }
++        var s = sessions[sid] ?? Session(id: sid, folder: "")
++        var promptIds = Set<String>()
++        // Only the lines that can count are parsed: most are tool results.
++        for line in data[firstLine(in: data, from: from)...].split(separator: 0x0A) {
++            guard let r = line.range(of: stampKey), r.upperBound + 24 <= line.endIndex else { continue }
++            let stamp = String(decoding: line[r.upperBound..<r.upperBound + 24], as: UTF8.self)
++            if stamp >= to { break }
++            guard stamp >= from,
++                  line.range(of: assistantKey) != nil || line.range(of: turnKey) != nil
++                      || (s.folder.isEmpty || line.range(of: promptKey) != nil) && line.range(of: resultKey) == nil,
++                  let d = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { continue }
++            if s.folder.isEmpty, let cwd = d["cwd"] as? String { s.folder = cwd }
++            if let (key, dollars) = DockCost.cost(of: d), seen.insert(key).inserted { s.spend += dollars }
++            let main = d["isSidechain"] as? Bool != true
++            switch d["type"] as? String {
++            case "system" where main && d["subtype"] as? String == "turn_duration":
++                s.workedMs += (d["durationMs"] as? NSNumber)?.intValue ?? 0
++            case "user" where main:
++                guard let pid = d["promptId"] as? String, promptIds.insert(pid).inserted,
++                      let text = promptText(d), !text.isEmpty else { break }
++                s.prompts += 1
++                if s.firstPrompt.isEmpty { s.firstPrompt = String(text.prefix(120)) }
++            case "assistant":
++                let content = (d["message"] as? [String: Any])?["content"] as? [[String: Any]] ?? []
++                for c in content where c["type"] as? String == "tool_use" {
++                    guard let name = c["name"] as? String, editTools.contains(name),
++                          let input = c["input"] as? [String: Any],
++                          let path = (input["file_path"] ?? input["notebook_path"]) as? String else { continue }
++                    files[sid, default: []].insert(path)
++                }
++            default: break
++            }
++        }
++        sessions[sid] = s
++    }
++
++    private static let assistantKey = Data("\"type\":\"assistant\"".utf8)
++    private static let turnKey = Data("\"turn_duration\"".utf8)
++    private static let promptKey = Data("\"promptId\"".utf8)
++    private static let resultKey = Data("\"tool_result\"".utf8)
++
++    /// Where the day's lines start: transcripts run oldest first, so a
++    /// binary search skips the days before without reading them.
++    private static func firstLine(in data: Data, from: String) -> Data.Index {
++        var lo = data.startIndex, hi = data.endIndex
++        while hi - lo > 65536 {
++            let mid = lo + (hi - lo) / 2
++            guard let stamp = nextStamp(in: data, after: mid) else { hi = mid; continue }
++            if stamp < from { lo = mid } else { hi = mid }
++        }
++        // Back to the start of the line lo is in.
++        var i = lo
++        while i > data.startIndex && data[i - 1] != 0x0A { i -= 1 }
++        return i
++    }
++
++    private static func nextStamp(in data: Data, after i: Data.Index) -> String? {
++        guard let r = data.range(of: stampKey, in: i..<min(data.endIndex, i + 4_000_000)),
++              r.upperBound + 24 <= data.endIndex else { return nil }
++        return String(decoding: data[r.upperBound..<r.upperBound + 24], as: UTF8.self)
++    }
++
++    /// What you typed, not a tool's result or a command's output.
++    private static func promptText(_ d: [String: Any]) -> String? {
++        let content = (d["message"] as? [String: Any])?["content"]
++        var text: String?
++        if let s = content as? String { text = s }
++        else if let parts = content as? [[String: Any]] {
++            if parts.contains(where: { $0["type"] as? String == "tool_result" }) { return nil }
++            text = parts.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }
++                .first { !$0.hasPrefix("[Image") }
++        }
++        guard let t = text?.trimmingCharacters(in: .whitespacesAndNewlines), !t.hasPrefix("<") else { return nil }
++        return t.replacingOccurrences(of: "\n", with: " ")
++    }
++
++    private static func repoRoot(_ folder: String) -> String? {
++        guard FileManager.default.fileExists(atPath: folder),
++              let r = DockProcess.run("/usr/bin/git", ["-C", folder, "rev-parse", "--show-toplevel"], timeout: 5,
++                                      quiet: [128]), r.status == 0 else { return nil }
++        var root = r.text.trimmingCharacters(in: .whitespacesAndNewlines)
++        // A Claude Code worktree is still its repo's work.
++        if let range = root.range(of: "/.claude/worktrees/") { root = String(root[..<range.lowerBound]) }
++        return root.isEmpty ? nil : root
++    }
++
++    private static func relative(_ path: String, to root: String) -> String {
++        path.hasPrefix(root + "/") ? String(path.dropFirst(root.count + 1)) : path
++    }
++
++    /// Your commits in the repo that day, on any branch.
++    private static func commits(in folder: String, start: Date, end: Date) -> [Commit] {
++        guard FileManager.default.fileExists(atPath: folder + "/.git") else { return [] }
++        let email = DockProcess.run("/usr/bin/git", ["-C", folder, "config", "user.email"], timeout: 5, quiet: [1])?
++            .text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
++        var args = ["-C", folder, "log", "--all", "--no-merges", "--since=@\(Int(start.timeIntervalSince1970))",
++                    "--until=@\(Int(end.timeIntervalSince1970))", "--pretty=format:%h%x09%s"]
++        if !email.isEmpty { args.append("--author=" + email) }
++        guard let r = DockProcess.run("/usr/bin/git", args, timeout: 10), r.status == 0 else { return [] }
++        return r.text.split(separator: "\n").compactMap { line in
++            let parts = line.split(separator: "\t", maxSplits: 1)
++            return parts.count == 2 ? Commit(hash: String(parts[0]), subject: String(parts[1])) : nil
++        }
++    }
++
++    static func duration(_ ms: Int) -> String {
++        let m = ms / 60000
++        return m >= 60 ? "\(m / 60)h \(m % 60)m" : m > 0 ? "\(m)m" : ms > 0 ? "<1m" : "0m"
++    }
++}
++
++final class DockRecapModel: ObservableObject {
++    @Published var start = Calendar.current.startOfDay(for: Date())
++    @Published private(set) var day: DockRecap.Day?
++    @Published private(set) var loading = false
++    private let queue = DispatchQueue(label: "ghostty-dock.recap", qos: .userInitiated)
++
++    var isToday: Bool { Calendar.current.isDateInToday(start) }
++
++    func load() {
++        let start = start
++        loading = true
++        queue.async {
++            let day = DockRecap.compute(start: start)
++            DispatchQueue.main.async {
++                guard start == self.start else { return }
++                self.day = day
++                self.loading = false
++            }
++        }
++    }
++
++    func step(_ days: Int) {
++        guard let d = Calendar.current.date(byAdding: .day, value: days, to: start), d <= Date() else { return }
++        start = d
++        day = nil
++        load()
++    }
++}
++
++struct DockRecapView: View {
++    @ObservedObject var model: DockRecapModel
++    @ObservedObject private var sessions = DockSessions.shared
++
++    var body: some View {
++        VStack(spacing: 0) {
++            header
++            Divider()
++            if let day = model.day {
++                if day.projects.isEmpty {
++                    Spacer()
++                    Text(model.isToday ? "Nothing yet today." : "No Claude Code sessions that day.")
++                        .foregroundStyle(.secondary)
++                    Spacer()
++                } else {
++                    ScrollView {
++                        VStack(alignment: .leading, spacing: 14) {
++                            totals(day)
++                            ForEach(day.projects) { project($0) }
++                        }
++                        .padding(16)
++                    }
++                }
++            } else {
++                Spacer()
++                ProgressView("Reading today's sessions…").controlSize(.small)
++                Spacer()
++            }
++        }
++        .frame(minWidth: 520, minHeight: 420)
++        .background(DockPalette.base)
++        .preferredColorScheme(DockPalette.scheme)
++    }
++
++    private var header: some View {
++        HStack(spacing: 10) {
++            Button { model.step(-1) } label: { Image(systemName: "chevron.left") }
++                .help("The day before")
++            Text(title).font(.headline).foregroundStyle(DockPalette.text)
++                .frame(minWidth: 200)
++            Button { model.step(1) } label: { Image(systemName: "chevron.right") }
++                .disabled(model.isToday)
++                .help("The day after")
++            Spacer()
++            if model.loading && model.day != nil { ProgressView().controlSize(.small) }
++            Button { model.load() } label: { Image(systemName: "arrow.clockwise") }
++                .help("Read the sessions again")
++        }
++        .buttonStyle(.borderless)
++        .padding(.horizontal, 16)
++        .padding(.vertical, 10)
++    }
++
++    private var title: String {
++        let f = DateFormatter()
++        f.setLocalizedDateFormatFromTemplate("EEEE d MMMM")
++        let date = f.string(from: model.start)
++        if model.isToday { return "Today, " + date }
++        if Calendar.current.isDateInYesterday(model.start) { return "Yesterday, " + date }
++        return date
++    }
++
++    private func totals(_ day: DockRecap.Day) -> some View {
++        let tiles: [(String, String, String, Color)] = [
++            ("Spent", DockCost.format(day.spend), "dollarsign.circle.fill", DockPalette.green),
++            ("Claude worked", DockRecap.duration(day.workedMs), "clock.fill", DockPalette.blue),
++            ("Prompts", "\(day.prompts)", "text.bubble.fill", DockPalette.mauve),
++            ("Sessions", "\(day.sessions)", "terminal.fill", DockPalette.teal),
++            ("Files changed", "\(day.files)", "doc.text.fill", DockPalette.peach),
++            ("Commits", "\(day.commits)", "arrow.triangle.branch", DockPalette.color(DockTag.pink)),
++        ]
++        return LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
++            ForEach(tiles, id: \.0) { t in
++                VStack(alignment: .leading, spacing: 4) {
++                    Label(t.0, systemImage: t.2).font(.caption).foregroundStyle(t.3)
++                    Text(t.1).font(.title2.weight(.semibold)).monospacedDigit().foregroundStyle(DockPalette.text)
++                }
++                .frame(maxWidth: .infinity, alignment: .leading)
++                .padding(10)
++                .background(RoundedRectangle(cornerRadius: 8).fill(t.3.opacity(0.12)))
++            }
++        }
++    }
++
++    private func project(_ p: DockRecap.Project) -> some View {
++        VStack(alignment: .leading, spacing: 6) {
++            HStack(alignment: .firstTextBaseline) {
++                Text(p.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(DockPalette.text)
++                Spacer()
++                Text("\(DockCost.format(p.spend)) · \(p.prompts) prompt\(p.prompts == 1 ? "" : "s") · \(DockRecap.duration(p.workedMs))")
++                    .font(.callout).monospacedDigit().foregroundStyle(.secondary)
++            }
++            ForEach(p.sessions) { s in sessionRow(s, project: p) }
++            if !p.files.isEmpty {
++                detail("doc.text", DockPalette.peach, "\(p.files.count) file\(p.files.count == 1 ? "" : "s"): "
++                       + p.files.prefix(6).map { ($0 as NSString).lastPathComponent }.joined(separator: ", ")
++                       + (p.files.count > 6 ? " and \(p.files.count - 6) more" : ""),
++                       help: p.files.joined(separator: "\n"))
++            }
++            ForEach(p.commits.prefix(8), id: \.self) { c in
++                detail("arrow.triangle.branch", DockPalette.color(DockTag.pink), c.subject, mono: c.hash)
++            }
++            if p.commits.count > 8 {
++                Text("and \(p.commits.count - 8) more commits").font(.caption).foregroundStyle(.secondary)
++                    .padding(.leading, 22)
++            }
++        }
++        .padding(12)
++        .background(RoundedRectangle(cornerRadius: 10).fill(DockPalette.mantle))
++    }
++
++    private func sessionRow(_ s: DockRecap.Session, project: DockRecap.Project) -> some View {
++        let open = sessions.rows.contains { $0.sessionId == s.id }
++        return Button {
++            if open { sessions.select(sessionId: s.id) }
++            else {
++                _ = sessions.reopen(DockSessions.Closed(sessionId: s.id, name: project.name, folder: s.folder))
++            }
++        } label: {
++            HStack(spacing: 6) {
++                Image(systemName: open ? "terminal.fill" : "arrow.uturn.backward.circle")
++                    .foregroundStyle(open ? DockPalette.teal : DockPalette.mauve)
++                    .frame(width: 16)
++                Text(s.firstPrompt.isEmpty ? "Session" : s.firstPrompt)
++                    .lineLimit(1).truncationMode(.tail).foregroundStyle(DockPalette.text)
++                Spacer()
++                Text("\(DockCost.format(s.spend)) · \(DockRecap.duration(s.workedMs))")
++                    .font(.caption).monospacedDigit().foregroundStyle(.secondary)
++            }
++            .contentShape(Rectangle())
++        }
++        .buttonStyle(.plain)
++        .help(open ? "Go to this session" : "Reopen this session")
++    }
++
++    private func detail(_ symbol: String, _ color: Color, _ text: String, mono: String? = nil,
++                        help: String? = nil) -> some View {
++        HStack(alignment: .firstTextBaseline, spacing: 6) {
++            Image(systemName: symbol).font(.caption).foregroundStyle(color).frame(width: 16)
++            if let mono { Text(mono).font(.caption.monospaced()).foregroundStyle(.secondary) }
++            Text(text).font(.callout).foregroundStyle(DockPalette.text).lineLimit(2)
++        }
++        .help(help ?? text)
++    }
++}
++
++/// Daily Recap in its own window, opened from the sidebar or ⌘⇧Y.
++final class DockRecapWindow {
++    static let shared = DockRecapWindow()
++    private var window: NSWindow?
++    private let model = DockRecapModel()
++
++    func show(near point: NSPoint? = nil) {
++        if window == nil {
++            let w = NSWindow(contentViewController: NSHostingController(rootView: DockRecapView(model: model)))
++            w.title = "Daily Recap"
++            w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
++            w.isReleasedWhenClosed = false
++            w.setContentSize(NSSize(width: 640, height: 720))
++            w.setFrameAutosaveName("GhosttyDockRecap")
++            if !w.setFrameUsingName("GhosttyDockRecap") { w.center() }
++            window = w
++        }
++        if let point, window?.isVisible == false { window?.place(near: point) }
++        // Always today's, fresh, when it opens.
++        if window?.isVisible == false || !model.isToday {
++            model.start = Calendar.current.startOfDay(for: Date())
++        }
++        model.load()
++        NSApp.activate(ignoringOtherApps: true)
++        window?.makeKeyAndOrderFront(nil)
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockSearch.swift b/macos/Sources/Features/Dock/DockSearch.swift
 new file mode 100644
 index 0000000..2b66815
@@ -6574,10 +7016,10 @@ index 0000000..36e2d29
 +}
 diff --git a/macos/Sources/Features/Dock/DockShortcuts.swift b/macos/Sources/Features/Dock/DockShortcuts.swift
 new file mode 100644
-index 0000000..819d35f
+index 0000000..cf87808
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockShortcuts.swift
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,108 @@
 +import AppKit
 +import Carbon
 +
@@ -6624,6 +7066,8 @@ index 0000000..819d35f
 +                     modifiers: .command) { DockSearchPanel.shared.show() },
 +            Shortcut(keys: "⌘⇧A", title: "Show Agents", keyCode: kVK_ANSI_A,
 +                     modifiers: [.command, .shift]) { DockAgentsWindow.shared.show() },
++            Shortcut(keys: "⌘⇧Y", title: "Show Daily Recap", keyCode: kVK_ANSI_Y,
++                     modifiers: [.command, .shift]) { DockRecapWindow.shared.show() },
 +            Shortcut(keys: "⌘⇧J", title: "Next Session That Needs You", keyCode: kVK_ANSI_J,
 +                     modifiers: [.command, .shift]) { model.jumpToNextWaiting() },
 +            Shortcut(keys: "⌘⇧R", title: "Restart Session", keyCode: kVK_ANSI_R,
@@ -6645,6 +7089,7 @@ index 0000000..819d35f
 +        ("Next session that needs you", "⌘⇧J  (⌃⌥J from any app)"),
 +        ("Find a session by name", "⌘P"),
 +        ("Agents across all sessions", "⌘⇧A"),
++        ("Daily recap", "⌘⇧Y"),
 +        ("Reopen the last closed session", "⌘⇧T"),
 +        ("Restart session", "⌘⇧R"),
 +        ("Undock session", "⌘⇧U"),
@@ -6685,10 +7130,10 @@ index 0000000..819d35f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..11b15a4
+index 0000000..54a692d
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1148 @@
+@@ -0,0 +1,1153 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -7019,6 +7464,11 @@ index 0000000..11b15a4
 +                             badge: model.agentsRunning,
 +                             shownTip: $headerTip, tipColor: $headerTipColor) {
 +                DockAgentsWindow.shared.show(near: NSEvent.mouseLocation)
++            }
++            DockHeaderButton(symbol: "calendar", size: 11, color: DockPalette.teal,
++                             tip: "Daily Recap: today's spend, work, files and commits (⌘⇧Y)",
++                             shownTip: $headerTip, tipColor: $headerTipColor) {
++                DockRecapWindow.shared.show(near: NSEvent.mouseLocation)
 +            }
 +            if showBell {
 +            DockHeaderButton(symbol: notices.unread > 0 ? "bell.badge.fill" : "bell",
