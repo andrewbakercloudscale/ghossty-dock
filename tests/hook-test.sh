@@ -55,6 +55,15 @@ function main() {
     fire '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"/x/my-proj","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which database?"}]}}'
     check "question is waiting" "$f" '.status' "waiting"
     check "question text is the prompt" "$f" '.prompt' "Which database?"
+    check "a question with no options cannot be answered from the sidebar" "$f" '.ask' "null"
+
+    fire '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"/x/my-proj","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which database?","options":[{"label":"Postgres"},{"label":"SQLite"}]}]}}'
+    check "one single-choice question offers its options" "$f" '.ask|"\(.kind) \(.options|join(","))"' "question Postgres,SQLite"
+    fire '{"hook_event_name":"Notification","session_id":"s1","cwd":"/x/my-proj","notification_type":"permission_prompt","message":"Claude needs your permission to use AskUserQuestion"}'
+    check "its permission notification keeps the question" "$f" '.ask.kind' "question"
+    check "and the question text" "$f" '.prompt' "Which database?"
+    fire '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"/x/my-proj","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which?","multiSelect":true,"options":[{"label":"A"}]}]}}'
+    check "a multi-select question is left to the tab" "$f" '.ask' "null"
 
     fire '{"hook_event_name":"PostToolUse","session_id":"s1","cwd":"/x/my-proj","tool_name":"AskUserQuestion"}'
     check "answer resumes running" "$f" '.status' "running"
@@ -65,6 +74,7 @@ function main() {
     fire '{"hook_event_name":"Notification","session_id":"s1","cwd":"/x/my-proj","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash","transcript_path":"'"$transcript"'"}'
     check "permission prompt is waiting" "$f" '.status' "waiting"
     check "permission prompt names the tool call" "$f" '.prompt' "Allow Bash: npm test"
+    check "permission prompt can be answered" "$f" '.ask.kind' "permission"
     fire '{"hook_event_name":"Notification","session_id":"s1","cwd":"/x/my-proj","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}'
     check "permission prompt without a transcript says what Claude said" "$f" '.prompt' "Claude needs your permission to use Bash"
 
