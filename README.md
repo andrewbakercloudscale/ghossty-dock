@@ -145,6 +145,19 @@ reports each session's status.
   description Claude chooses by, model, colour, tools, tools it may not use
   and its instructions. New agent (+), Duplicate as Mine (to customise a
   plugin's), Open in Editor, Move to Trash.
+  **Find Agents** (third tab, or the button at the top of Set Up) has 647
+  ready-made agents from [Plexiform](https://github.com/CallumJB125/claude-traffic-light)'s
+  catalogue by Callum Baker: four MIT collections (agency-agents, VoltAgent,
+  wshobson, 0xfurai), pinned and hash-checked, with risky instructions flagged.
+  Search or pick a kind, tick the ones you want and press **Install** (Return):
+  they go to ~/.claude/agents, or one open project's .claude/agents. Each shows
+  what it does, a warning if it can run commands or use every tool, its
+  instructions, and how to use it: "Use the code-reviewer agent to …" (Copy),
+  or **Start a Session as It** (`claude --agent <name>` in a new tab). Remove
+  puts it in the Trash. Installed files are as their authors wrote them, named
+  by their slug and with dated model ids swapped for sonnet/opus/haiku.
+  `scripts/import-agent-catalog.py` refreshes the catalogue from a Plexiform
+  checkout; licences are in Resources/agent-catalog.
   A **Spend** line shows how fast money is going across every open session,
   agents included: $/hr now (last 10 minutes), last hour, today's average
   $/hr, today, and tokens a minute.
