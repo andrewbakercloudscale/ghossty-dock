@@ -61,7 +61,7 @@ function main() {
     rm -rf "$stage" && mkdir -p "$stage/Ghostty Dock" || exit 1
     local dir="$stage/Ghostty Dock"
     ditto "$APP" "$dir/Ghostty Dock.app" || exit 1
-    cp -R "$ROOT/bin" "$ROOT/scripts" "$dir/" && cp "$ROOT/install.sh" "$ROOT/get.sh" "$ROOT/README.md" "$dir/" || exit 1
+    cp -R "$ROOT/bin" "$ROOT/scripts" "$dir/" && mkdir -p "$dir/Resources" && cp -R "$ROOT/Resources/quick-actions" "$dir/Resources/" && cp "$ROOT/install.sh" "$ROOT/get.sh" "$ROOT/README.md" "$dir/" || exit 1
 
     local signed="this Mac only"
     if [ -n "${DEVELOPER_ID:-}" ]; then
