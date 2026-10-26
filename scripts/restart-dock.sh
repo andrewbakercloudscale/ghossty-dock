@@ -112,6 +112,39 @@ function hook_session() {
     [ -n "$file" ] && sed -nE 's/.*"session_id":"([^"]+)".*/\1/p' "$file"
 }
 
+# Prints a claude pid's flags, shell-quoted from its real arguments, without
+# --resume/--session-id <id> or --continue: ps joins them with spaces, so a
+# quoted `--remote-control "aws lambda to eks"` came back as the name "aws"
+# and a first prompt of "lambda to eks". Prints nothing if it cannot tell.
+function claude_flags() {
+    /usr/bin/python3 - "$1" 2>/dev/null <<'PY'
+import ctypes, shlex, struct, sys
+libc = ctypes.CDLL(None)
+mib = (ctypes.c_int * 3)(1, 49, int(sys.argv[1]))  # CTL_KERN, KERN_PROCARGS2
+size = ctypes.c_size_t(0)
+libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0)
+buf = ctypes.create_string_buffer(size.value)
+if libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0:
+    sys.exit(1)
+raw = buf.raw[:size.value]
+argc = struct.unpack("i", raw[:4])[0]
+rest = raw[4:]
+i = rest.index(b"\0")
+while rest[i] == 0:
+    i += 1
+args = [a.decode("utf-8", "replace") for a in rest[i:].split(b"\0")[:argc]][1:]
+out, skip = [], False
+for a in args:
+    if skip:
+        skip = False
+    elif a in ("--resume", "--session-id", "-r"):
+        skip = True
+    elif a not in ("--continue", "-c"):
+        out.append(a)
+print(shlex.join(out))
+PY
+}
+
 # Prints "<cwd>\t<session id>\t<flags>" for a claude pid; the session id is
 # empty when it cannot be told, and that claude is not resumed. Prints
 # nothing without a folder (a claude that is exiting): read splits on tabs
@@ -124,6 +157,8 @@ function describe() {
     [ -z "$sid" ] && grep -qE -- "--(session-id|resume) " <<<"$args" &&
         sid=$(sed -E 's/.*--(session-id|resume) ([^ ]+).*/\2/' <<<"$args")
     flags=$(sed -E 's/^([^ ]*\/)?claude ?//; s/--(session-id|resume) [^ ]+ ?//; s/(^| )(--continue|-c)( |$)/\1/; s/ +$//' <<<"$args")
+    local quoted
+    quoted=$(claude_flags "$cpid") && flags="$quoted"
     cwd=$(lsof -a -p "$cpid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
     [ -d "$cwd" ] || return 0
     printf '%s\t%s\t%s\n' "$cwd" "$sid" "$flags"
