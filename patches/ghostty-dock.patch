@@ -4829,6 +4829,137 @@ index 0000000..6d9cbd4
 +        }
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockLogin.swift b/macos/Sources/Features/Dock/DockLogin.swift
+new file mode 100644
+index 0000000..07dca66
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockLogin.swift
+@@ -0,0 +1,125 @@
++import AppKit
++import Combine
++
++/// Notices when you log in to Claude as someone else. Sessions started
++/// before keep the old login (Remote Control drops, usage goes to the old
++/// account), and a held tab survives an app restart, so restarting Ghostty
++/// Dock doesn't move them: each has to be resumed. This lists them and
++/// resumes them with their flags, so --remote-control keeps its name.
++final class DockLogin: ObservableObject {
++    static let shared = DockLogin()
++
++    /// Sessions whose claude started before the login changed.
++    @Published private(set) var stale: [DockSessions.Row] = []
++    @Published private(set) var account: String?
++
++    private static let accountKey = "DockLoginAccount"
++    private static let changedKey = "DockLoginChanged"
++    private let configURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude.json")
++    private var timer: Timer?
++    private var readAt: Date?
++    private var bag: Set<AnyCancellable> = []
++
++    private var changed: Date? {
++        get { UserDefaults.standard.object(forKey: Self.changedKey) as? Date }
++        set { UserDefaults.standard.set(newValue, forKey: Self.changedKey) }
++    }
++
++    func start() {
++        guard timer == nil else { return }
++        check()
++        timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in self?.check() }
++        DockSessions.shared.$rows
++            .throttle(for: .seconds(2), scheduler: RunLoop.main, latest: true)
++            .sink { [weak self] _ in self?.findStale() }
++            .store(in: &bag)
++    }
++
++    /// Reads the account from ~/.claude.json, only when it has been written:
++    /// the file is large and claude rewrites it often.
++    private func check() {
++        let url = configURL
++        let last = readAt
++        DispatchQueue.global(qos: .utility).async { [weak self] in
++            guard let m = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date,
++                  last.map({ m > $0 }) ?? true,
++                  let data = try? Data(contentsOf: url),
++                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
++                  let oauth = json["oauthAccount"] as? [String: Any],
++                  let id = (oauth["accountUuid"] ?? oauth["emailAddress"]) as? String
++            else { return }
++            let email = oauth["emailAddress"] as? String
++            DispatchQueue.main.async {
++                guard let self else { return }
++                self.readAt = m
++                if self.account != email { self.account = email }
++                let d = UserDefaults.standard
++                if let before = d.string(forKey: Self.accountKey), before != id {
++                    DockLog.sessions.notice("Claude login changed")
++                    self.changed = Date()
++                }
++                d.set(id, forKey: Self.accountKey)
++                self.findStale()
++            }
++        }
++    }
++
++    private func findStale() {
++        var found: [DockSessions.Row] = []
++        if let changed {
++            found = DockSessions.shared.rows.filter { row in
++                guard row.sessionId != nil, let pid = row.pid, let started = Self.started(pid) else { return false }
++                return started < changed
++            }
++        }
++        if found.map(\.key) != stale.map(\.key) { stale = found }
++        // All resumed: forget the change, so a new session never shows it.
++        if found.isEmpty, changed != nil, !DockSessions.shared.rows.isEmpty { changed = nil }
++    }
++
++    /// When a process started, from the kernel.
++    static func started(_ pid: Int32) -> Date? {
++        var info = kinfo_proc()
++        var size = MemoryLayout<kinfo_proc>.stride
++        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
++        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
++        let t = info.kp_proc.p_starttime
++        return Date(timeIntervalSince1970: Double(t.tv_sec) + Double(t.tv_usec) / 1_000_000)
++    }
++
++    /// Asks, then resumes each one in a fresh tab, a little apart.
++    func confirmResume() {
++        let rows = stale
++        guard !rows.isEmpty else { return }
++        let busy = rows.filter { $0.status == .running }
++        let alert = NSAlert()
++        alert.messageText = "Resume \(rows.count) session\(rows.count == 1 ? "" : "s") with your new login?"
++        alert.informativeText = """
++            They started before you logged in\(account.map { " as \($0)" } ?? " again"), so they still \
++            use the old login: Remote Control and usage go to that account. Each is resumed in a \
++            fresh tab with the same flags, so Remote Control keeps its name.
++            """ + (busy.isEmpty ? "" : "\n\nRunning now, and interrupted if you resume them: "
++                + busy.map(\.name).joined(separator: ", ") + ".")
++        alert.addButton(withTitle: busy.isEmpty ? "Resume All" : "Resume the Idle Ones")
++        if !busy.isEmpty { alert.addButton(withTitle: "Resume All") }
++        alert.addButton(withTitle: "Not Now")
++        let answer = alert.runModalNearPointer()
++        let chosen: [DockSessions.Row]
++        switch answer {
++        case .alertFirstButtonReturn: chosen = rows.filter { $0.status != .running }
++        case .alertSecondButtonReturn where !busy.isEmpty: chosen = rows
++        default: return
++        }
++        for (i, row) in chosen.enumerated() {
++            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 1.5) {
++                DockSessions.shared.restart(row)
++            }
++        }
++    }
++
++    /// Leaves them as they are.
++    func dismiss() {
++        changed = nil
++        stale = []
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockNotices.swift b/macos/Sources/Features/Dock/DockNotices.swift
 new file mode 100644
 index 0000000..bc033d2
@@ -6146,10 +6277,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..65fd679
+index 0000000..530ea86
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1338 @@
+@@ -0,0 +1,1339 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -6411,6 +6542,7 @@ index 0000000..65fd679
 +            DockSurfaceRetry.start()
 +            DockAPI.shared.start()
 +        }
++        DockLogin.shared.start()
 +        costTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in self?.refreshCosts() }
 +        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.refreshCosts() }
 +        agentTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.refreshAgentsRunning() }
@@ -8000,10 +8132,10 @@ index 0000000..cf87808
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..e2033f2
+index 0000000..7a8746e
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1269 @@
+@@ -0,0 +1,1289 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -8058,6 +8190,7 @@ index 0000000..e2033f2
 +    @ObservedObject var model = DockSessions.shared
 +    @ObservedObject var updates = DockUpdates.shared
 +    @ObservedObject var notices = DockNotices.shared
++    @ObservedObject var login = DockLogin.shared
 +    @State private var showNotices = false
 +    /// What the header button under the pointer does, shown under the header.
 +    @State private var headerTip: String?
@@ -8220,6 +8353,25 @@ index 0000000..e2033f2
 +                        .controlSize(.small)
 +                        .help("Stop the restart; the sessions carry on as they are")
 +                }
++            }
++            // Sessions still on the login you left: Remote Control is gone
++            // from them until they are resumed.
++            if !login.stale.isEmpty {
++                VStack(alignment: .leading, spacing: 5) {
++                    Label("\(login.stale.count) session\(login.stale.count == 1 ? "" : "s") still on your old Claude login",
++                          systemImage: "person.crop.circle.badge.exclamationmark")
++                        .font(.system(size: 11, weight: .bold))
++                        .foregroundStyle(DockPalette.peach)
++                        .fixedSize(horizontal: false, vertical: true)
++                    HStack(spacing: 6) {
++                        Button("Resume Them…") { login.confirmResume() }
++                        Button("Leave Them") { login.dismiss() }
++                    }
++                    .buttonStyle(.bordered)
++                    .controlSize(.small)
++                }
++                .help("You logged in as someone else; these started before, so Remote Control and usage "
++                      + "still go to the old account. Resuming keeps each one's flags and Remote Control name.")
 +            }
 +            // What the header button under the pointer does, in the
 +            // counters' place while you point at it, so it covers no button.
