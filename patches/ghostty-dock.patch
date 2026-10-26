@@ -141,10 +141,10 @@ index b02337e..d1b9629 100644
          self.menuOpenConfig?.setImageIfDesired(systemSymbolName: "gear")
          self.menuReloadConfig?.setImageIfDesired(systemSymbolName: "arrow.trianglehead.2.clockwise.rotate.90")
 diff --git a/macos/Sources/App/macOS/main.swift b/macos/Sources/App/macOS/main.swift
-index ade9bf3..dfbd82b 100644
+index ade9bf3..0556a38 100644
 --- a/macos/Sources/App/macOS/main.swift
 +++ b/macos/Sources/App/macOS/main.swift
-@@ -2,6 +2,14 @@ import AppKit
+@@ -2,6 +2,25 @@ import AppKit
  import Cocoa
  import GhosttyKit
  
@@ -154,6 +154,17 @@ index ade9bf3..dfbd82b 100644
 +for key in ProcessInfo.processInfo.environment.keys
 +where key == "CLAUDECODE" || key == "CLAUDE_PID" || key.hasPrefix("CLAUDE_CODE_") {
 +    unsetenv(key)
++}
++
++// Ghostty Dock: Claude Code drops to its classic renderer for a launch after
++// an earlier fullscreen one died in its first seconds (as a restart can
++// leave them), and there a sidebar such as the usage panel is drawn full
++// width above the prompt instead of docked on the right. Sessions in our
++// tabs keep fullscreen unless the person chose classic (/tui default).
++let claudeSettings = FileManager.default.contents(atPath: NSHomeDirectory() + "/.claude/settings.json")
++    .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
++if claudeSettings?["tui"] as? String != "default" {
++    setenv("CLAUDE_CODE_NO_FLICKER", "1", 1)
 +}
 +
  // Initialize Ghostty global state. We do this once right away because the
