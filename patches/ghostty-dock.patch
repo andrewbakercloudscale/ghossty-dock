@@ -1,5 +1,5 @@
 diff --git a/macos/Sources/App/macOS/AppDelegate.swift b/macos/Sources/App/macOS/AppDelegate.swift
-index b02337e..d1b9629 100644
+index b02337e..e077c6c 100644
 --- a/macos/Sources/App/macOS/AppDelegate.swift
 +++ b/macos/Sources/App/macOS/AppDelegate.swift
 @@ -210,6 +210,11 @@ class AppDelegate: NSObject,
@@ -71,20 +71,28 @@ index b02337e..d1b9629 100644
  
          // If we have configuration errors, we need to show them.
          let c = ConfigurationErrorsController.sharedInstance
-@@ -894,6 +905,12 @@ class AppDelegate: NSObject,
+@@ -894,6 +905,20 @@ class AppDelegate: NSObject,
          didReceive: UNNotificationResponse,
          withCompletionHandler: () -> Void
      ) {
 +        // Ghostty Dock: a session's notification goes to its tab.
-+        if let sid = didReceive.notification.request.content.userInfo[DockSessions.notificationSessionKey] as? String {
-+            DockSessions.shared.select(sessionId: sid)
++        let info = didReceive.notification.request.content.userInfo
++        if let sid = info[DockSessions.notificationSessionKey] as? String {
++            // Allow, Deny or a choice answers it where it is; a click on the
++            // notification itself goes to the tab.
++            if DockSessions.Answer(id: didReceive.actionIdentifier) != nil {
++                let since = info[DockSessions.notificationSinceKey] as? Int, action = didReceive.actionIdentifier
++                Task { @MainActor in DockSessions.shared.answer(sessionId: sid, since: since, actionId: action) }
++            } else {
++                DockSessions.shared.select(sessionId: sid)
++            }
 +            withCompletionHandler()
 +            return
 +        }
          ghostty.handleUserNotification(response: didReceive)
          withCompletionHandler()
      }
-@@ -903,7 +920,8 @@ class AppDelegate: NSObject,
+@@ -903,7 +928,8 @@ class AppDelegate: NSObject,
          willPresent: UNNotification,
          withCompletionHandler: (UNNotificationPresentationOptions) -> Void
      ) {
@@ -94,7 +102,7 @@ index b02337e..d1b9629 100644
          let options: UNNotificationPresentationOptions = shouldPresent ? [.banner, .sound] : []
          withCompletionHandler(options)
      }
-@@ -941,7 +959,7 @@ class AppDelegate: NSObject,
+@@ -941,7 +967,7 @@ class AppDelegate: NSObject,
      // MARK: - IB Actions
  
      @IBAction func openConfig(_ sender: Any?) {
@@ -103,7 +111,7 @@ index b02337e..d1b9629 100644
      }
  
      @IBAction func reloadConfig(_ sender: Any?) {
-@@ -949,7 +967,10 @@ class AppDelegate: NSObject,
+@@ -949,7 +975,10 @@ class AppDelegate: NSObject,
      }
  
      @IBAction func checkForUpdates(_ sender: Any?) {
@@ -115,7 +123,7 @@ index b02337e..d1b9629 100644
          // UpdateSimulator.happyPath.simulate(with: updateViewModel)
      }
  
-@@ -970,12 +991,12 @@ class AppDelegate: NSObject,
+@@ -970,12 +999,12 @@ class AppDelegate: NSObject,
      }
  
      @IBAction func showAbout(_ sender: Any?) {
@@ -131,7 +139,7 @@ index b02337e..d1b9629 100644
      }
  
      @IBAction func toggleSecureInput(_ sender: Any) {
-@@ -1104,6 +1125,8 @@ extension AppDelegate {
+@@ -1104,6 +1133,8 @@ extension AppDelegate {
          // Note: This COULD Be done all in the xib file, but I find it easier to
          // modify this stuff as code.
          self.menuAbout?.setImageIfDesired(systemSymbolName: "info.circle")
@@ -3915,10 +3923,10 @@ index 0000000..fee8caa
 +}
 diff --git a/macos/Sources/Features/Dock/DockHistory.swift b/macos/Sources/Features/Dock/DockHistory.swift
 new file mode 100644
-index 0000000..64d426d
+index 0000000..3cb8d8e
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockHistory.swift
-@@ -0,0 +1,308 @@
+@@ -0,0 +1,440 @@
 +import AppKit
 +import SwiftUI
 +
@@ -3974,13 +3982,104 @@ index 0000000..64d426d
 +                                                       folder: e.folder, flags: e.flags))
 +    }
 +
-+    /// The entries not open now that match every word of `query`.
++    /// The entries not open now that match every word of `query` by name or
++    /// folder, or by what was said in them.
 +    func shown(_ query: String, open: Set<String>) -> [Entry] {
 +        let words = query.lowercased().split(separator: " ").map(String.init)
 +        return entries.filter { e in
 +            !open.contains(e.sessionId)
-+                && words.allSatisfy { e.name.lowercased().contains($0) || e.folder.lowercased().contains($0) }
++                && (words.allSatisfy { e.name.lowercased().contains($0) || e.folder.lowercased().contains($0) }
++                    || said[e.sessionId] != nil)
 +        }
++    }
++
++    // MARK: Searching what was said
++
++    /// Sessions whose transcript has every word of the last search, with a
++    /// line of what was said around the first.
++    @Published private(set) var said: [String: String] = [:]
++    @Published private(set) var searchingSaid = false
++    private var saidQuery = ""
++
++    /// Searches the transcripts of these sessions, in the background; three
++    /// letters at least, as fewer match nearly everything.
++    func searchSaid(_ query: String, among ids: [String]) {
++        let q = query.trimmingCharacters(in: .whitespaces)
++        saidQuery = q
++        said = [:]
++        guard q.count >= 3 else { searchingSaid = false; return }
++        let words = q.lowercased().split(separator: " ").map(String.init)
++        searchingSaid = true
++        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
++            let found = Self.said(words, in: Self.transcripts(Set(ids)))
++            DispatchQueue.main.async {
++                guard let self, self.saidQuery == q else { return }
++                self.said = found
++                self.searchingSaid = false
++            }
++        }
++    }
++
++    /// Each session's transcript file, by session id.
++    private static func transcripts(_ ids: Set<String>) -> [String: String] {
++        let fm = FileManager.default
++        let projects = fm.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
++        var out: [String: String] = [:]
++        for dir in (try? fm.contentsOfDirectory(at: projects, includingPropertiesForKeys: nil)) ?? [] {
++            for f in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where f.hasSuffix(".jsonl") {
++                let id = String(f.dropLast(6))
++                if ids.contains(id) { out[id] = dir.appendingPathComponent(f).path }
++            }
++        }
++        return out
++    }
++
++    /// grep narrows the files word by word (fast over gigabytes); then a
++    /// line with the first word gives the snippet.
++    private static func said(_ words: [String], in files: [String: String]) -> [String: String] {
++        guard let first = words.first else { return [:] }
++        var paths = Array(files.values)
++        for w in words where !paths.isEmpty {
++            var kept: [String] = []
++            for i in stride(from: 0, to: paths.count, by: 200) {
++                let chunk = Array(paths[i..<min(i + 200, paths.count)])
++                let out = DockProcess.run("/usr/bin/grep", ["-l", "-i", "-F", "-e", w, "--"] + chunk,
++                                          timeout: 20, quiet: [1])?.text ?? ""
++                kept += out.split(separator: "\n").map(String.init)
++            }
++            paths = kept
++        }
++        let byPath = Dictionary(files.map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
++        var out: [String: String] = [:]
++        for path in paths {
++            guard let id = byPath[path] else { continue }
++            out[id] = snippet(first, in: path) ?? ""
++        }
++        return out
++    }
++
++    /// What you or Claude said around `word`, on one line.
++    private static func snippet(_ word: String, in path: String) -> String? {
++        let lines = DockProcess.run("/usr/bin/grep", ["-m", "50", "-i", "-F", "-h", "-e", word, "--", path],
++                                    timeout: 5, quiet: [1])?.text.split(separator: "\n") ?? []
++        for line in lines {
++            guard let o = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
++                  let type = o["type"] as? String, type == "user" || type == "assistant",
++                  let message = o["message"] as? [String: Any] else { continue }
++            let text: String
++            if let s = message["content"] as? String { text = s }
++            else if let parts = message["content"] as? [[String: Any]] {
++                text = parts.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }
++                    .joined(separator: " ")
++            } else { continue }
++            guard let r = text.range(of: word, options: .caseInsensitive) else { continue }
++            let start = text.index(r.lowerBound, offsetBy: -40, limitedBy: text.startIndex) ?? text.startIndex
++            let end = text.index(r.upperBound, offsetBy: 80, limitedBy: text.endIndex) ?? text.endIndex
++            let flat = text[start..<end].replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
++                .trimmingCharacters(in: .whitespaces)
++            return (start > text.startIndex ? "…" : "") + flat + (end < text.endIndex ? "…" : "")
++        }
++        return nil
 +    }
 +
 +    private static func pruned(_ list: [Entry]) -> [Entry] {
@@ -4073,17 +4172,24 @@ index 0000000..64d426d
 +    @AppStorage("dock.history.height") private var height = 280.0
 +    @State private var query = ""
 +    @State private var dragStart: Double?
++    @State private var pending: DispatchWorkItem?
 +
 +    var body: some View {
 +        let shown = history.shown(query, open: Set(model.rows.compactMap(\.sessionId)))
++        // Open sessions in which it was said: a click goes to the tab.
++        let openNow = query.isEmpty ? [] : model.rows.filter { $0.sessionId.map { history.said[$0] != nil } == true }
 +        VStack(spacing: 0) {
 +            if open { resizeBar }
 +            bar(count: shown.count)
 +            if open {
 +                HStack(spacing: 6) {
 +                    Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(DockPalette.grey)
-+                    TextField("Search closed sessions", text: $query)
++                    TextField("Search sessions and what was said", text: $query)
 +                        .textFieldStyle(.plain).font(.system(size: 12)).foregroundStyle(DockPalette.text)
++                        .onChange(of: query) { searchSaid($0) }
++                    if history.searchingSaid {
++                        ProgressView().controlSize(.mini)
++                    }
 +                    if !query.isEmpty {
 +                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
 +                            .buttonStyle(.plain).foregroundStyle(DockPalette.grey)
@@ -4092,7 +4198,7 @@ index 0000000..64d426d
 +                .padding(.horizontal, 8).padding(.vertical, 5)
 +                .background(RoundedRectangle(cornerRadius: 6).fill(DockPalette.base))
 +                .padding(.horizontal, 8).padding(.bottom, 6)
-+                list(shown).frame(height: CGFloat(height))
++                list(shown, openNow: openNow).frame(height: CGFloat(height))
 +            }
 +        }
 +        .background(DockPalette.mantle)
@@ -4124,6 +4230,16 @@ index 0000000..64d426d
 +        .dockTip("Sessions closed in the last 3 months")
 +    }
 +
++    /// What was said is searched once typing pauses, in every session listed
++    /// and every open one.
++    private func searchSaid(_ q: String) {
++        pending?.cancel()
++        let ids = history.entries.map(\.sessionId) + model.rows.compactMap(\.sessionId)
++        let work = DispatchWorkItem { DockHistory.shared.searchSaid(q, among: ids) }
++        pending = work
++        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
++    }
++
 +    /// Drag to make the list taller or shorter.
 +    private var resizeBar: some View {
 +        Color.clear.frame(height: 5).contentShape(Rectangle())
@@ -4137,10 +4253,20 @@ index 0000000..64d426d
 +                .onEnded { _ in dragStart = nil })
 +    }
 +
-+    private func list(_ shown: [DockHistory.Entry]) -> some View {
++    private func list(_ shown: [DockHistory.Entry], openNow: [DockSessions.Row]) -> some View {
 +        ScrollView {
 +            LazyVStack(alignment: .leading, spacing: 1) {
-+                if shown.isEmpty {
++                if !openNow.isEmpty {
++                    Text("Open now")
++                        .font(.system(size: 10.5, weight: .semibold)).foregroundStyle(DockPalette.grey)
++                        .padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 2)
++                    ForEach(openNow) { row in
++                        DockHistoryRow(entry: DockHistory.Entry(sessionId: row.sessionId ?? "", name: row.name,
++                                                                folder: row.project ?? row.detail, closedAt: Date()),
++                                       snippet: history.said[row.sessionId ?? ""], isOpen: true)
++                    }
++                }
++                if shown.isEmpty && openNow.isEmpty {
 +                    Text(query.isEmpty ? "Closed sessions show here." : "No closed session matches.")
 +                        .font(.system(size: 11)).foregroundStyle(DockPalette.grey)
 +                        .padding(.horizontal, 12).padding(.vertical, 8)
@@ -4149,7 +4275,7 @@ index 0000000..64d426d
 +                    Text(section.title)
 +                        .font(.system(size: 10.5, weight: .semibold)).foregroundStyle(DockPalette.grey)
 +                        .padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 2)
-+                    ForEach(section.entries) { e in DockHistoryRow(entry: e) }
++                    ForEach(section.entries) { e in DockHistoryRow(entry: e, snippet: history.said[e.sessionId]) }
 +                }
 +            }
 +            .padding(.horizontal, 6).padding(.bottom, 6)
@@ -4179,7 +4305,15 @@ index 0000000..64d426d
 +
 +struct DockHistoryRow: View {
 +    var entry: DockHistory.Entry
++    /// What was said in it that the search found.
++    var snippet: String?
++    /// It is in a tab: a click goes there instead of reopening it.
++    var isOpen = false
 +    @State private var hover = false
++
++    private func go() {
++        if isOpen { DockSessions.shared.select(sessionId: entry.sessionId) } else { DockHistory.shared.reopen(entry) }
++    }
 +
 +    var body: some View {
 +        HStack(spacing: 8) {
@@ -4189,12 +4323,18 @@ index 0000000..64d426d
 +                Text((entry.folder as NSString).abbreviatingWithTildeInPath)
 +                    .font(.system(size: 10)).foregroundStyle(DockPalette.grey)
 +                    .lineLimit(1).truncationMode(.head)
++                if let snippet, !snippet.isEmpty {
++                    Text(snippet).font(.system(size: 10.5)).foregroundStyle(DockPalette.text.opacity(0.8))
++                        .lineLimit(2)
++                }
 +            }
 +            Spacer(minLength: 4)
-+            Text(Self.when(entry.closedAt)).font(.system(size: 10)).monospacedDigit()
-+                .foregroundStyle(DockPalette.grey)
++            if !isOpen {
++                Text(Self.when(entry.closedAt)).font(.system(size: 10)).monospacedDigit()
++                    .foregroundStyle(DockPalette.grey)
++            }
 +            if hover {
-+                Image(systemName: "arrow.uturn.backward.circle.fill")
++                Image(systemName: isOpen ? "arrow.right.circle.fill" : "arrow.uturn.backward.circle.fill")
 +                    .font(.system(size: 13)).foregroundStyle(DockPalette.green)
 +            }
 +        }
@@ -4202,10 +4342,10 @@ index 0000000..64d426d
 +        .background(RoundedRectangle(cornerRadius: 6).fill(hover ? DockPalette.base : Color.clear))
 +        .contentShape(Rectangle())
 +        .onHover { hover = $0 }
-+        .onTapGesture { DockHistory.shared.reopen(entry) }
-+        .help("Reopen \(entry.name) in a new tab\n\((entry.folder as NSString).abbreviatingWithTildeInPath)")
++        .onTapGesture { go() }
++        .help((isOpen ? "Go to \(entry.name)'s tab" : "Reopen \(entry.name) in a new tab") + "\n\((entry.folder as NSString).abbreviatingWithTildeInPath)")
 +        .contextMenu {
-+            Button("Reopen in a New Tab") { DockHistory.shared.reopen(entry) }
++            Button(isOpen ? "Go to Its Tab" : "Reopen in a New Tab") { go() }
 +            Button("Show in Finder") {
 +                NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: entry.folder)
 +            }
@@ -4214,7 +4354,7 @@ index 0000000..64d426d
 +                NSPasteboard.general.setString(entry.sessionId, forType: .string)
 +            }
 +            Divider()
-+            Button("Remove from History") { DockHistory.shared.remove(entry.sessionId) }
++            Button("Remove from History") { DockHistory.shared.remove(entry.sessionId) }.disabled(isOpen)
 +        }
 +    }
 +
@@ -6001,10 +6141,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..3a49455
+index 0000000..a3d453f
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1255 @@
+@@ -0,0 +1,1317 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -6911,6 +7051,60 @@ index 0000000..3a49455
 +        setMeta(row) { $0.name = name.isEmpty ? nil : name }
 +    }
 +
++    /// Another session's row started in the same folder: both can edit the
++    /// same files. Nil when it is the only one.
++    func sharesFolder(_ row: Row) -> Row? {
++        guard row.sessionId != nil, let folder = row.project else { return nil }
++        return rows.first { $0.id != row.id && $0.sessionId != nil && $0.project == folder }
++    }
++
++    /// The git repo `folder` is in, if any: its top level.
++    static func repoRoot(_ folder: String) -> String? {
++        guard !folder.isEmpty,
++              let out = DockProcess.run("/usr/bin/git", ["-C", folder, "rev-parse", "--show-toplevel"],
++                                        timeout: 5, quiet: [128]), out.status == 0
++        else { return nil }
++        let root = out.text.trimmingCharacters(in: .whitespacesAndNewlines)
++        return root.isEmpty ? nil : root
++    }
++
++    /// A new session on its own copy of the repo (claude --worktree): its
++    /// own branch in <repo>/.claude/worktrees/<name>, so it and the
++    /// sessions already in the repo do not edit the same files.
++    func newWorktreeSession(_ row: Row) {
++        let folder = row.project ?? row.detail
++        guard let root = Self.repoRoot(folder) else {
++            let alert = NSAlert()
++            alert.messageText = "“\(row.name)” is not in a git repo"
++            alert.informativeText = "A worktree is a second copy of a git repo, so this folder cannot have one."
++            _ = alert.runModalNearPointer()
++            return
++        }
++        let repo = URL(fileURLWithPath: root).lastPathComponent
++        let alert = NSAlert()
++        alert.messageText = "New Session in a Worktree of “\(repo)”"
++        alert.informativeText = """
++            Claude starts in its own copy of the repo, on a new branch of this name, in \
++            .claude/worktrees. Its edits stay apart from the other sessions' until you merge them.
++            """
++        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
++        field.placeholderString = "e.g. fix-login"
++        alert.accessoryView = field
++        alert.addButton(withTitle: "Start")
++        alert.addButton(withTitle: "Cancel")
++        alert.window.initialFirstResponder = field
++        guard alert.runModalNearPointer() == .alertFirstButtonReturn else { return }
++        // A branch and folder name: letters, digits, dots, dashes, underscores.
++        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
++            .replacingOccurrences(of: "[^A-Za-z0-9._-]+", with: "-", options: .regularExpression)
++            .trimmingCharacters(in: CharacterSet(charactersIn: "-."))
++        guard !name.isEmpty else { NSSound.beep(); return }
++        let opener = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/ghostty-dock-open").path
++        guard FileManager.default.isExecutableFile(atPath: opener) else { NSSound.beep(); return }
++        DockProcess.launch("/bin/bash", [opener, "--command", "caffeinate -i claude --worktree \(name)", root],
++                           log: DockLog.sessions)
++    }
++
 +    /// Drops `key`'s row just before `target`'s (at the end when nil) and
 +    /// switches the sidebar to the order you drag.
 +    func move(_ key: String, before target: String?) {
@@ -7068,7 +7262,7 @@ index 0000000..3a49455
 +                  !(looking && row.selected), let sid = row.sessionId else { continue }
 +            if row.status == .waiting {
 +                DockNotices.shared.add(title: row.name, body: row.prompt ?? "Needs you", sessionId: sid, waiting: true, source: .waiting)
-+                if DockSettings.notifyWaiting { post(sid: sid, title: row.name, body: row.prompt ?? "Needs you") }
++                if DockSettings.notifyWaiting { post(sid: sid, title: row.name, body: row.prompt ?? "Needs you", ask: row.ask, since: row.since) }
 +                // Only from another app: never switches tabs under you.
 +                if DockSettings.raiseWaiting && !looking {
 +                    if justLeft { chime(unlessNotified: DockSettings.notifyWaiting) }
@@ -7213,11 +7407,15 @@ index 0000000..3a49455
 +        postNotice(id: "ghostty-dock-cli-" + UUID().uuidString, title: title, body: body)
 +    }
 +
-+    private func post(sid: String, title: String, body: String) {
-+        postNotice(id: "ghostty-dock-" + sid, title: title, body: body, sid: sid)
++    /// With an ask, the notification carries its buttons (Allow and Deny, or
++    /// the choices) and the wait it was for.
++    private func post(sid: String, title: String, body: String, ask: DockAsk? = nil, since: Date? = nil) {
++        postNotice(id: "ghostty-dock-" + sid, title: title, body: body, sid: sid,
++                   category: Self.category(for: ask), since: since)
 +    }
 +
-+    private func postNotice(id: String, title: String, body: String, sid: String? = nil) {
++    private func postNotice(id: String, title: String, body: String, sid: String? = nil,
++                            category: String? = nil, since: Date? = nil) {
 +        let center = UNUserNotificationCenter.current()
 +        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
 +            guard granted else { return }
@@ -7226,6 +7424,10 @@ index 0000000..3a49455
 +            content.body = body
 +            content.sound = .default
 +            if let sid { content.userInfo = [Self.notificationSessionKey: sid] }
++            if let category {
++                content.categoryIdentifier = category
++                if let since { content.userInfo[Self.notificationSinceKey] = Int(since.timeIntervalSince1970) }
++            }
 +            // One per id: a newer one replaces the last.
 +            center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
 +        }
@@ -7772,10 +7974,10 @@ index 0000000..cf87808
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..54a692d
+index 0000000..f83632c
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1153 @@
+@@ -0,0 +1,1189 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -8392,6 +8594,20 @@ index 0000000..54a692d
 +                        .lineLimit(2)
 +                        .truncationMode(.tail)
 +                }
++                // Two sessions in one folder can edit the same files.
++                if let other = DockSessions.shared.sharesFolder(row) {
++                    Label("Same folder as “\(other.name)”", systemImage: "exclamationmark.triangle.fill")
++                        .font(.system(size: 10, weight: .medium))
++                        .foregroundStyle(DockPalette.color(DockTag.orange))
++                        .lineLimit(1)
++                        .truncationMode(.middle)
++                        .onTapGesture { DockSessions.shared.newWorktreeSession(row) }
++                        .dockTip("Both can edit the same files. Click for a new session in its own copy of the repo (a worktree).")
++                }
++                // Answered from here, without switching to it.
++                if row.status == .waiting, let ask = row.ask {
++                    answerButtons(ask)
++                }
 +            }
 +            Spacer(minLength: 0)
 +            // Close over Undock, Restart beside Undock, so the name keeps the
@@ -8501,6 +8717,7 @@ index 0000000..54a692d
 +                }
 +            }
 +            Button("View Diff") { viewDiff() }.disabled(folder.isEmpty)
++            Button("New Session in a Worktree…") { model.newWorktreeSession(row) }.disabled(folder.isEmpty)
 +            Button("Move Up") { model.move(row, by: -1) }
 +                .disabled(model.visibleRows.first?.key == row.key)
 +            Button("Move Down") { model.move(row, by: 1) }
@@ -8559,6 +8776,27 @@ index 0000000..54a692d
 +        if let context { parts.append(DockCost.formatTokens(context) + " ctx") }
 +        if let cost { parts.append(DockCost.format(cost)) }
 +        return parts.joined(separator: " · ")
++    }
++
++    /// Allow and Deny for a permission, or one button per choice.
++    @ViewBuilder private func answerButtons(_ ask: DockAsk) -> some View {
++        HStack(spacing: 4) {
++            if ask.isPermission {
++                Button("Allow") { DockSessions.shared.answer(row, .allow) }
++                    .dockTip("Allow it (Return in its tab)")
++                Button("Deny") { DockSessions.shared.answer(row, .deny) }
++                    .dockTip("Deny it (Esc in its tab)")
++            } else {
++                ForEach(Array(ask.choices.enumerated()), id: \.offset) { i, label in
++                    Button(label) { DockSessions.shared.answer(row, .choice(i)) }
++                        .lineLimit(1)
++                        .dockTip("Answer \(label)")
++                }
++            }
++        }
++        .buttonStyle(.bordered)
++        .controlSize(.small)
++        .padding(.top, 2)
 +    }
 +
 +    private func elapsed(_ t: TimeInterval) -> String {
