@@ -374,8 +374,13 @@ function restart() {
     local sessions held cpid
     sessions=$(open_sessions "$pid")
     held=$(open_sessions $(holder_pids))
-    log "$(grep -c . <<<"$sessions") session(s) to resume, $(holders | grep -c .) held tab(s) to reattach ($(conditions "$pid"))"
+    # Restart Now was just clicked, so the screen is on, and asking pmset
+    # takes 5 seconds each time: twice was 10 seconds of nothing happening.
+    local seen="screen on (clicked), app pid $pid"
+    $now || seen=$(conditions "$pid")
+    log "$(grep -c . <<<"$sessions") session(s) to resume, $(holders | grep -c .) held tab(s) to reattach ($seen)"
     $dry && { printf '%s' "$sessions"; return 0; }
+    $now && status quitting
     trap 'rm -f "$STATUS" "$RESTARTING"' EXIT
     # One restart at a time: a newer one replaces any still waiting.
     local other
@@ -383,7 +388,7 @@ function restart() {
         [ "$other" != "$$" ] && kill -TERM "$other" 2>/dev/null && log "replaced the restart already waiting ($other)"
     done
     $now || wait_until_quiet "$sessions" || return 1
-    wait_for_display
+    $now || wait_for_display
     # Restart Now was just clicked, so the mouse is moving: waiting for
     # the input to go idle would look like nothing happened.
     $now || wait_for_input_idle

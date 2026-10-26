@@ -7974,10 +7974,10 @@ index 0000000..cf87808
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..f83632c
+index 0000000..463da39
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1189 @@
+@@ -0,0 +1,1190 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -8596,13 +8596,14 @@ index 0000000..f83632c
 +                }
 +                // Two sessions in one folder can edit the same files.
 +                if let other = DockSessions.shared.sharesFolder(row) {
-+                    Label("Same folder as “\(other.name)”", systemImage: "exclamationmark.triangle.fill")
++                    // Both rows usually carry the folder's name, so naming
++                    // the other here only truncated to "wordpress-d…(1)”".
++                    Label("Shares its folder", systemImage: "exclamationmark.triangle.fill")
 +                        .font(.system(size: 10, weight: .medium))
 +                        .foregroundStyle(DockPalette.color(DockTag.orange))
 +                        .lineLimit(1)
-+                        .truncationMode(.middle)
 +                        .onTapGesture { DockSessions.shared.newWorktreeSession(row) }
-+                        .dockTip("Both can edit the same files. Click for a new session in its own copy of the repo (a worktree).")
++                        .dockTip("Same folder as “\(other.name)”: both can edit the same files. Click for a new session in its own copy of the repo (a worktree).")
 +                }
 +                // Answered from here, without switching to it.
 +                if row.status == .waiting, let ask = row.ask {
