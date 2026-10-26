@@ -205,7 +205,22 @@ reports each session's status.
   (the sort becomes "As you drag them"), or right-click → Move Up / Move Down.
 - **Groups** (Settings): fold rows under their folder (the project's parent
   folder) or their colour. Click a heading to fold it; a folded group still
-  shows how many need you.
+  shows how many need you. Right-click a heading → **Rename Group…** to name
+  it after a client or project (group by colour, then colour each project's
+  sessions alike); **Use the Default Name** puts it back.
+- **Mark as Unread** (right-click an idle session) shows it as Finished
+  again, to come back to; it reads when you go to it or when it does
+  something new. A finished one has **Mark as Read**.
+- **Overview (⌘⇧O or the ▦ button)**: every session on one screen, needs
+  you first. Each tile shows its status, cost, the question it is asking
+  and the last lines of its screen, with **Allow**/**Deny** or the choices
+  for a question, or a **Reply** box that types into it and presses Return
+  (while it runs, the message queues). Click a tile's name to go to its tab.
+  **Needs you or finished** hides the rest.
+- **Old login**: after you log in to Claude as someone else, sessions
+  started before still use the old account (Remote Control goes quiet).
+  The sidebar says how many; **Resume Them…** resumes each in a fresh tab
+  with its flags, so `--remote-control` keeps its name.
 
 ## Agents: getting started
 
@@ -253,6 +268,7 @@ to run commands.
 | ⌘⇧S | Show or hide the sidebar |
 | ⌘P | Find a session by name, folder or question |
 | ⌘⇧A | Agents across all sessions |
+| ⌘⇧O | Overview: every session on one screen |
 | ⌘⇧Y | Daily recap |
 | ⌘⇧T | Reopen the last closed session |
 
