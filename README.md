@@ -102,6 +102,18 @@ reports each session's status.
 - Dock badge: how many sessions need you.
 - **What it's waiting on**: a row that needs you shows the question, or the
   tool call to allow ("Allow Bash: npm test"), so you know before you switch.
+- **Answer without switching**: a permission has **Allow** and **Deny** under
+  it, and a single-choice question one button per choice. The notification
+  has the same buttons (hover it, or Options). A button only answers the
+  wait it was drawn for, never a newer prompt.
+- **Two sessions in one folder** each show "Same folder as …" in orange, as
+  both can edit the same files. Click it, or right-click → **New Session in
+  a Worktree…**, for a session in its own copy of the repo (`claude
+  --worktree <name>`: a new branch in `.claude/worktrees/<name>`).
+- **History** (the bar at the foot of the sidebar): sessions closed in the
+  last 3 months; click one to reopen it. Its search matches names, folders
+  and, from three letters, what was said in them, with the line it was said
+  in. Open sessions it was said in show under "Open now"; click to go there.
 - **Cost**: each row ends with what the session has cost so far, subagents
   included, priced like the Cost Sidebar below. Off in Settings.
 - **Branch, pull request and ports**: a line under each row like
