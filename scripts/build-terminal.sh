@@ -74,6 +74,9 @@ function build_lib() {
 
 function build_app() {
     echo "== build app"
+    # Xcode bundles every file under Sources, so tool state (.omc) that a
+    # hook left there fails the build: "Multiple commands produce ...json".
+    find "$SRC/macos/Sources" -name .omc -type d -prune -exec rm -rf {} + || exit 1
     # A clean environment, as Ghostty's own build.nu does. arm64 only: the
     # native libghostty has no x86_64 slice.
     env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin \

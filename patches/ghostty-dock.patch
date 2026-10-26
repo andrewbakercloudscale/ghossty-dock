@@ -6141,10 +6141,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..a3d453f
+index 0000000..a1cf0bc
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1317 @@
+@@ -0,0 +1,1323 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -6188,6 +6188,8 @@ index 0000000..a3d453f
 +        var askSurface: String?
 +        var pinned = false
 +        var tag: DockTag?
++        /// Diagonal lines over its colour, only when chosen.
++        var hatched = false
 +        var renamed = false
 +        /// Its terminal failed to start (the screen was off, usually).
 +        var failed = false
@@ -6200,7 +6202,7 @@ index 0000000..a3d453f
 +                && a.since == b.since && a.selected == b.selected && a.sessionId == b.sessionId
 +                && a.started == b.started && a.project == b.project && a.prompt == b.prompt
 +                && a.ask == b.ask && a.askSurface == b.askSurface
-+                && a.pinned == b.pinned && a.tag == b.tag && a.renamed == b.renamed
++                && a.pinned == b.pinned && a.tag == b.tag && a.hatched == b.hatched && a.renamed == b.renamed
 +                && a.failed == b.failed && a.pid == b.pid
 +        }
 +    }
@@ -6210,6 +6212,8 @@ index 0000000..a3d453f
 +        var name: String?
 +        var pinned = false
 +        var tag: DockTag?
++        /// Optional, so rows saved before it decode.
++        var hatched: Bool?
 +    }
 +
 +    /// A tab that was closed with a session in it, for Reopen Closed Tab.
@@ -6910,6 +6914,7 @@ index 0000000..a3d453f
 +                             askSurface: best?.status == .waiting ? best?.key : nil,
 +                             pinned: m?.pinned ?? false,
 +                             tag: m?.tag,
++                             hatched: m?.hatched ?? false,
 +                             renamed: m?.name != nil,
 +                             failed: failed,
 +                             pid: best?.pid,
@@ -7033,6 +7038,7 @@ index 0000000..a3d453f
 +
 +    func togglePinned(_ row: Row) { setMeta(row) { $0.pinned.toggle() } }
 +    func setTag(_ row: Row, _ tag: DockTag?) { setMeta(row) { $0.tag = tag } }
++    func setHatched(_ row: Row, _ on: Bool) { setMeta(row) { $0.hatched = on ? true : nil } }
 +
 +    /// Asks for a new name; an empty one goes back to the folder's name.
 +    func rename(_ row: Row) {
@@ -7974,10 +7980,10 @@ index 0000000..cf87808
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..463da39
+index 0000000..707e8bd
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1190 @@
+@@ -0,0 +1,1203 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -8386,6 +8392,15 @@ index 0000000..463da39
 +                    .help(tag.label)
 +                }
 +            }
++            // Plain unless you choose the lines.
++            Picker("", selection: Binding(get: { row.hatched },
++                                          set: { DockSessions.shared.setHatched(row, $0) })) {
++                Text("Plain").tag(false)
++                Text("Hatched").tag(true)
++            }
++            .pickerStyle(.segmented)
++            .labelsHidden()
++            .disabled(row.tag == nil)
 +            HStack {
 +                Text(hover?.label ?? row.tag?.label ?? "No colour")
 +                    .font(.system(size: 11)).foregroundStyle(DockPalette.grey)
@@ -8398,7 +8413,9 @@ index 0000000..463da39
 +            }
 +        }
 +        .padding(14)
-+        .frame(width: 200)
++        // Seven 26pt swatches with 8pt gaps, plus the padding: 200 cut the
++        // outer columns and the title off.
++        .frame(width: 7 * 26 + 6 * 8 + 28)
 +        .background(DockPalette.base)
 +        .environment(\.colorScheme, DockPalette.scheme)
 +        .animation(.easeOut(duration: 0.1), value: hover)
@@ -8673,7 +8690,7 @@ index 0000000..463da39
 +                          : row.tag != nil ? accent.opacity(hover ? 0.24 : 0.16)
 +                          : hover ? DockPalette.base : Color.clear)
 +                // Light diagonal hatching in the row's colour.
-+                if row.tag != nil {
++                if row.tag != nil && row.hatched {
 +                    DockHatching(color: accent.opacity(0.22))
 +                        .clipShape(RoundedRectangle(cornerRadius: 7))
 +                }
@@ -8732,6 +8749,8 @@ index 0000000..463da39
 +                    }
 +                }
 +                Divider()
++                Button(row.hatched ? "Hatched ✓" : "Hatched") { model.setHatched(row, !row.hatched) }
++                    .disabled(row.tag == nil)
 +                Button("None") { model.setTag(row, nil) }.disabled(row.tag == nil)
 +            }
 +            Button("Colour…") { DockColourPanel.show(for: row) }
