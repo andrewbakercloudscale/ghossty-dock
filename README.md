@@ -177,6 +177,10 @@ reports each session's status.
   ![Agents window: four tiles, then each session's agents](docs/agents.png)
 
   ![Agents Set Up: every agent definition, with an editor](docs/agent-setup.png)
+
+  ![Find Agents: 647 ready-made agents to search, tick and install](docs/agent-find.png)
+
+  New to agents? See [Agents: getting started](#agents-getting-started).
 - **Daily Recap (⌘⇧Y or the 📅 button)**: what the day's sessions did. Tiles
   for spend, how long Claude worked, prompts, sessions, files changed and
   commits, then one card per repo (sessions in its subfolders and worktrees
@@ -202,6 +206,40 @@ reports each session's status.
 - **Groups** (Settings): fold rows under their folder (the project's parent
   folder) or their colour. Click a heading to fold it; a folded group still
   shows how many need you.
+
+## Agents: getting started
+
+An agent is a helper with its own instructions that a Claude session can hand
+work to. The Agents window (⌘⇧A, or 👥 at the top of the sidebar) has three
+tabs: **Activity** shows what agents are doing and what they cost, **Set Up**
+shows the agents you have, and **Find Agents** has 647 ready-made ones.
+
+1. **Find one.** Open Agents → **Find Agents**. Type what you need (reviewer,
+   react, security, sql…) or choose a kind from **All kinds**. Click a row to
+   read what the agent does, whether it can run commands, and its full
+   instructions.
+2. **Install it.** Tick the agents you want. Under **Install to**, choose
+   **Every project** (`~/.claude/agents`) or one open project
+   (`<project>/.claude/agents`), then press **Install** (or Return). Installed
+   rows get a green tick.
+3. **Use it.** In any session, ask for it by name, for example *"Use the
+   code-reviewer agent to review my last commit"*. The agent's detail shows
+   that line with a **Copy** button. Or use **Start a Session as It** to
+   open a new tab running `claude --agent <name>`, where the whole session is
+   that agent.
+4. **Watch it.** **Activity** lists each agent as it runs: what it is doing,
+   its model, tool calls, tokens and cost. Click a row to go to its session.
+   While agents run, the 👥 button turns green and shows a count.
+5. **Change it.** In **Set Up**, pick an agent to edit its description (which
+   Claude uses to decide when to call it), model, colour, tools and
+   instructions. **Duplicate as Mine** copies a plugin's agent so you can
+   change it. **+** makes a new one, and **Move to Trash** removes one.
+
+Sessions start in the folder they were opened in, so an agent installed for
+one project is only offered there. Agents for every project are offered
+everywhere. Installed files are as their authors wrote them, so read the
+instructions before you install, especially when the agent is flagged as able
+to run commands.
 
 ## Keyboard shortcuts
 
