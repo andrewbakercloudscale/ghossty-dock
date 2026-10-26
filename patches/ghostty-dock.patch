@@ -5363,6 +5363,234 @@ index 0000000..907dc43
 +        return String(parts[parts.count - 2])
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockOverview.swift b/macos/Sources/Features/Dock/DockOverview.swift
+new file mode 100644
+index 0000000..b87461c
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockOverview.swift
+@@ -0,0 +1,222 @@
++import AppKit
++import SwiftUI
++
++/// Every session on one screen: what it shows now, its status, and a way
++/// to answer it or send it a message without going to its tab. Click a
++/// tile's name to go to it.
++final class DockOverviewModel: ObservableObject {
++    /// The last lines on each tab's screen, by row key.
++    @Published private(set) var screens: [String: String] = [:]
++    private var timer: Timer?
++    static let lines = 9
++
++    func start() {
++        guard timer == nil else { return }
++        read()
++        timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in self?.read() }
++    }
++
++    func stop() {
++        timer?.invalidate()
++        timer = nil
++    }
++
++    private func read() {
++        var next: [String: String] = [:]
++        for row in DockSessions.shared.rows {
++            guard let view = row.controller.flatMap({ $0.focusedSurface ?? $0.surfaceTree.first }) else { continue }
++            let lines = view.cachedVisibleContents.get().split(separator: "\n", omittingEmptySubsequences: false)
++            // Trailing blank lines are the empty screen below the prompt.
++            let trimmed = lines.reversed().drop { $0.trimmingCharacters(in: .whitespaces).isEmpty }.reversed()
++            next[row.key] = trimmed.suffix(Self.lines).joined(separator: "\n")
++        }
++        if next != screens { screens = next }
++    }
++}
++
++struct DockOverviewView: View {
++    @ObservedObject var sessions = DockSessions.shared
++    @ObservedObject var model: DockOverviewModel
++    @AppStorage("dock.overview.needsYou") private var onlyNeedsYou = false
++
++    /// Needs you first, then finished, running, idle and shells.
++    private var tiles: [DockSessions.Row] {
++        let rows = sessions.rows.filter { !onlyNeedsYou || $0.status == .waiting || $0.status == .unread }
++        return rows.enumerated().sorted { a, b in
++            a.element.status != b.element.status ? a.element.status < b.element.status : a.offset < b.offset
++        }.map(\.element)
++    }
++
++    var body: some View {
++        VStack(spacing: 0) {
++            HStack(spacing: 10) {
++                Text("Overview").font(.title2.weight(.bold)).foregroundStyle(DockPalette.text)
++                summary
++                Spacer()
++                Picker("", selection: $onlyNeedsYou) {
++                    Text("All sessions").tag(false)
++                    Text("Needs you or finished").tag(true)
++                }
++                .pickerStyle(.segmented)
++                .labelsHidden()
++                .frame(width: 280)
++            }
++            .padding(.horizontal, 16).padding(.vertical, 12)
++            Divider().overlay(DockPalette.surface)
++            ScrollView {
++                let shown = tiles
++                if shown.isEmpty {
++                    Text(onlyNeedsYou ? "Nothing needs you." : "No sessions.")
++                        .foregroundStyle(DockPalette.grey).padding(40)
++                }
++                LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: 12)], spacing: 12) {
++                    ForEach(shown) { row in
++                        DockOverviewTile(row: row, screen: model.screens[row.key] ?? "",
++                                         cost: row.sessionId.flatMap { sessions.costs[$0] })
++                    }
++                }
++                .padding(14)
++            }
++        }
++        .background(DockPalette.mantle)
++        .environment(\.colorScheme, DockPalette.scheme)
++        .onAppear { model.start() }
++        .onDisappear { model.stop() }
++    }
++
++    private var summary: some View {
++        HStack(spacing: 6) {
++            ForEach([DockSessions.Status.waiting, .unread, .running], id: \.self) { s in
++                let n = sessions.rows.filter { $0.status == s }.count
++                if n > 0 {
++                    Label("\(n) \(DockPalette.label(s).lowercased())", systemImage: DockStatusDot.symbol(s))
++                        .font(.callout.weight(.semibold))
++                        .foregroundStyle(DockPalette.color(s))
++                }
++            }
++        }
++    }
++}
++
++struct DockOverviewTile: View {
++    var row: DockSessions.Row
++    var screen: String
++    var cost: Double?
++    @State private var reply = ""
++
++    private var accent: Color { row.tag.map(DockPalette.color) ?? DockPalette.color(row.status) }
++
++    var body: some View {
++        VStack(alignment: .leading, spacing: 8) {
++            Button { go() } label: {
++                HStack(spacing: 7) {
++                    Image(systemName: DockStatusDot.symbol(row.status))
++                        .foregroundStyle(DockPalette.color(row.status))
++                    Text(row.name).font(.headline).foregroundStyle(DockPalette.text).lineLimit(1)
++                    Spacer(minLength: 4)
++                    Text(subtitle).font(.caption.weight(.semibold))
++                        .foregroundStyle(DockPalette.color(row.status)).lineLimit(1)
++                    Image(systemName: "arrow.up.forward.square").foregroundStyle(DockPalette.grey)
++                }
++                .contentShape(Rectangle())
++            }
++            .buttonStyle(.plain)
++            .help("Go to its tab")
++            if let prompt = row.prompt, !prompt.isEmpty {
++                Text(prompt).font(.callout).foregroundStyle(DockPalette.text).lineLimit(3)
++            }
++            Text(screen.isEmpty ? " " : screen)
++                .font(.system(size: 10.5, design: .monospaced))
++                .foregroundStyle(DockPalette.text.opacity(0.85))
++                .lineLimit(DockOverviewModel.lines)
++                .frame(maxWidth: .infinity, minHeight: 130, alignment: .bottomLeading)
++                .padding(8)
++                .background(RoundedRectangle(cornerRadius: 6).fill(DockPalette.base))
++                .textSelection(.enabled)
++            if row.status == .waiting, let ask = row.ask, ask.isPermission || !ask.choices.isEmpty {
++                answers(ask)
++            } else if row.sessionId != nil {
++                HStack(spacing: 6) {
++                    TextField(row.status == .running ? "Queue a message…" : "Reply…", text: $reply)
++                        .textFieldStyle(.roundedBorder)
++                        .onSubmit(send)
++                    Button("Send", action: send).disabled(reply.trimmingCharacters(in: .whitespaces).isEmpty)
++                }
++                .controlSize(.small)
++            }
++        }
++        .padding(10)
++        .background(RoundedRectangle(cornerRadius: 9).fill(DockPalette.surface.opacity(0.55)))
++        .overlay(RoundedRectangle(cornerRadius: 9)
++            .strokeBorder(row.status == .waiting ? DockPalette.peach : accent.opacity(0.5),
++                          lineWidth: row.status == .waiting ? 2 : 1))
++        .overlay(alignment: .leading) {
++            RoundedRectangle(cornerRadius: 2).fill(accent).frame(width: 4).padding(.vertical, 10)
++        }
++    }
++
++    private var subtitle: String {
++        var parts = [DockPalette.label(row.status)]
++        if let since = row.since {
++            let s = max(0, Int(Date().timeIntervalSince(since)))
++            parts.append(s < 60 ? "now" : s < 3600 ? "\(s / 60)m" : s < 86_400 ? "\(s / 3600)h" : "\(s / 86_400)d")
++        }
++        if let cost { parts.append(DockCost.format(cost)) }
++        return parts.joined(separator: " · ")
++    }
++
++    @ViewBuilder private func answers(_ ask: DockAsk) -> some View {
++        HStack(spacing: 6) {
++            if ask.isPermission {
++                Button("Allow") { DockSessions.shared.answer(row, .allow) }
++                    .keyboardShortcut(.defaultAction)
++                Button("Deny") { DockSessions.shared.answer(row, .deny) }
++            } else {
++                ForEach(Array(ask.choices.enumerated()), id: \.offset) { i, label in
++                    Button(label) { DockSessions.shared.answer(row, .choice(i)) }.lineLimit(1)
++                }
++            }
++        }
++        .controlSize(.small)
++    }
++
++    private func go() {
++        DockSessions.shared.select(row)
++        row.controller?.window?.makeKeyAndOrderFront(nil)
++    }
++
++    /// Types the message into its terminal and presses Return.
++    private func send() {
++        let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard !text.isEmpty,
++              let surface = row.controller.flatMap({ ($0.focusedSurface ?? $0.surfaceTree.first)?.surfaceModel })
++        else { NSSound.beep(); return }
++        surface.sendText(text)
++        surface.sendKeyEvent(Ghostty.Input.KeyEvent(key: .enter, action: .press, mods: []))
++        surface.sendKeyEvent(Ghostty.Input.KeyEvent(key: .enter, action: .release, mods: []))
++        reply = ""
++    }
++}
++
++/// The Overview in its own window, from the sidebar or ⌘⇧O.
++final class DockOverviewWindow {
++    static let shared = DockOverviewWindow()
++    private var window: NSWindow?
++    private let model = DockOverviewModel()
++
++    func show(near point: NSPoint? = nil) {
++        if window == nil {
++            let w = NSWindow(contentViewController: NSHostingController(rootView: DockOverviewView(model: model)))
++            w.title = "Overview"
++            w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
++            w.isReleasedWhenClosed = false
++            w.setContentSize(NSSize(width: 1100, height: 760))
++            w.setFrameAutosaveName("GhosttyDockOverview")
++            if !w.setFrameUsingName("GhosttyDockOverview") { w.center() }
++            window = w
++        }
++        if let point, window?.isVisible == false { window?.place(near: point) }
++        NSApp.activate(ignoringOtherApps: true)
++        window?.makeKeyAndOrderFront(nil)
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockRaiseBanner.swift b/macos/Sources/Features/Dock/DockRaiseBanner.swift
 new file mode 100644
 index 0000000..c7cf113
@@ -6277,10 +6505,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..530ea86
+index 0000000..bf3b52f
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1339 @@
+@@ -0,0 +1,1397 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -6443,6 +6671,12 @@ index 0000000..530ea86
 +    private let stateDir = FileManager.default.homeDirectoryForCurrentUser
 +        .appendingPathComponent(".local/state/ghostty-dock")
 +    private var seen: [String: Int] = [:]
++    /// Rows you marked unread, by key: true once you have left the row, so
++    /// going back to it is what reads it.
++    private var markedUnread: [String: Bool] = [:]
++    /// Names you gave group headings, by group id ("tag:red", "folder:acme").
++    @Published private(set) var groupNames: [String: String] =
++        UserDefaults.standard.dictionary(forKey: "dock.groupNames") as? [String: String] ?? [:]
 +    /// Each tab's key last time, so a tab whose session changes (a restart,
 +    /// claude --continue, claude quitting) keeps its place, name, pin and colour.
 +    /// Holds the tab itself too: a closed tab's ObjectIdentifier can be
@@ -7045,9 +7279,21 @@ index 0000000..530ea86
 +            }
 +            tabKeys[id] = TabKey(key: key, controller: controller)
 +            let m = meta[key]
++            var status = best?.status ?? .shell
++            if let left = markedUnread[key] {
++                if status == .running || status == .waiting || status == .unread {
++                    // It has something new of its own now.
++                    markedUnread[key] = nil
++                } else if onScreen {
++                    if left { markedUnread[key] = nil } else { status = .unread }
++                } else {
++                    markedUnread[key] = true
++                    status = .unread
++                }
++            }
 +            built.append(Row(id: id, key: key,
 +                             name: m?.name ?? (name.isEmpty ? "shell" : name), detail: pwd,
-+                             status: best?.status ?? .shell,
++                             status: status,
 +                             since: best.map { Date(timeIntervalSince1970: TimeInterval($0.since)) },
 +                             selected: selected,
 +                             sessionId: best?.sid,
@@ -7098,9 +7344,10 @@ index 0000000..530ea86
 +            }
 +        }
 +        closeWhenEmpty = closeWhenEmpty.filter { id, _ in built.contains { $0.id == id } }
-+        let grouped = DockOrdering.grouped(built, by: DockSettings.grouping, pinned: \.pinned,
++        var grouped = DockOrdering.grouped(built, by: DockSettings.grouping, pinned: \.pinned,
 +                                           folder: { $0.project.flatMap(DockOrdering.folder(ofProject:)) },
 +                                           tag: \.tag)
++        for i in grouped.indices { if let name = groupNames[grouped[i].id] { grouped[i].title = name } }
 +        let flat = grouped.flatMap(\.items)
 +        noticeClosed(flat)
 +        notify(flat, appActive: appActive)
@@ -7108,7 +7355,8 @@ index 0000000..530ea86
 +        if flat != rows { rows = flat }
 +        DockTint.shared.apply(flat)
 +        checkLoading(flat)
-+        if grouped.map(\.id) != groups.map(\.id) || grouped.map(\.items) != groups.map(\.items) { groups = grouped }
++        if grouped.map(\.id) != groups.map(\.id) || grouped.map(\.title) != groups.map(\.title)
++            || grouped.map(\.items) != groups.map(\.items) { groups = grouped }
 +        let badge = DockSettings.dockBadge && waitingCount > 0 ? "\(waitingCount)" : nil
 +        if NSApp.dockTile.badgeLabel != badge { NSApp.dockTile.badgeLabel = badge }
 +    }
@@ -7282,6 +7530,44 @@ index 0000000..530ea86
 +        let to = i + step
 +        guard keys.indices.contains(to) else { return }
 +        move(row.key, before: step < 0 ? keys[to] : (to + 1 < keys.count ? keys[to + 1] : nil))
++    }
++
++    /// Shows an idle session as Finished again, to come back to it; it
++    /// reads once you go to it, or when it does something new.
++    func markUnread(_ row: Row) {
++        markedUnread[row.key] = !row.selected
++        refresh()
++    }
++
++    func markRead(_ row: Row) {
++        markedUnread[row.key] = nil
++        let now = Int(Date().timeIntervalSince1970)
++        if let tree = row.controller?.surfaceTree { for surface in tree { seen[surface.id.uuidString] = now } }
++        saveSeen()
++        refresh()
++    }
++
++    /// Asks for a group heading's name; empty goes back to the default.
++    func renameGroup(_ id: String, title: String) {
++        let alert = NSAlert()
++        alert.messageText = "Rename “\(title)”"
++        alert.informativeText = "A name for this group, such as a client or project. Leave it empty for the default."
++        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
++        field.stringValue = groupNames[id] ?? ""
++        field.placeholderString = title
++        alert.accessoryView = field
++        alert.addButton(withTitle: "Rename")
++        alert.addButton(withTitle: "Cancel")
++        alert.window.initialFirstResponder = field
++        guard alert.runModalNearPointer() == .alertFirstButtonReturn else { return }
++        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
++        setGroupName(id, name.isEmpty ? nil : name)
++    }
++
++    func setGroupName(_ id: String, _ name: String?) {
++        groupNames[id] = name
++        UserDefaults.standard.set(groupNames, forKey: "dock.groupNames")
++        refresh()
 +    }
 +
 +    func toggleCollapsed(_ groupId: String) {
@@ -8018,10 +8304,10 @@ index 0000000..36e2d29
 +}
 diff --git a/macos/Sources/Features/Dock/DockShortcuts.swift b/macos/Sources/Features/Dock/DockShortcuts.swift
 new file mode 100644
-index 0000000..cf87808
+index 0000000..c119dd3
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockShortcuts.swift
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,111 @@
 +import AppKit
 +import Carbon
 +
@@ -8068,6 +8354,8 @@ index 0000000..cf87808
 +                     modifiers: .command) { DockSearchPanel.shared.show() },
 +            Shortcut(keys: "⌘⇧A", title: "Show Agents", keyCode: kVK_ANSI_A,
 +                     modifiers: [.command, .shift]) { DockAgentsWindow.shared.show() },
++            Shortcut(keys: "⌘⇧O", title: "Show Overview", keyCode: kVK_ANSI_O,
++                     modifiers: [.command, .shift]) { DockOverviewWindow.shared.show() },
 +            Shortcut(keys: "⌘⇧Y", title: "Show Daily Recap", keyCode: kVK_ANSI_Y,
 +                     modifiers: [.command, .shift]) { DockRecapWindow.shared.show() },
 +            Shortcut(keys: "⌘⇧J", title: "Next Session That Needs You", keyCode: kVK_ANSI_J,
@@ -8091,6 +8379,7 @@ index 0000000..cf87808
 +        ("Next session that needs you", "⌘⇧J  (⌃⌥J from any app)"),
 +        ("Find a session by name", "⌘P"),
 +        ("Agents across all sessions", "⌘⇧A"),
++        ("Overview: every session on one screen", "⌘⇧O"),
 +        ("Daily recap", "⌘⇧Y"),
 +        ("Reopen the last closed session", "⌘⇧T"),
 +        ("Restart session", "⌘⇧R"),
@@ -8132,10 +8421,10 @@ index 0000000..cf87808
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..7a8746e
+index 0000000..281b291
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1289 @@
+@@ -0,0 +1,1308 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -8477,6 +8766,11 @@ index 0000000..7a8746e
 +            DockHeaderButton(symbol: "magnifyingglass", color: DockPalette.blue,
 +                             tip: "Find a session (⌘P)", shownTip: $headerTip, tipColor: $headerTipColor) {
 +                DockSearchPanel.shared.show(below: NSEvent.mouseLocation)
++            }
++            DockHeaderButton(symbol: "square.grid.2x2.fill", size: 11, color: DockPalette.blue,
++                             tip: "Overview: every session's screen, answer or reply from one place (⌘⇧O)",
++                             shownTip: $headerTip, tipColor: $headerTipColor) {
++                DockOverviewWindow.shared.show(near: NSEvent.mouseLocation)
 +            }
 +            DockHeaderButton(symbol: model.agentsRunning > 0 ? "person.3.fill" : "person.3", size: 11,
 +                             color: model.agentsRunning > 0 ? DockPalette.green : DockPalette.mauve,
@@ -8919,6 +9213,11 @@ index 0000000..7a8746e
 +            let model = DockSessions.shared
 +            Button("Rename…") { model.rename(row) }
 +            Button(row.pinned ? "Unpin" : "Pin to the Top") { model.togglePinned(row) }
++            if row.status == .unread {
++                Button("Mark as Read") { model.markRead(row) }
++            } else if row.sessionId != nil && (row.status == .idle) {
++                Button("Mark as Unread") { model.markUnread(row) }
++            }
 +            if let url = workspace?.pr?.url.flatMap(URL.init(string:)) {
 +                Button("Open Pull Request #\(workspace!.pr!.number)") { NSWorkspace.shared.open(url) }
 +            }
@@ -9055,6 +9354,15 @@ index 0000000..7a8746e
 +        .padding(.bottom, 2)
 +        .contentShape(Rectangle())
 +        .onTapGesture(perform: onToggle)
++        .contextMenu {
++            if group.id != "pinned" {
++                Button("Rename Group…") { DockSessions.shared.renameGroup(group.id, title: group.title) }
++                if DockSessions.shared.groupNames[group.id] != nil {
++                    Button("Use the Default Name") { DockSessions.shared.setGroupName(group.id, nil) }
++                }
++            }
++        }
++        .help("Click to fold. Right-click to rename the group.")
 +    }
 +}
 +
