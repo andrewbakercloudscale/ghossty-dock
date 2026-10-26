@@ -5365,10 +5365,10 @@ index 0000000..907dc43
 +}
 diff --git a/macos/Sources/Features/Dock/DockOverview.swift b/macos/Sources/Features/Dock/DockOverview.swift
 new file mode 100644
-index 0000000..b87461c
+index 0000000..ddb67af
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockOverview.swift
-@@ -0,0 +1,222 @@
+@@ -0,0 +1,223 @@
 +import AppKit
 +import SwiftUI
 +
@@ -5539,8 +5539,9 @@ index 0000000..b87461c
 +    @ViewBuilder private func answers(_ ask: DockAsk) -> some View {
 +        HStack(spacing: 6) {
 +            if ask.isPermission {
++                // No Return shortcut: with several tiles asking, Return would
++                // allow whichever one held it, even while typing a reply.
 +                Button("Allow") { DockSessions.shared.answer(row, .allow) }
-+                    .keyboardShortcut(.defaultAction)
 +                Button("Deny") { DockSessions.shared.answer(row, .deny) }
 +            } else {
 +                ForEach(Array(ask.choices.enumerated()), id: \.offset) { i, label in
