@@ -9481,10 +9481,10 @@ index 0000000..cf53b7e
 +}
 diff --git a/macos/Sources/Features/Dock/DockTint.swift b/macos/Sources/Features/Dock/DockTint.swift
 new file mode 100644
-index 0000000..93e4035
+index 0000000..0af6f7f
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockTint.swift
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,149 @@
 +import AppKit
 +import GhosttyKit
 +import SwiftUI
@@ -9549,6 +9549,7 @@ index 0000000..93e4035
 +            guard let sid = row.sessionId, row.controller != nil else { continue }
 +            want[sid] = row.tag.map(Self.background) ?? base
 +        }
++        publishVisible(rows)
 +        guard want != published else { return }
 +        let fm = FileManager.default
 +        try? fm.createDirectory(at: Self.backgroundsDir, withIntermediateDirectories: true)
@@ -9560,6 +9561,31 @@ index 0000000..93e4035
 +            try? fm.removeItem(at: Self.backgroundsDir.appendingPathComponent(sid))
 +        }
 +        published = want
++    }
++
++    /// The sessions on screen, one Claude session id a line: the selected
++    /// tab of each window macOS says can be seen. The usage panel keeps the
++    /// sidebars of the rest up to date at a walk, and takes this file as
++    /// gone once it is three minutes old, so it is rewritten every minute.
++    static let visibleFile = FileManager.default.homeDirectoryForCurrentUser
++        .appendingPathComponent(".local/state/ghostty-dock/visible")
++
++    private var visible: [String] = []
++    private var visibleAt = Date.distantPast
++
++    private func publishVisible(_ rows: [DockSessions.Row]) {
++        let now = rows.compactMap { row -> String? in
++            guard let sid = row.sessionId, let window = row.controller?.window else { return nil }
++            let front = window.tabGroup?.selectedWindow.map { $0 === window } ?? true
++            return front && window.isVisible && window.occlusionState.contains(.visible) ? sid : nil
++        }.sorted()
++        guard now != visible || Date().timeIntervalSince(visibleAt) > 60 else { return }
++        try? FileManager.default.createDirectory(at: Self.visibleFile.deletingLastPathComponent(),
++                                                 withIntermediateDirectories: true)
++        guard (try? now.map { $0 + "\n" }.joined()
++            .write(to: Self.visibleFile, atomically: true, encoding: .utf8)) != nil else { return }
++        visible = now
++        visibleAt = Date()
 +    }
 +
 +    private static func hex(_ color: NSColor) -> Int {
