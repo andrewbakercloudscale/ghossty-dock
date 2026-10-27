@@ -5141,10 +5141,10 @@ index 0000000..bc033d2
 +}
 diff --git a/macos/Sources/Features/Dock/DockOrdering.swift b/macos/Sources/Features/Dock/DockOrdering.swift
 new file mode 100644
-index 0000000..907dc43
+index 0000000..3b10b65
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockOrdering.swift
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,231 @@
 +import Foundation
 +
 +/// What a tab is doing. Raw values are the urgency order: needs you first.
@@ -5171,15 +5171,17 @@ index 0000000..907dc43
 +    // Saved by name, so reordering is safe.
 +    case red, orange, yellow, lime, green, teal, sky
 +    case blue, indigo, purple, magenta, pink, brown, slate
++    // Electric: the third row, at full brightness.
++    case blaze, volt, neon, aqua, electric, fuchsia, flamingo
 +    // No longer offered, as each was too like one above; rows given one
 +    // keep it.
-+    case scarlet, coral, blaze, amber, gold, volt, neon, emerald, aqua, cyan
-+    case electric, ultra, violet, fuchsia, flamingo, rose
++    case scarlet, coral, amber, gold, emerald, cyan, ultra, violet, rose
 +
 +    /// What the picker and the Colourise menu offer: no two alike.
 +    static let offered: [DockTag] = [
 +        .red, .orange, .yellow, .lime, .green, .teal, .sky,
 +        .blue, .indigo, .purple, .magenta, .pink, .brown, .slate,
++        .blaze, .volt, .neon, .aqua, .electric, .fuchsia, .flamingo,
 +    ]
 +
 +    var label: String { rawValue.capitalized }
@@ -6422,10 +6424,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..0d41a2e
+index 0000000..c6994fa
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1395 @@
+@@ -0,0 +1,1431 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -6634,6 +6636,11 @@ index 0000000..0d41a2e
 +    /// interruption to the transcript but runs no Stop hook, so the hook's
 +    /// file still says running.
 +    private var interrupted: Set<String> = []
++    /// Running sessions by id, with when the hook said busy and how many
++    /// checks in a row their screen has had no "esc to interrupt": Ctrl+C
++    /// before Claude answers writes nothing to the transcript, so only the
++    /// screen shows it stopped.
++    private var spinnerGone: [String: (since: Int, count: Int)] = [:]
 +
 +    private init() {
 +        seen = (try? JSONDecoder().decode([String: Int].self,
@@ -7025,8 +7032,10 @@ index 0000000..0d41a2e
 +    private func refreshAgentsRunning() {
 +        let files = rows.compactMap { r in r.sessionId.flatMap { transcript($0) } }
 +        let busyFiles = busy.compactMap { sid, since in transcript(sid).map { (sid, $0, since) } }
++        let quietScreens = checkSpinners()
 +        costQueue.async { [weak self] in
 +            let stopped = Set(busyFiles.filter { DockSessions.wasInterrupted($0.1, since: $0.2) }.map(\.0))
++                .union(quietScreens)
 +            DispatchQueue.main.async {
 +                guard let self, stopped != self.interrupted else { return }
 +                self.interrupted = stopped
@@ -7051,6 +7060,35 @@ index 0000000..0d41a2e
 +                self.agentsRunning = running
 +            }
 +        }
++    }
++
++    /// Running sessions whose screen has shown no "esc to interrupt" for
++    /// three checks (about 9 seconds) and whose transcript has not changed
++    /// for 10 seconds: Claude Code always shows it while working.
++    private func checkSpinners() -> Set<String> {
++        let now = Int(Date().timeIntervalSince1970)
++        var next: [String: (since: Int, count: Int)] = [:]
++        var stopped: Set<String> = []
++        for row in rows where row.status == .running {
++            guard let sid = row.sessionId, let since = busy[sid], now - since > 15,
++                  let view = row.controller.flatMap({ $0.focusedSurface ?? $0.surfaceTree.first })
++            else { continue }
++            guard !view.cachedVisibleContents.get().contains("esc to interrupt") else { continue }
++            let changed = transcript(sid).flatMap {
++                (try? FileManager.default.attributesOfItem(atPath: $0.path))?[.modificationDate] as? Date
++            }
++            guard changed.map({ Date().timeIntervalSince($0) > 10 }) ?? true else { continue }
++            let count = (spinnerGone[sid].map { $0.since == since ? $0.count : 0 } ?? 0) + 1
++            next[sid] = (since, count)
++            if count >= 3 { stopped.insert(sid) }
++        }
++        // Shown stopped (so no longer running) until the hook says busy again.
++        for (sid, gone) in spinnerGone where gone.count >= 3 && busy[sid] == gone.since && next[sid] == nil {
++            next[sid] = gone
++            stopped.insert(sid)
++        }
++        spinnerGone = next
++        return stopped
 +    }
 +
 +    /// The transcript's last turn is over, after the hook last said busy (a
@@ -8357,7 +8395,7 @@ index 0000000..c119dd3
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..9c89023
+index 0000000..17f6993
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
 @@ -0,0 +1,1315 @@
@@ -9176,7 +9214,7 @@ index 0000000..9c89023
 +                .disabled(model.visibleRows.last?.key == row.key)
 +            Menu("Colourise") {
 +                ForEach(DockTag.offered + (row.tag.map { DockTag.offered.contains($0) ? [] : [$0] } ?? []), id: \.self) { tag in
-+                    if tag == .blue || !DockTag.offered.contains(tag) { Divider() }
++                    if tag == .blue || tag == .blaze || !DockTag.offered.contains(tag) { Divider() }
 +                    Button { model.setTag(row, tag) } label: {
 +                        Image(nsImage: Self.swatch(tag))
 +                        Text(row.tag == tag ? "\(tag.label) ✓" : tag.label)
