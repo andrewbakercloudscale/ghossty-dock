@@ -4831,10 +4831,10 @@ index 0000000..6d9cbd4
 +}
 diff --git a/macos/Sources/Features/Dock/DockLogin.swift b/macos/Sources/Features/Dock/DockLogin.swift
 new file mode 100644
-index 0000000..07dca66
+index 0000000..d9a1f65
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockLogin.swift
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,136 @@
 +import AppKit
 +import Combine
 +
@@ -4924,18 +4924,29 @@ index 0000000..07dca66
 +        return Date(timeIntervalSince1970: Double(t.tv_sec) + Double(t.tv_usec) / 1_000_000)
 +    }
 +
-+    /// Asks, then resumes each one in a fresh tab, a little apart.
-+    func confirmResume() {
-+        let rows = stale
-+        guard !rows.isEmpty else { return }
++    /// Asks, then resumes each one in a fresh tab, a little apart. All:
++    /// every session, for a login change made before the Dock was watching
++    /// (or Remote Control that went quiet for any reason).
++    func confirmResume(all: Bool = false) {
++        let rows = all ? DockSessions.shared.rows.filter { $0.sessionId != nil } : stale
++        guard !rows.isEmpty else { NSSound.beep(); return }
 +        let busy = rows.filter { $0.status == .running }
 +        let alert = NSAlert()
-+        alert.messageText = "Resume \(rows.count) session\(rows.count == 1 ? "" : "s") with your new login?"
-+        alert.informativeText = """
-+            They started before you logged in\(account.map { " as \($0)" } ?? " again"), so they still \
-+            use the old login: Remote Control and usage go to that account. Each is resumed in a \
-+            fresh tab with the same flags, so Remote Control keeps its name.
-+            """ + (busy.isEmpty ? "" : "\n\nRunning now, and interrupted if you resume them: "
++        alert.messageText = all
++            ? "Resume all \(rows.count) sessions?"
++            : "Resume \(rows.count) session\(rows.count == 1 ? "" : "s") with your new login?"
++        alert.informativeText = (all
++            ? """
++              Each claude is stopped and resumed in a fresh tab with the same flags, so it picks up \
++              the login you have now\(account.map { " (\($0))" } ?? "") and --remote-control comes \
++              back under its name. Restarting Ghostty Dock doesn't do this: held tabs keep running \
++              through it, on the login they started with.
++              """
++            : """
++              They started before you logged in\(account.map { " as \($0)" } ?? " again"), so they still \
++              use the old login: Remote Control and usage go to that account. Each is resumed in a \
++              fresh tab with the same flags, so Remote Control keeps its name.
++              """) + (busy.isEmpty ? "" : "\n\nRunning now, and interrupted if you resume them: "
 +                + busy.map(\.name).joined(separator: ", ") + ".")
 +        alert.addButton(withTitle: busy.isEmpty ? "Resume All" : "Resume the Idle Ones")
 +        if !busy.isEmpty { alert.addButton(withTitle: "Resume All") }
@@ -8422,10 +8433,10 @@ index 0000000..c119dd3
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..281b291
+index 0000000..9c89023
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1308 @@
+@@ -0,0 +1,1315 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -8669,16 +8680,22 @@ index 0000000..281b291
 +                .opacity(headerTip == nil ? 1 : 0)
 +                .overlay(alignment: .leading) {
 +                    if let headerTip {
-+                        Text(headerTip)
-+                            .font(.system(size: 11, weight: .semibold))
-+                            .foregroundStyle(headerTipColor)
-+                            .lineLimit(1)
-+                            .minimumScaleFactor(0.75)
-+                            .truncationMode(.tail)
++                        // The button's colour marks it, as a dot and the border;
++                        // the words are in the text colour on the base, as
++                        // yellow (or any pale one) on its own tint can't be read.
++                        HStack(spacing: 5) {
++                            Circle().fill(headerTipColor).frame(width: 7, height: 7)
++                            Text(headerTip)
++                                .font(.system(size: 11, weight: .semibold))
++                                .foregroundStyle(DockPalette.text)
++                                .lineLimit(1)
++                                .minimumScaleFactor(0.75)
++                                .truncationMode(.tail)
++                        }
 +                            .padding(.horizontal, 8)
 +                            .padding(.vertical, 3)
-+                            .background(Capsule().fill(headerTipColor.opacity(0.16)))
-+                            .overlay(Capsule().strokeBorder(headerTipColor.opacity(0.35), lineWidth: 1))
++                            .background(Capsule().fill(DockPalette.base))
++                            .overlay(Capsule().strokeBorder(headerTipColor.opacity(0.8), lineWidth: 1.5))
 +                            .frame(maxWidth: .infinity, alignment: .leading)
 +                            .allowsHitTesting(false)
 +                    }
@@ -9608,8 +9625,9 @@ index 0000000..281b291
 +                        .foregroundStyle(DockPalette.text)
 +                        .padding(.horizontal, 7)
 +                        .padding(.vertical, 3)
-+                        .background(RoundedRectangle(cornerRadius: 5).fill(DockPalette.surface))
-+                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(DockPalette.greyLine, lineWidth: 1))
++                        .background(RoundedRectangle(cornerRadius: 5).fill(DockPalette.base)
++                            .shadow(color: .black.opacity(0.25), radius: 3, y: 1))
++                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(DockPalette.text.opacity(0.35), lineWidth: 1))
 +                        .fixedSize()
 +                        .offset(x: -22)
 +                        .allowsHitTesting(false)
@@ -10203,10 +10221,10 @@ index 0000000..0af6f7f
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..e9e0d7f
+index 0000000..2df1420
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
-@@ -0,0 +1,382 @@
+@@ -0,0 +1,389 @@
 +import AppKit
 +import Combine
 +
@@ -10415,13 +10433,20 @@ index 0000000..e9e0d7f
 +            \(restartPending ? "A newer build is installed. " : "")Ghostty Dock restarts once no session has been busy \
 +            and you have not typed for 10 seconds (typing starts the count again), and reopens \
 +            each Claude session as a tab with claude --resume (plain shell tabs are not reopened).
++
++            Held tabs keep running through a restart, on the Claude login they started with. \
++            After logging in as someone else, or if Remote Control has gone quiet, use Resume \
++            Every Session instead.
 +            """ + (notes.isEmpty ? "" : "\n\n" + notes.joined(separator: "\n\n"))
 +        alert.addButton(withTitle: "Restart When Quiet")
 +        // Not something to have to click twice for.
 +        alert.addButton(withTitle: running.isEmpty ? "Restart Now" : "Restart Now (Interrupts \(running.count))")
++        // Held tabs survive the restart on the login they started with.
++        alert.addButton(withTitle: "Resume Every Session Instead…")
 +        alert.addButton(withTitle: "Cancel")
 +        let answer = alert.runModalNearPointer()
 +        if answer == .alertSecondButtonReturn { restartNow(); return }
++        if answer == .alertThirdButtonReturn { DockLogin.shared.confirmResume(all: true); return }
 +        guard answer == .alertFirstButtonReturn else { return }
 +        let restarter = FileManager.default.homeDirectoryForCurrentUser
 +            .appendingPathComponent(".local/bin/ghostty-dock-restart").path

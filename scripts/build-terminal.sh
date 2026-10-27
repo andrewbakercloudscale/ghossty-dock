@@ -63,13 +63,63 @@ function save_patch() {
     echo "== saved $(grep -c '^diff --git' "$PATCH") file(s) to ${PATCH#"$ROOT"/}"
 }
 
+# The newest macOS SDK older than the one xcrun picks, or nothing. Zig
+# 0.15.2 can't link against some newer SDKs (every libSystem symbol comes
+# back undefined), and Ghostty 1.3.1 needs exactly Zig 0.15.
+function older_sdk() {
+    local current major path
+    current=$(xcrun --sdk macosx --show-sdk-version 2>/dev/null) || return
+    major=${current%%.*}
+    for path in /Library/Developer/CommandLineTools/SDKs/MacOSX*.*.sdk \
+        "$(xcode-select -p 2>/dev/null)"/Platforms/MacOSX.platform/Developer/SDKs/MacOSX*.*.sdk; do
+        [ -d "$path" ] || continue
+        local version=${path##*/MacOSX}
+        version=${version%.sdk}
+        [ "${version%%.*}" -lt "$major" ] && echo "$version $path"
+    done | sort -t. -k1,1n -k2,2n | tail -1 | cut -d' ' -f2-
+}
+
+# Zig asks `xcrun --sdk macosx --show-sdk-path`, which ignores SDKROOT, so a
+# shim earlier on PATH answers that one question with the given SDK.
+function zig_build_with_sdk() {
+    local sdk=$1 shim
+    shift
+    shim=$(mktemp -d) || return 1
+    cat >"$shim/xcrun" <<EOS
+#!/bin/bash
+if [ "\$*" = "--sdk macosx --show-sdk-path" ]; then echo "$sdk"; exit 0; fi
+exec /usr/bin/xcrun "\$@"
+EOS
+    chmod +x "$shim/xcrun"
+    (cd "$SRC" && PATH="$shim:$PATH" "$VENDOR/zig/zig" build "$@")
+    local rc=$?
+    rm -rf "$shim"
+    return $rc
+}
+
 function build_lib() {
     echo "== build libghostty"
-    (cd "$SRC" && "$VENDOR/zig/zig" build -Doptimize=ReleaseFast -Demit-xcframework=true \
-        -Demit-macos-app=false -Dxcframework-target=native) || {
-        echo "libghostty failed; if it mentions Metal: xcodebuild -downloadComponent MetalToolchain" >&2
-        exit 1
-    }
+    local args=(-Doptimize=ReleaseFast -Demit-xcframework=true
+        -Demit-macos-app=false -Dxcframework-target=native)
+    if [ -n "${GHOSTTY_DOCK_SDK:-}" ]; then
+        zig_build_with_sdk "$GHOSTTY_DOCK_SDK" "${args[@]}" && return
+    else
+        (cd "$SRC" && "$VENDOR/zig/zig" build "${args[@]}") && return
+        local sdk
+        sdk=$(older_sdk)
+        if [ -n "$sdk" ]; then
+            echo "== retry libghostty against ${sdk##*/}"
+            zig_build_with_sdk "$sdk" "${args[@]}" && return
+        fi
+    fi
+    cat >&2 <<'EOM'
+libghostty failed.
+  Metal errors: xcodebuild -downloadComponent MetalToolchain
+  Undefined libSystem symbols: Zig 0.15.2 can't link this macOS SDK. Install
+  an older one (Command Line Tools for Xcode 26 from developer.apple.com) and
+  rerun, or point at one: GHOSTTY_DOCK_SDK=/path/to/MacOSX26.sdk ./install.sh
+EOM
+    exit 1
 }
 
 function build_app() {
