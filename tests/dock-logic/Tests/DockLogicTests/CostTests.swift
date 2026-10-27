@@ -48,6 +48,35 @@ final class CostTests: XCTestCase {
         XCTAssertEqual(meter.dollars(transcript: file), 8, accuracy: 1e-9)
     }
 
+    func testCarriesOnFromASave() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("s.jsonl")
+        let cache = dir.appendingPathComponent("cache.json")
+        let one = line("claude-haiku-4-5", id: "a", usage: #""input_tokens":1000000"#)
+        try (one + "\n").write(to: file, atomically: true, encoding: .utf8)
+        let first = DockCost()
+        XCTAssertEqual(first.dollars(transcript: file), 1, accuracy: 1e-9)
+        first.save(to: cache)
+
+        // The same message again (its next content block), then a new one.
+        let h = try FileHandle(forWritingTo: file)
+        try h.seekToEnd()
+        h.write(Data((one + "\n" + line("claude-haiku-4-5", id: "b", usage: #""output_tokens":1000000"#) + "\n").utf8))
+        try h.close()
+        let next = DockCost()
+        next.load(from: cache)
+        XCTAssertEqual(next.dollars(transcript: file), 6, accuracy: 1e-9)
+
+        // A new file at the same path is read from the start.
+        try FileManager.default.removeItem(at: file)
+        try (one + "\n").write(to: file, atomically: false, encoding: .utf8)
+        let fresh = DockCost()
+        fresh.load(from: cache)
+        XCTAssertEqual(fresh.dollars(transcript: file), 1, accuracy: 1e-9)
+    }
+
     func testFormat() {
         XCTAssertEqual(DockCost.format(0.4), "$0.40")
         XCTAssertEqual(DockCost.format(128.4), "$128")
