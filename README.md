@@ -42,6 +42,13 @@ Needs Xcode (for `swift` and `xcodebuild`); the build fetches Ghostty and zig it
     scripts/build-terminal.sh        # rebuild the app only
     ghostty-dock-move --detach       # move sessions from separate Ghostty apps into tabs
 
+Ghostty 1.3.1 needs Zig 0.15, which can't link against some newer macOS SDKs
+(every libSystem symbol comes back undefined). The build then retries against
+the newest older SDK it finds. If there is none, install Command Line Tools
+for an earlier Xcode from developer.apple.com, or name one:
+`GHOSTTY_DOCK_SDK=/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk ./install.sh`.
+The prebuilt release (`get.sh`) needs none of this.
+
 ### Making a release (maintainers)
 
     scripts/release.sh               # build/release/Ghostty-Dock-<version>.zip
