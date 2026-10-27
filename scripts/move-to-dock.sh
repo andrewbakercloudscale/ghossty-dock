@@ -246,14 +246,17 @@ function list_sessions() {
 # The claude in a Ghostty Dock tab running session <id>.
 function docked_claude() {
     local sid="$1"
-    local dock
-    # Not pgrep -f: it does not match this path, which has a space in it.
-    dock=$(ps -axo pid=,command= | awk -v bin="$DOCK_BIN" '{ pid = $1; $1 = ""; sub(/^ /, "") }
-        index($0, bin " ") == 1 || $0 == bin { print pid; exit }')
-    [ -n "$dock" ] || return
-    local cpid
-    for cpid in $(claude_under "$dock" all); do
-        [ "$(cut -f1 <<<"$(session_of "$cpid")")" = "$sid" ] && { echo "$cpid"; return; }
+    local roots root cpid
+    # The app, and each ghostty-dock-hold: a held tab's claude outlives an
+    # app restart under its holder, which is then no longer the app's child.
+    # Not pgrep -f: it does not match these paths, which have a space in them.
+    roots=$(ps -axo pid=,command= | awk -v bin="$DOCK_BIN" -v hold="$DOCK_BIN-dock-hold " '
+        { pid = $1; $1 = ""; sub(/^ /, ""); sub(/^-/, "") }
+        index($0, bin " ") == 1 || $0 == bin || index($0, hold) == 1 { print pid }')
+    for root in $roots; do
+        for cpid in $(claude_under "$root" all); do
+            [ "$(cut -f1 <<<"$(session_of "$cpid")")" = "$sid" ] && { echo "$cpid"; return; }
+        done
     done
 }
 
