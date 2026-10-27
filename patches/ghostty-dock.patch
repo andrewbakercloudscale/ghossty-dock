@@ -6472,10 +6472,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..74cf4a0
+index 0000000..71ba4c5
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1474 @@
+@@ -0,0 +1,1486 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -7127,18 +7127,27 @@ index 0000000..74cf4a0
 +        }
 +    }
 +
-+    /// Running sessions whose screen has shown no "esc to interrupt" for
-+    /// three checks (about 9 seconds) and whose transcript has not changed
-+    /// for 10 seconds: Claude Code always shows it while working.
++    /// Running sessions whose screen has shown no sign of work for three
++    /// checks (about 9 seconds) and whose transcript has not changed for 10
++    /// seconds: Claude Code always shows its timer while working.
 +    private func checkSpinners() -> Set<String> {
 +        let now = Int(Date().timeIntervalSince1970)
 +        var next: [String: (since: Int, count: Int)] = [:]
 +        var stopped: Set<String> = []
-+        for row in rows where row.status == .running {
++        for row in rows {
 +            guard let sid = row.sessionId, let since = busy[sid], now - since > 15,
 +                  let view = row.controller.flatMap({ $0.focusedSurface ?? $0.surfaceTree.first })
 +            else { continue }
-+            guard !view.cachedVisibleContents.get().contains("esc to interrupt") else { continue }
++            // Already shown stopped by this, until the hook says busy again
++            // or the screen shows it working after all.
++            let shown = spinnerGone[sid].map { $0.since == since && $0.count >= 3 } ?? false
++            guard row.status == .running || shown else { continue }
++            guard !Self.working(view.cachedVisibleContents.get()) else { continue }
++            if shown {
++                next[sid] = spinnerGone[sid]
++                stopped.insert(sid)
++                continue
++            }
 +            let changed = transcript(sid).flatMap {
 +                (try? FileManager.default.attributesOfItem(atPath: $0.path))?[.modificationDate] as? Date
 +            }
@@ -7147,13 +7156,16 @@ index 0000000..74cf4a0
 +            next[sid] = (since, count)
 +            if count >= 3 { stopped.insert(sid) }
 +        }
-+        // Shown stopped (so no longer running) until the hook says busy again.
-+        for (sid, gone) in spinnerGone where gone.count >= 3 && busy[sid] == gone.since && next[sid] == nil {
-+            next[sid] = gone
-+            stopped.insert(sid)
-+        }
 +        spinnerGone = next
 +        return stopped
++    }
++
++    /// The timer Claude Code shows while it works, "✻ Burrowing… (8m 37s ·
++    /// ↓ 9.4k tokens)", or its hints then: "esc to interrupt", and "ctrl+b
++    /// to run in background" in place of it while a command runs.
++    static func working(_ screen: String) -> Bool {
++        screen.contains("esc to interrupt") || screen.contains("to run in background")
++            || screen.range(of: #"… \(\d+[hms]"#, options: .regularExpression) != nil
 +    }
 +
 +    /// The transcript's last turn is over, after the hook last said busy (a
