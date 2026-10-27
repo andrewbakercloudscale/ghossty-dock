@@ -7920,10 +7920,10 @@ index 0000000..bf3b52f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..36e2d29
+index 0000000..7acabf0
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,390 @@
+@@ -0,0 +1,411 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -8039,7 +8039,7 @@ index 0000000..36e2d29
 +    @State private var loginError: String?
 +    @AppStorage(DockSettingsWindow.tabKey) private var tab = "sidebar"
 +
-+    /// One short page per tab, so nothing needs scrolling.
++    /// One short page per tab; one taller than the screen scrolls.
 +    var body: some View {
 +        TabView(selection: $tab) {
 +            page { sidebar }.tabItem { Label("Sidebar", systemImage: "sidebar.left") }.tag("sidebar")
@@ -8057,9 +8057,7 @@ index 0000000..36e2d29
 +    }
 +
 +    private func page<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-+        Form { content() }
-+            .formStyle(.grouped)
-+            .fixedSize(horizontal: false, vertical: true)
++        DockSettingsPage { content() }
 +    }
 +
 +    @ViewBuilder private var sidebar: some View {
@@ -8288,6 +8286,29 @@ index 0000000..36e2d29
 +        // Runs once the modal loop has shown and centred the alert.
 +        RunLoop.main.perform(inModes: [.modalPanel]) { [weak self] in self?.window.place(near: point) }
 +        return runModal()
++    }
++}
++
++/// A settings tab as tall as its contents, up to what fits on the screen,
++/// and scrolling past that.
++private struct DockSettingsPage<Content: View>: View {
++    @ViewBuilder var content: Content
++    @State private var height: CGFloat = 0
++
++    /// The screen less the title bar, the tabs and a margin.
++    private var limit: CGFloat {
++        max(300, (NSScreen.main?.visibleFrame.height ?? 800) - 140)
++    }
++
++    var body: some View {
++        ScrollView {
++            Form { content }
++                .formStyle(.grouped)
++                .scrollDisabled(true)
++                .fixedSize(horizontal: false, vertical: true)
++                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
++        }
++        .frame(height: height > 0 ? min(height, limit) : nil)
 +    }
 +}
 +
