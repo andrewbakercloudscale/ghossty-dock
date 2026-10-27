@@ -2078,10 +2078,10 @@ index 0000000..1a34e7b
 +}
 diff --git a/macos/Sources/Features/Dock/DockAgents.swift b/macos/Sources/Features/Dock/DockAgents.swift
 new file mode 100644
-index 0000000..84a9b57
+index 0000000..e956986
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAgents.swift
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,198 @@
 +import Foundation
 +
 +/// Every subagent a session has started, with what it has used, from its
@@ -2170,7 +2170,10 @@ index 0000000..84a9b57
 +    private func read(_ url: URL, sessionId: String) -> Agent {
 +        let id = url.deletingPathExtension().lastPathComponent
 +        var state = files[url.path] ?? FileState(agent: Agent(id: id, sessionId: sessionId))
-+        Self.applyMeta(url.deletingPathExtension().appendingPathExtension("meta.json"), to: &state.agent)
++        // A finished agent's meta does not change again.
++        if !state.agent.finished {
++            Self.applyMeta(url.deletingPathExtension().appendingPathExtension("meta.json"), to: &state.agent)
++        }
 +        defer { files[url.path] = state }
 +        guard let h = try? FileHandle(forReadingFrom: url) else { return state.agent }
 +        defer { try? h.close() }
@@ -2279,10 +2282,10 @@ index 0000000..84a9b57
 +}
 diff --git a/macos/Sources/Features/Dock/DockAgentsView.swift b/macos/Sources/Features/Dock/DockAgentsView.swift
 new file mode 100644
-index 0000000..cd32253
+index 0000000..0c3ed50
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAgentsView.swift
-@@ -0,0 +1,771 @@
+@@ -0,0 +1,780 @@
 +import AppKit
 +import SwiftUI
 +
@@ -2361,7 +2364,8 @@ index 0000000..cd32253
 +    }
 +
 +    func refresh() {
-+        guard !busy else { return }
++        // Nothing to show while the window is closed, minimised or covered.
++        guard !busy, DockAgentsWindow.shared.onScreen else { return }
 +        let rows = DockSessions.shared.rows
 +        let files = rows.compactMap { r in
 +            r.sessionId.flatMap { sid in DockSessions.shared.transcriptURL(sid).map { (r, sid, $0) } }
@@ -2432,15 +2436,17 @@ index 0000000..cd32253
 +        let fm = FileManager.default
 +        let projects = fm.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
 +        let dirs = (try? fm.contentsOfDirectory(at: projects, includingPropertiesForKeys: nil)) ?? []
++        let keys: [URLResourceKey] = [.contentModificationDateKey]
++        let keySet = Set(keys)
 +        var byProject: [String: [Run]] = [:]
 +        var today: Set<String> = []
 +        var runs: [URL] = []
 +        for dir in dirs {
-+            let urls = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
++            let urls = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: keys)) ?? []
 +            for url in urls where url.pathExtension == "jsonl" {
 +                let sid = url.deletingPathExtension().lastPathComponent
 +                guard !open.contains(sid),
-+                      let m = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
++                      let m = (try? url.resourceValues(forKeys: keySet))?.contentModificationDate,
 +                      m >= since else { continue }
 +                today.insert(url.path)
 +                guard let info = headlessInfo(url) else { continue }
@@ -2982,6 +2988,12 @@ index 0000000..cd32253
 +final class DockAgentsWindow {
 +    static let shared = DockAgentsWindow()
 +    private var window: NSWindow?
++
++    /// The window is open and some of it can be seen.
++    var onScreen: Bool {
++        guard let window else { return false }
++        return window.isVisible && window.occlusionState.contains(.visible)
++    }
 +
 +    func show(near point: NSPoint? = nil) {
 +        if window == nil {
@@ -6424,10 +6436,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..c6994fa
+index 0000000..f2a1722
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1431 @@
+@@ -0,0 +1,1458 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -6624,6 +6636,13 @@ index 0000000..c6994fa
 +    private var lastRows: [ObjectIdentifier: Row] = [:]
 +    private let costMeter = DockCost()
 +    private let costQueue = DispatchQueue(label: "ghostty-dock.cost", qos: .utility)
++    /// Each busy transcript's last interruption check, by path: its size,
++    /// modified date and hook time then, and what it found. Only read on
++    /// `costQueue`; the check reads 64 KB, so not again until one changes.
++    private var interruptChecks: [String: (size: UInt64, modified: Date, since: Int, stopped: Bool)] = [:]
++    /// Subagent files whose meta says finished: they never start again, so
++    /// are not looked at again. Only read on `costQueue`.
++    private var finishedAgents: Set<String> = []
 +    private var costTimer: Timer?
 +    private var agentTimer: Timer?
 +    private var transcripts: [String: URL] = [:]
@@ -7034,29 +7053,34 @@ index 0000000..c6994fa
 +        let busyFiles = busy.compactMap { sid, since in transcript(sid).map { (sid, $0, since) } }
 +        let quietScreens = checkSpinners()
 +        costQueue.async { [weak self] in
-+            let stopped = Set(busyFiles.filter { DockSessions.wasInterrupted($0.1, since: $0.2) }.map(\.0))
++            guard let self else { return }
++            let stopped = Set(busyFiles.filter { self.checkInterrupted($0.1, since: $0.2) }.map(\.0))
 +                .union(quietScreens)
++            self.interruptChecks = self.interruptChecks.filter { path, _ in busyFiles.contains { $0.1.path == path } }
 +            DispatchQueue.main.async {
-+                guard let self, stopped != self.interrupted else { return }
++                guard stopped != self.interrupted else { return }
 +                self.interrupted = stopped
 +                self.refresh()
 +            }
 +            let fm = FileManager.default
 +            let now = Date()
 +            var running = 0
++            var finished: Set<String> = []
 +            for url in files {
 +                let dir = url.deletingPathExtension().appendingPathComponent("subagents")
 +                for name in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where name.hasSuffix(".jsonl") {
 +                    let file = dir.appendingPathComponent(name)
++                    guard !self.finishedAgents.contains(file.path) else { finished.insert(file.path); continue }
 +                    guard let m = (try? fm.attributesOfItem(atPath: file.path))?[.modificationDate] as? Date,
 +                          now.timeIntervalSince(m) < 15 * 60 else { continue }
 +                    var agent = DockAgents.Agent(id: "", sessionId: "")
 +                    DockAgents.applyMeta(file.deletingPathExtension().appendingPathExtension("meta.json"), to: &agent)
-+                    if !agent.finished { running += 1 }
++                    if agent.finished { finished.insert(file.path) } else { running += 1 }
 +                }
 +            }
++            self.finishedAgents = finished
 +            DispatchQueue.main.async {
-+                guard let self, running != self.agentsRunning else { return }
++                guard running != self.agentsRunning else { return }
 +                self.agentsRunning = running
 +            }
 +        }
@@ -7095,6 +7119,21 @@ index 0000000..c6994fa
 +    /// new prompt comes after it): its last entry is the turn's end marker
 +    /// (an API error ends a turn with no Stop hook) or "[Request interrupted
 +    /// by user…]".
++    /// `wasInterrupted`, read again only once the transcript or the hook's
++    /// time has changed. On `costQueue` only.
++    private func checkInterrupted(_ url: URL, since: Int) -> Bool {
++        guard let a = try? FileManager.default.attributesOfItem(atPath: url.path),
++              let size = (a[.size] as? NSNumber)?.uint64Value,
++              let modified = a[.modificationDate] as? Date
++        else { return DockSessions.wasInterrupted(url, since: since) }
++        if let c = interruptChecks[url.path], c.size == size, c.modified == modified, c.since == since {
++            return c.stopped
++        }
++        let stopped = DockSessions.wasInterrupted(url, since: since)
++        interruptChecks[url.path] = (size, modified, since, stopped)
++        return stopped
++    }
++
 +    static func wasInterrupted(_ url: URL, since: Int) -> Bool {
 +        guard let h = try? FileHandle(forReadingFrom: url) else { return false }
 +        defer { try? h.close() }

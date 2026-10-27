@@ -20,6 +20,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 STATE_DIR="$HOME/.local/state/ghostty-dock"
 LOG="$STATE_DIR/restart-dock.log"
 SAVED="$STATE_DIR/open-sessions.tsv"
+DESCRIBED="$STATE_DIR/described"
 # Sessions a restart or restore could not bring back: the app offers to
 # reopen them (--reopen-missing) until they run again.
 MISSING="$STATE_DIR/missing-sessions.tsv"
@@ -156,10 +157,22 @@ function describe() {
     sid=$(hook_session "$cpid")
     [ -z "$sid" ] && grep -qE -- "--(session-id|resume) " <<<"$args" &&
         sid=$(sed -E 's/.*--(session-id|resume) ([^ ]+).*/\2/' <<<"$args")
-    flags=$(sed -E 's/^([^ ]*\/)?claude ?//; s/--(session-id|resume) [^ ]+ ?//; s/(^| )(--continue|-c)( |$)/\1/; s/ +$//' <<<"$args")
-    local quoted
-    quoted=$(claude_flags "$cpid") && flags="$quoted"
-    cwd=$(lsof -a -p "$cpid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+    # A session's folder and flags never change, and finding them takes
+    # lsof and python, so each is worked out once per process. The command
+    # line is kept with them in case the pid is reused.
+    local cache="$DESCRIBED/$cpid" cached=""
+    [ -f "$cache" ] && cached=$(<"$cache")
+    if [ -n "$cached" ] && [ "${cached%%$'\n'*}" = "$args" ]; then
+        cached="${cached#*$'\n'}"
+        cwd="${cached%%$'\t'*}"
+        flags="${cached#*$'\t'}"
+    else
+        flags=$(sed -E 's/^([^ ]*\/)?claude ?//; s/--(session-id|resume) [^ ]+ ?//; s/(^| )(--continue|-c)( |$)/\1/; s/ +$//' <<<"$args")
+        local quoted
+        quoted=$(claude_flags "$cpid") && flags="$quoted"
+        cwd=$(lsof -a -p "$cpid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+        [ -d "$cwd" ] && mkdir -p "$DESCRIBED" && printf '%s\n%s\t%s' "$args" "$cwd" "$flags" >"$cache"
+    fi
     [ -d "$cwd" ] || return 0
     printf '%s\t%s\t%s\n' "$cwd" "$sid" "$flags"
 }
@@ -273,6 +286,12 @@ function save() {
     # Held sessions too: a reboot ends their holders, and then they are
     # resumed like the rest.
     open_sessions "$pid" $(holder_pids) >"$SAVED.tmp" && mv "$SAVED.tmp" "$SAVED"
+    # Forgets processes that have ended.
+    local f
+    for f in "$DESCRIBED"/*; do
+        [ -f "$f" ] && ! kill -0 "${f##*/}" 2>/dev/null && rm -f "$f"
+    done
+    return 0
 }
 
 # Only a session in a terminal counts: Claude Burst's handover writer runs
