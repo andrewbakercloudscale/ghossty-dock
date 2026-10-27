@@ -3241,10 +3241,10 @@ index 0000000..38589ea
 +}
 diff --git a/macos/Sources/Features/Dock/DockCost.swift b/macos/Sources/Features/Dock/DockCost.swift
 new file mode 100644
-index 0000000..d751429
+index 0000000..9cadce2
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockCost.swift
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,232 @@
 +import Foundation
 +
 +/// What a Claude Code session has cost so far, from its transcript, priced as
@@ -3306,16 +3306,22 @@ index 0000000..d751429
 +        return total > 0 ? total : nil
 +    }
 +
-+    private struct FileState {
++    private struct FileState: Codable {
 +        var offset: UInt64 = 0
 +        var dollars: Double = 0
 +        var context: Int?
 +        /// Today's replies, for how fast money is going.
 +        var spends: [Spend] = []
++        /// The file's inode, so a saved state is not used for a new file
++        /// at the same path.
++        var inode: UInt64?
++        /// The last messages counted: the next line can repeat one (a
++        /// message is written once per content block).
++        var lastKeys: [String] = []
 +    }
 +
 +    /// One reply's cost and tokens, and when it came.
-+    struct Spend: Equatable {
++    struct Spend: Equatable, Codable {
 +        var date: Date
 +        var dollars: Double
 +        var tokens: Int
@@ -3399,6 +3405,7 @@ index 0000000..d751429
 +               let d = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] {
 +                if let (key, dollars) = Self.cost(of: d), counted.insert(key).inserted {
 +                    state.dollars += dollars
++                    state.lastKeys = Array((state.lastKeys + [key]).suffix(20))
 +                    if let t = (d["timestamp"] as? String).flatMap({ Self.iso.date(from: $0) }),
 +                       t >= Calendar.current.startOfDay(for: Date()) {
 +                        state.spends.append(Spend(date: t, dollars: dollars, tokens: Self.tokens(of: d)))
@@ -3409,10 +3416,39 @@ index 0000000..d751429
 +            start = stop + 1
 +        }
 +        state.offset += UInt64(lastNewline - data.startIndex + 1)
++        state.inode = Self.inode(url)
 +        let midnight = Calendar.current.startOfDay(for: Date())
 +        state.spends.removeAll { $0.date < midnight }
 +        files[url.path] = state
 +        return state.dollars
++    }
++
++    private static func inode(_ url: URL) -> UInt64? {
++        ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.systemFileNumber] as? NSNumber)?.uint64Value
++    }
++
++    /// What has been read so far, to carry over to the next launch: the
++    /// first read of every open transcript (hundreds of megabytes) is what
++    /// makes a restart slow.
++    func save(to url: URL) {
++        guard let data = try? JSONEncoder().encode(files) else { return }
++        try? data.write(to: url, options: .atomic)
++    }
++
++    /// Carries on from a `save`: each transcript is read from where it was
++    /// then, if it is still the same file and no shorter.
++    func load(from url: URL) {
++        guard let data = try? Data(contentsOf: url),
++              let saved = try? JSONDecoder().decode([String: FileState].self, from: data) else { return }
++        let midnight = Calendar.current.startOfDay(for: Date())
++        for (path, var state) in saved where files[path] == nil {
++            let file = URL(fileURLWithPath: path)
++            guard let size = ((try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? NSNumber)?.uint64Value,
++                  size >= state.offset, state.inode != nil, Self.inode(file) == state.inode else { continue }
++            state.spends.removeAll { $0.date < midnight }
++            counted.formUnion(state.lastKeys)
++            files[path] = state
++        }
 +    }
 +
 +    /// Forgets transcripts other than these sessions' (and their subagents'),
@@ -6436,10 +6472,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..f2a1722
+index 0000000..74cf4a0
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1458 @@
+@@ -0,0 +1,1474 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -6635,6 +6671,11 @@ index 0000000..f2a1722
 +    /// Rows seen on the last refresh, to notice tabs that closed.
 +    private var lastRows: [ObjectIdentifier: Row] = [:]
 +    private let costMeter = DockCost()
++    /// Where `costMeter` keeps what it has read between launches. It is
++    /// loaded once and saved at most once a minute, on `costQueue` only.
++    private var costCache: URL { stateDir.appendingPathComponent("cost-cache.json") }
++    private var costLoaded = false
++    private var costSaved = Date.distantPast
 +    private let costQueue = DispatchQueue(label: "ghostty-dock.cost", qos: .utility)
 +    /// Each busy transcript's last interruption check, by path: its size,
 +    /// modified date and hook time then, and what it found. Only read on
@@ -7183,20 +7224,31 @@ index 0000000..f2a1722
 +            guard let self else { return }
 +            let spaces = self.workspaceMeter.gather(folders)
 +            DispatchQueue.main.async { if spaces != self.workspaces { self.workspaces = spaces } }
-+            var found: [String: Double] = [:]
-+            var sizes: [String: Int] = [:]
-+            for (sid, url) in files {
-+                found[sid] = self.costMeter.dollars(transcript: url)
-+                sizes[sid] = self.costMeter.context(transcript: url)
++            if !self.costLoaded {
++                self.costLoaded = true
++                self.costMeter.load(from: self.costCache)
++            }
++            // Smallest first, and each shown as soon as it is read, so the
++            // count on Loading… goes up one by one.
++            let sized = files.map { f in
++                (f, ((try? FileManager.default.attributesOfItem(atPath: f.1.path))?[.size] as? NSNumber)?.intValue ?? 0)
++            }
++            for ((sid, url), _) in sized.sorted(by: { $0.1 < $1.1 }) {
++                let dollars = self.costMeter.dollars(transcript: url)
++                let size = self.costMeter.context(transcript: url)
++                DispatchQueue.main.async {
++                    if self.costs[sid] != dollars { self.costs[sid] = dollars }
++                    if let size, self.contexts[sid] != size { self.contexts[sid] = size }
++                }
 +            }
 +            let velocity = self.costMeter.velocity()
 +            self.costMeter.prune(keeping: files.map(\.1))
++            if Date().timeIntervalSince(self.costSaved) > 60 {
++                self.costSaved = Date()
++                self.costMeter.save(to: self.costCache)
++            }
 +            DispatchQueue.main.async {
-+                let merged = self.costs.merging(found) { _, new in new }
-+                if merged != self.costs { self.costs = merged }
 +                if velocity != self.velocity { self.velocity = velocity }
-+                let ctx = self.contexts.merging(sizes) { _, new in new }
-+                if ctx != self.contexts { self.contexts = ctx }
 +            }
 +        }
 +    }

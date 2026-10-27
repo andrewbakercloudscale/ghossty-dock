@@ -460,8 +460,11 @@ function restart() {
     status quitting
     # The holders keep their tabs' programs running rather than hang them up.
     mkdir -p "$STATE_DIR/hold" && echo "$pid" >"$STATE_DIR/hold/quitting"
-    for cpid in $(claudes_under "$pid"); do kill -TERM "$cpid" 2>/dev/null; done
-    sleep 3
+    # Claude saves its session as it ends; held ones are not ended, so
+    # with none to end there is nothing to wait for.
+    local ended=0
+    for cpid in $(claudes_under "$pid"); do kill -TERM "$cpid" 2>/dev/null && ended=1; done
+    [ "$ended" = 1 ] && sleep 3
     kill -TERM "$pid" 2>/dev/null
     local i
     for ((i = 0; i < 40; i++)); do kill -0 "$pid" 2>/dev/null || break; sleep 0.25; done
