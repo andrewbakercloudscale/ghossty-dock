@@ -10221,10 +10221,10 @@ index 0000000..0af6f7f
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..68e910d
+index 0000000..ecd048f
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
-@@ -0,0 +1,390 @@
+@@ -0,0 +1,391 @@
 +import AppKit
 +import Combine
 +
@@ -10421,13 +10421,14 @@ index 0000000..68e910d
 +        let running = rows.filter { $0.status == .running }.map(\.name)
 +        let waiting = rows.filter { $0.status == .waiting }.map(\.name)
 +        // One paragraph per button, in button order, each named as the button is.
-+        var paragraphs = [
-+            (restartPending ? "A newer build is installed.\n\n" : "")
-+                + "Restart When Quiet: waits until no session is busy and you have not typed for "
-+                + "10 seconds, then restarts. Your sessions come back as tabs; plain shell tabs do not."
-+                + (running.isEmpty ? "" : " Still running: " + running.joined(separator: ", ") + "."),
-+            "Restart Now: restarts straight away"
-+                + (running.isEmpty ? "." : ", interrupting " + running.joined(separator: ", ") + "."),
++        let pending = restartPending ? "A newer build is installed.\n\n" : ""
++        let stillRunning = running.isEmpty ? "" : " Still running: \(running.joined(separator: ", "))."
++        let interrupting = running.isEmpty ? "." : ", interrupting \(running.joined(separator: ", "))."
++        var paragraphs: [String] = [
++            "\(pending)Restart When Quiet: waits until no session is busy and you have not typed "
++                + "for 10 seconds, then restarts. Your sessions come back as tabs; plain shell tabs "
++                + "do not.\(stillRunning)",
++            "Restart Now: restarts straight away\(interrupting)",
 +            "Resume Every Session: restarts each Claude session instead of Ghostty Dock, so they "
 +                + "pick up the Claude login you have now. A restart keeps them on the login they "
 +                + "started with, so use this after logging in as someone else, or when Remote "
