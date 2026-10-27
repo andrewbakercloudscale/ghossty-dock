@@ -5605,115 +5605,20 @@ index 0000000..ddb67af
 +}
 diff --git a/macos/Sources/Features/Dock/DockRaiseBanner.swift b/macos/Sources/Features/Dock/DockRaiseBanner.swift
 new file mode 100644
-index 0000000..c7cf113
+index 0000000..9b29fc8
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockRaiseBanner.swift
-@@ -0,0 +1,228 @@
+@@ -0,0 +1,133 @@
 +import AppKit
 +import SwiftUI
 +
-+/// The banner over a window the Dock brought to the front by itself,
-+/// saying which session and why, for five seconds. Click it to close it.
-+final class DockRaiseBanner {
-+    static let shared = DockRaiseBanner()
-+    static let seconds = 5.0
-+
++/// What a heads-up says about the session the Dock is about to bring up.
++enum DockRaiseBanner {
 +    struct Reason {
 +        var symbol: String
 +        var color: Color
 +        var title: String
 +        var detail: String
-+    }
-+
-+    private var panel: NSPanel?
-+    private var hide: DispatchWorkItem?
-+
-+    func show(_ reason: Reason, on window: NSWindow) {
-+        close(animated: false)
-+        let view = DockRaiseBannerView(reason: reason) { [weak self] in self?.close(animated: true) }
-+        let host = NSHostingView(rootView: view)
-+        let size = host.fittingSize
-+        let p = NSPanel(contentRect: NSRect(origin: .zero, size: size),
-+                        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-+        p.contentView = host
-+        p.isOpaque = false
-+        p.backgroundColor = .clear
-+        p.hasShadow = true
-+        p.level = window.level
-+        let f = window.frame
-+        p.setFrameOrigin(NSPoint(x: f.midX - size.width / 2, y: f.maxY - size.height - 60))
-+        p.alphaValue = 0
-+        window.addChildWindow(p, ordered: .above)
-+        panel = p
-+        let start = p.frame
-+        p.setFrame(start.offsetBy(dx: 0, dy: 16), display: false)
-+        NSAnimationContext.runAnimationGroup { ctx in
-+            ctx.duration = 0.35
-+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-+            p.animator().alphaValue = 1
-+            p.animator().setFrame(start, display: true)
-+        }
-+        let work = DispatchWorkItem { [weak self] in self?.close(animated: true) }
-+        hide = work
-+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.seconds, execute: work)
-+    }
-+
-+    private func close(animated: Bool) {
-+        hide?.cancel()
-+        hide = nil
-+        guard let p = panel else { return }
-+        panel = nil
-+        let done = { p.parent?.removeChildWindow(p); p.orderOut(nil) }
-+        guard animated else { done(); return }
-+        NSAnimationContext.runAnimationGroup({ ctx in
-+            ctx.duration = 0.3
-+            p.animator().alphaValue = 0
-+        }, completionHandler: done)
-+    }
-+}
-+
-+private struct DockRaiseBannerView: View {
-+    var reason: DockRaiseBanner.Reason
-+    var onClose: () -> Void
-+    @State private var left = 1.0
-+
-+    var body: some View {
-+        VStack(alignment: .leading, spacing: 8) {
-+            HStack(alignment: .top, spacing: 12) {
-+                Image(systemName: reason.symbol)
-+                    .font(.system(size: 26))
-+                    .foregroundStyle(reason.color)
-+                VStack(alignment: .leading, spacing: 3) {
-+                    Text(reason.title)
-+                        .font(.system(size: 15, weight: .semibold))
-+                        .foregroundStyle(DockPalette.text)
-+                    Text(reason.detail)
-+                        .font(.system(size: 12.5))
-+                        .foregroundStyle(DockPalette.text.opacity(0.8))
-+                        .lineLimit(3)
-+                        .fixedSize(horizontal: false, vertical: true)
-+                    Text("Brought to the front because of your setting in Settings → Notifications.")
-+                        .font(.system(size: 11))
-+                        .foregroundStyle(DockPalette.text.opacity(0.55))
-+                }
-+                .frame(width: 380, alignment: .leading)
-+            }
-+            GeometryReader { g in
-+                Capsule().fill(reason.color.opacity(0.85))
-+                    .frame(width: g.size.width * left, height: 3)
-+            }
-+            .frame(height: 3)
-+        }
-+        .padding(16)
-+        .background(RoundedRectangle(cornerRadius: 14).fill(DockPalette.base))
-+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(reason.color, lineWidth: 2))
-+        .environment(\.colorScheme, DockPalette.scheme)
-+        .contentShape(Rectangle())
-+        .onTapGesture(perform: onClose)
-+        .help("Click to close")
-+        .onAppear {
-+            withAnimation(.linear(duration: DockRaiseBanner.seconds)) { left = 0 }
-+        }
 +    }
 +}
 +
@@ -6517,10 +6422,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..bf3b52f
+index 0000000..0d41a2e
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1397 @@
+@@ -0,0 +1,1395 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -7814,7 +7719,7 @@ index 0000000..bf3b52f
 +
 +    /// Un-minimises the window and shows session <sid>'s tab, over other
 +    /// apps: it fades in as it rises into place, slowly enough to see the
-+    /// switch, then a banner says why it came up.
++    /// switch. The heads-up before it already said why.
 +    private func bringToFront(_ sid: String, finished: Bool) {
 +        guard let row = rows.first(where: { $0.sessionId == sid }),
 +              let window = row.controller?.window else { raising = false; return }
@@ -7830,7 +7735,6 @@ index 0000000..bf3b52f
 +        // macOS may refuse to activate an app the user isn't in; this still
 +        // puts the window above the others.
 +        window.orderFrontRegardless()
-+        let reason = raiseReason(row, finished: finished)
 +        NSAnimationContext.runAnimationGroup({ ctx in
 +            ctx.duration = Self.raiseAnimationSecs
 +            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
@@ -7839,7 +7743,6 @@ index 0000000..bf3b52f
 +        }, completionHandler: {
 +            window.alphaValue = 1
 +            if rise { window.setFrame(end, display: true) }
-+            DockRaiseBanner.shared.show(reason, on: window)
 +            self.raising = false
 +        })
 +    }
