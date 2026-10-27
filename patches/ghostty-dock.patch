@@ -10221,10 +10221,10 @@ index 0000000..0af6f7f
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..2df1420
+index 0000000..68e910d
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
-@@ -0,0 +1,389 @@
+@@ -0,0 +1,390 @@
 +import AppKit
 +import Combine
 +
@@ -10420,29 +10420,30 @@ index 0000000..2df1420
 +        let rows = DockSessions.shared.rows
 +        let running = rows.filter { $0.status == .running }.map(\.name)
 +        let waiting = rows.filter { $0.status == .waiting }.map(\.name)
-+        var notes: [String] = []
-+        if !running.isEmpty {
-+            notes.append("Running now, so it waits for them to finish: " + running.joined(separator: ", ") + ".")
-+        }
++        // One paragraph per button, in button order, each named as the button is.
++        var paragraphs = [
++            (restartPending ? "A newer build is installed.\n\n" : "")
++                + "Restart When Quiet: waits until no session is busy and you have not typed for "
++                + "10 seconds, then restarts. Your sessions come back as tabs; plain shell tabs do not."
++                + (running.isEmpty ? "" : " Still running: " + running.joined(separator: ", ") + "."),
++            "Restart Now: restarts straight away"
++                + (running.isEmpty ? "." : ", interrupting " + running.joined(separator: ", ") + "."),
++            "Resume Every Session: restarts each Claude session instead of Ghostty Dock, so they "
++                + "pick up the Claude login you have now. A restart keeps them on the login they "
++                + "started with, so use this after logging in as someone else, or when Remote "
++                + "Control cannot see them.",
++        ]
 +        if !waiting.isEmpty {
-+            notes.append("Waiting on you; the question is dropped and they come back at their prompt: "
-+                         + waiting.joined(separator: ", ") + ".")
++            paragraphs.append("Waiting on you: " + waiting.joined(separator: ", ")
++                + ". Any of these drops the question; they come back at their prompt.")
 +        }
 +        alert.messageText = "Restart Ghostty Dock?"
-+        alert.informativeText = """
-+            \(restartPending ? "A newer build is installed. " : "")Ghostty Dock restarts once no session has been busy \
-+            and you have not typed for 10 seconds (typing starts the count again), and reopens \
-+            each Claude session as a tab with claude --resume (plain shell tabs are not reopened).
-+
-+            Held tabs keep running through a restart, on the Claude login they started with. \
-+            After logging in as someone else, or if Remote Control has gone quiet, use Resume \
-+            Every Session instead.
-+            """ + (notes.isEmpty ? "" : "\n\n" + notes.joined(separator: "\n\n"))
++        alert.informativeText = paragraphs.joined(separator: "\n\n")
 +        alert.addButton(withTitle: "Restart When Quiet")
 +        // Not something to have to click twice for.
 +        alert.addButton(withTitle: running.isEmpty ? "Restart Now" : "Restart Now (Interrupts \(running.count))")
 +        // Held tabs survive the restart on the login they started with.
-+        alert.addButton(withTitle: "Resume Every Session Instead…")
++        alert.addButton(withTitle: "Resume Every Session…")
 +        alert.addButton(withTitle: "Cancel")
 +        let answer = alert.runModalNearPointer()
 +        if answer == .alertSecondButtonReturn { restartNow(); return }
