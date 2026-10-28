@@ -185,9 +185,23 @@ function package_app() {
     clang -O2 -Wall -arch arm64 -arch x86_64 -mmacosx-version-min=13.0 \
         -o "$app/Contents/MacOS/ghostty-dock-hold" "$ROOT/hold/ghostty-dock-hold.c" || exit 1
 
+    # The browser beside the terminal (⌘⇧B): Chromium and its helpers (browser/).
+    "$ROOT/browser/build.sh" || exit 1
+    cp -R "$ROOT/vendor/cef/Release/Chromium Embedded Framework.framework" "$ROOT/build/browser/"*.framework \
+        "$ROOT/build/browser/"*.app "$app/Contents/Frameworks/" || exit 1
+
     source "$ROOT/scripts/sign-id.sh"
     echo "== sign: $DOCK_SIGN_ID"
     codesign --force --deep --options runtime --sign "$DOCK_SIGN_ID" \
+        --entitlements "$SRC/macos/GhosttyReleaseLocal.entitlements" "$app" || exit 1
+    # Chromium's helpers compile JavaScript, which needs entitlements of their
+    # own; the app is sealed again around them.
+    local helper
+    for helper in "$app/Contents/Frameworks/"*Helper*.app; do
+        codesign --force --options runtime --sign "$DOCK_SIGN_ID" \
+            --entitlements "$ROOT/browser/helper.entitlements" "$helper" || exit 1
+    done
+    codesign --force --options runtime --sign "$DOCK_SIGN_ID" \
         --entitlements "$SRC/macos/GhosttyReleaseLocal.entitlements" "$app" || exit 1
     codesign --verify --deep "$app" || exit 1
 }
