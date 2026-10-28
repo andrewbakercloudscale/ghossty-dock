@@ -1,0 +1,195 @@
+#!/usr/bin/env node
+
+// Claude Code's dock-browser tools (install.sh registers them): the browser
+// beside a Ghostty Dock tab, driven by chrome-devtools-mcp over its
+// debugging port. Messages pass straight through. Before a tool call that
+// needs it, `ghostty-dock browser` starts Chromium and gives this tab's
+// browser a page: when there is no page to drive, so Chromium starts only
+// when Claude first uses it, not with every session; and before new_page,
+// so the page opens in this session's tab rather than the window in front.
+//
+// chrome-devtools-mcp talks to Chromium through a relay here, which passes
+// devtools messages on unchanged but one: CEF announces a page it is still
+// making as type "other", "page" only a moment later, and Puppeteer keeps
+// the type a target first had, so it never saw a page opened after it
+// connected, new_page's own included. The relay announces those as pages.
+
+const { spawn, execFileSync } = require('node:child_process');
+const crypto = require('node:crypto');
+const http = require('node:http');
+const os = require('node:os');
+const path = require('node:path');
+
+const MCP = 'chrome-devtools-mcp@1.11.0';
+const BROWSER = '127.0.0.1:9223';
+const DOCK = path.join(os.homedir(), '.local/bin/ghostty-dock');
+const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+
+function usage() {
+  console.log(`
+Claude Code MCP server for Ghostty Dock's browser: ${MCP} on ${BROWSER},
+starting the browser beside this tab on the first tool call.
+
+usage: ghostty-dock-browser-mcp     (run by Claude Code over stdio)
+`);
+  process.exit(0);
+}
+
+// A page CEF is still making: type "other", and no address yet.
+function retype(text) {
+  if (!text.includes('"other"')) return text;
+  let message;
+  try { message = JSON.parse(text); } catch { return text; }
+  const fix = info => { if (info?.type === 'other' && !info.url) info.type = 'page'; };
+  fix(message.params?.targetInfo);
+  fix(message.result?.targetInfo);
+  message.result?.targetInfos?.forEach(fix);
+  return JSON.stringify(message);
+}
+
+// True when Chromium is running and has a page: it may have none, after
+// the user closed the browser's tabs.
+function hasPage() {
+  try {
+    const list = execFileSync('curl', ['-fs', '--max-time', '1', `http://${BROWSER}/json/list`]).toString();
+    return JSON.parse(list).some(target => target.type === 'page');
+  } catch {
+    return false;
+  }
+}
+
+// Errors go to stderr, Claude Code's log for the server; the tool call then
+// fails with chrome-devtools-mcp's own message, which Claude sees.
+function prepare() {
+  try {
+    execFileSync(DOCK, ['browser'], { stdio: ['ignore', 'ignore', 'pipe'], timeout: 20000 });
+  } catch (e) {
+    process.stderr.write(`ghostty-dock browser: ${(e.stderr || e.message).toString().trim()}\n`);
+  }
+}
+
+// One WebSocket frame, server to client: final, unmasked.
+function frame(opcode, data) {
+  const len = data.length;
+  let head;
+  if (len < 126) {
+    head = Buffer.from([0x80 | opcode, len]);
+  } else if (len < 65536) {
+    head = Buffer.alloc(4);
+    head[1] = 126;
+    head.writeUInt16BE(len, 2);
+  } else {
+    head = Buffer.alloc(10);
+    head[1] = 127;
+    head.writeBigUInt64BE(BigInt(len), 2);
+  }
+  head[0] = 0x80 | opcode;
+  return Buffer.concat([head, data]);
+}
+
+// Reads the client's frames from a socket, calling back with each whole
+// text message; answers pings and closes.
+function readFrames(socket, onMessage, onClose) {
+  let pending = Buffer.alloc(0);
+  let parts = [];
+  socket.on('data', chunk => {
+    pending = Buffer.concat([pending, chunk]);
+    for (;;) {
+      if (pending.length < 2) return;
+      const fin = pending[0] & 0x80, opcode = pending[0] & 0x0f, masked = pending[1] & 0x80;
+      let len = pending[1] & 0x7f, at = 2;
+      if (len === 126) {
+        if (pending.length < 4) return;
+        len = pending.readUInt16BE(2);
+        at = 4;
+      } else if (len === 127) {
+        if (pending.length < 10) return;
+        len = Number(pending.readBigUInt64BE(2));
+        at = 10;
+      }
+      const maskAt = at;
+      if (masked) at += 4;
+      if (pending.length < at + len) return;
+      const payload = Buffer.from(pending.subarray(at, at + len));
+      if (masked) for (let i = 0; i < len; i++) payload[i] ^= pending[maskAt + (i & 3)];
+      pending = pending.subarray(at + len);
+      if (opcode === 8) return onClose();
+      if (opcode === 9) { socket.write(frame(10, payload)); continue; }
+      if (opcode === 10) continue;
+      parts.push(payload);
+      if (fin) {
+        onMessage(Buffer.concat(parts).toString());
+        parts = [];
+      }
+    }
+  });
+}
+
+// The relay: Chromium's /json endpoints and its WebSocket, on a port of its
+// own. Resolves to the URL to give chrome-devtools-mcp.
+function startRelay() {
+  const server = http.createServer(async (req, res) => {
+    try {
+      const upstream = await fetch(`http://${BROWSER}${req.url}`);
+      const body = (await upstream.text()).replaceAll(`ws://${BROWSER}`, `ws://127.0.0.1:${server.address().port}`);
+      res.writeHead(upstream.status, { 'content-type': upstream.headers.get('content-type') ?? 'application/json' });
+      res.end(body);
+    } catch (e) {
+      res.writeHead(502);
+      res.end(`the browser is not running: ${e.message}`);
+    }
+  });
+  server.on('upgrade', (req, socket) => {
+    const upstream = new WebSocket(`ws://${BROWSER}${req.url}`);
+    const early = [];
+    let open = false;
+    const close = () => {
+      if (!socket.destroyed) socket.end(frame(8, Buffer.alloc(0)));
+      if (upstream.readyState <= 1) upstream.close();
+    };
+    upstream.onopen = () => {
+      const accept = crypto.createHash('sha1').update(req.headers['sec-websocket-key'] + WS_GUID).digest('base64');
+      socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+      open = true;
+      early.splice(0).forEach(m => upstream.send(m));
+    };
+    upstream.onmessage = event => {
+      if (typeof event.data === 'string') socket.write(frame(1, Buffer.from(retype(event.data))));
+    };
+    upstream.onclose = close;
+    upstream.onerror = () => socket.destroy();
+    readFrames(socket, message => (open ? upstream.send(message) : early.push(message)), close);
+    socket.on('close', close);
+    socket.on('error', close);
+  });
+  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`)));
+}
+
+async function main() {
+  if (process.argv.includes('-h') || process.argv.includes('--help')) usage();
+  const relay = await startRelay();
+  const server = spawn('npx', ['-y', MCP, '--browserUrl', relay], { stdio: ['pipe', 'inherit', 'inherit'] });
+  server.on('error', e => {
+    process.stderr.write(`could not start ${MCP}: ${e.message}\n`);
+    process.exit(1);
+  });
+  server.on('exit', code => process.exit(code ?? 1));
+
+  let pending = '';
+  process.stdin.on('data', chunk => {
+    pending += chunk;
+    let end;
+    while ((end = pending.indexOf('\n')) >= 0) {
+      const line = pending.slice(0, end + 1);
+      pending = pending.slice(end + 1);
+      let message = null;
+      try { message = JSON.parse(line); } catch {}
+      if (message?.method === 'tools/call' && (message.params?.name === 'new_page' || !hasPage())) prepare();
+      server.stdin.write(line);
+    }
+  });
+  process.stdin.on('end', () => server.stdin.end());
+}
+
+if (require.main === module) main();
+module.exports = { retype };
