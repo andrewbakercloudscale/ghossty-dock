@@ -6472,10 +6472,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..95fe05c
+index 0000000..ea51e20
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1528 @@
+@@ -0,0 +1,1553 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -6601,6 +6601,11 @@ index 0000000..95fe05c
 +
 +    /// Only rows in this state, from clicking its counter; nil shows all.
 +    @Published var statusFilter: Status?
++    /// What is typed in the sidebar's search: only rows whose name or
++    /// folder has it, folded groups opened.
++    @Published var query = ""
++    /// ⌘P: the sidebar's search takes the typing.
++    static let focusSearch = Notification.Name("DockFocusSearch")
 +
 +    /// True while the app is starting and its sessions are still coming
 +    /// back, so the window shows Loading… rather than half-filled rows.
@@ -6614,13 +6619,33 @@ index 0000000..95fe05c
 +    /// The rows you can see: not in a folded group, and in the state
 +    /// filtered on.
 +    var visibleRows: [Row] {
-+        groups.filter { !collapsed.contains($0.id) || $0.title.isEmpty }.flatMap { shown($0.items) }
++        groups.filter { !folded($0) }.flatMap { shown($0.items) }
 +    }
 +
-+    /// The rows of a group that pass the state filter.
++    /// Its rows are hidden under its heading; never while searching.
++    func folded(_ group: DockOrdering.Group<Row>) -> Bool {
++        !group.title.isEmpty && collapsed.contains(group.id) && searchTerm.isEmpty
++    }
++
++    private var searchTerm: String { query.trimmingCharacters(in: .whitespaces) }
++
++    /// The rows of a group that pass the state filter and the search.
 +    func shown(_ items: [Row]) -> [Row] {
-+        guard let statusFilter else { return items }
-+        return items.filter { $0.status == statusFilter }
++        let term = searchTerm
++        return items.filter { row in
++            (statusFilter == nil || row.status == statusFilter)
++                && (term.isEmpty || matches(term, row.name, row.detail, row.project ?? ""))
++        }
++    }
++
++    /// Undocked sessions whose name or folder has the search.
++    var shownUndocked: [Undocked] {
++        let term = searchTerm
++        return term.isEmpty ? undocked : undocked.filter { matches(term, $0.name, $0.cwd) }
++    }
++
++    private func matches(_ term: String, _ fields: String...) -> Bool {
++        fields.contains { $0.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
 +    }
 +
 +    /// Filters on this state; again turns the filter off.
@@ -8456,10 +8481,10 @@ index 0000000..33852cd
 +}
 diff --git a/macos/Sources/Features/Dock/DockShortcuts.swift b/macos/Sources/Features/Dock/DockShortcuts.swift
 new file mode 100644
-index 0000000..c119dd3
+index 0000000..aa4116b
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockShortcuts.swift
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,118 @@
 +import AppKit
 +import Carbon
 +
@@ -8503,7 +8528,14 @@ index 0000000..c119dd3
 +                if !model.reopenClosed() { NSSound.beep() }
 +            },
 +            Shortcut(keys: "⌘P", title: "Find a Session", keyCode: kVK_ANSI_P,
-+                     modifiers: .command) { DockSearchPanel.shared.show() },
++                     modifiers: .command) {
++                // The sidebar's search when it shows; the panel without it.
++                if DockSettings.showSidebar {
++                    NotificationCenter.default.post(name: DockSessions.focusSearch, object: NSApp.keyWindow)
++                } else {
++                    DockSearchPanel.shared.show()
++                }
++            },
 +            Shortcut(keys: "⌘⇧A", title: "Show Agents", keyCode: kVK_ANSI_A,
 +                     modifiers: [.command, .shift]) { DockAgentsWindow.shared.show() },
 +            Shortcut(keys: "⌘⇧O", title: "Show Overview", keyCode: kVK_ANSI_O,
@@ -8573,10 +8605,10 @@ index 0000000..c119dd3
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..22b4bac
+index 0000000..2e80603
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1327 @@
+@@ -0,0 +1,1393 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -8638,6 +8670,8 @@ index 0000000..22b4bac
 +    /// The colour of the button the tip is about.
 +    @State private var headerTipColor = DockPalette.blue
 +    @State private var showColours = false
++    @FocusState private var searching: Bool
++    @State private var hostWindow: NSWindow?
 +    private var selectedTag: DockTag? { model.rows.first(where: \.selected)?.tag }
 +    @AppStorage(DockSettings.showSidebarKey) private var show = true
 +    @AppStorage(DockSettings.themeKey) private var themeName = ""
@@ -8668,7 +8702,7 @@ index 0000000..22b4bac
 +                                withAnimation(.easeOut(duration: 0.15)) { model.toggleCollapsed(group.id) }
 +                            }
 +                        }
-+                        if group.title.isEmpty || !model.collapsed.contains(group.id) {
++                        if !model.folded(group) {
 +                            ForEach(model.shown(group.items)) { row in rowView(row) }
 +                        }
 +                    }
@@ -8676,7 +8710,7 @@ index 0000000..22b4bac
 +                    Color.clear.frame(height: 14)
 +                        .overlay(alignment: .top) { dropLine(dropTarget == "") }
 +                        .onDrop(of: [.text], delegate: DockRowDrop(target: nil, hovered: $dropTarget))
-+                    if !model.undocked.isEmpty {
++                    if !model.shownUndocked.isEmpty {
 +                        HStack {
 +                            Text("Undocked").font(.system(size: 11, weight: .semibold)).foregroundStyle(DockPalette.grey)
 +                            Spacer()
@@ -8684,7 +8718,7 @@ index 0000000..22b4bac
 +                        .padding(.horizontal, 8)
 +                        .padding(.top, 12)
 +                        .padding(.bottom, 2)
-+                        ForEach(model.undocked) { u in
++                        ForEach(model.shownUndocked) { u in
 +                            DockUndockedRowView(session: u, onDock: { model.dock(u) })
 +                                .onTapGesture { model.show(u) }
 +                        }
@@ -8848,9 +8882,62 @@ index 0000000..22b4bac
 +        .padding(.bottom, 6)
 +    }
 +
++    /// The counters with the search beside them, or under them when the
++    /// sidebar is too narrow for both.
++    private var counters: some View {
++        ViewThatFits(in: .horizontal) {
++            HStack(spacing: 6) { stateCounters; search.frame(minWidth: 90) }
++            VStack(alignment: .leading, spacing: 5) { stateCounters; search }
++        }
++    }
++
++    /// Type part of a session's name or folder: the rows narrow to it.
++    /// Return goes to the first, Esc clears.
++    private var search: some View {
++        HStack(spacing: 3) {
++            Image(systemName: "magnifyingglass")
++                .font(.system(size: 10, weight: .semibold))
++                .foregroundStyle(searching || !model.query.isEmpty ? DockPalette.blue : DockPalette.grey)
++            TextField("Find", text: $model.query)
++                .textFieldStyle(.plain)
++                .font(.system(size: 11))
++                .focused($searching)
++                .onSubmit {
++                    if let row = model.visibleRows.first {
++                        model.query = ""
++                        model.select(row)
++                    }
++                }
++                .onExitCommand {
++                    model.query = ""
++                    searching = false
++                }
++            if !model.query.isEmpty {
++                Button { model.query = "" } label: {
++                    Image(systemName: "xmark.circle.fill").font(.system(size: 10))
++                        .foregroundStyle(DockPalette.grey)
++                }
++                .buttonStyle(.plain)
++                .help("Clear the search")
++            }
++        }
++        .padding(.horizontal, 6)
++        .padding(.vertical, 2.5)
++        .background(Capsule().fill(DockPalette.base))
++        .overlay(Capsule().strokeBorder(searching ? DockPalette.blue : DockPalette.grey.opacity(0.35),
++                                        lineWidth: searching ? 1.5 : 1))
++        .help("Find a session by name or folder (⌘P)")
++        .onReceive(NotificationCenter.default.publisher(for: DockSessions.focusSearch)) { note in
++            // Only the window you are in; the others keep their terminal's focus.
++            let target = note.object as? NSWindow
++            if target == nil || target === hostWindow { searching = true }
++        }
++        .background(DockWindowReader { if hostWindow !== $0 { hostWindow = $0 } })
++    }
++
 +    /// How many tabs are in each state, in the sidebar's status colours; a
 +    /// state with none is faint.
-+    private var counters: some View {
++    private var stateCounters: some View {
 +        HStack(spacing: 4) {
 +            ForEach([DockSessions.Status.waiting, .running, .unread, .idle, .shell], id: \.self) { status in
 +                let n = model.rows.filter { $0.status == status }.count
@@ -8922,10 +9009,6 @@ index 0000000..22b4bac
 +                    if inside { headerTip = tip; headerTipColor = DockPalette.green }
 +                    else if headerTip == tip { headerTip = nil }
 +                }
-+            }
-+            DockHeaderButton(symbol: "magnifyingglass", color: DockPalette.blue,
-+                             tip: "Find a session (⌘P)", shownTip: $headerTip, tipColor: $headerTipColor) {
-+                DockSearchPanel.shared.show(below: NSEvent.mouseLocation)
 +            }
 +            DockHeaderButton(symbol: "square.grid.2x2.fill", size: 11, color: DockPalette.blue,
 +                             tip: "Overview: every session's screen, answer or reply from one place (⌘⇧O)",
@@ -9902,6 +9985,21 @@ index 0000000..22b4bac
 +        }
 +        .frame(width: 18, height: 18)
 +        .accessibilityLabel(DockPalette.label(status))
++    }
++}
++
++/// Hands back the window a view is in, once it is in one.
++struct DockWindowReader: NSViewRepresentable {
++    var found: (NSWindow?) -> Void
++
++    func makeNSView(context: Context) -> NSView {
++        let v = NSView()
++        DispatchQueue.main.async { found(v.window) }
++        return v
++    }
++
++    func updateNSView(_ v: NSView, context: Context) {
++        DispatchQueue.main.async { if v.window != nil { found(v.window) } }
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockSurfaceError.swift b/macos/Sources/Features/Dock/DockSurfaceError.swift
