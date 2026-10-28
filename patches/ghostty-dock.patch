@@ -4622,12 +4622,27 @@ index 0000000..db9ed48
 +}
 diff --git a/macos/Sources/Features/Dock/DockLoadingView.swift b/macos/Sources/Features/Dock/DockLoadingView.swift
 new file mode 100644
-index 0000000..9400815
+index 0000000..dad1607
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockLoadingView.swift
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,81 @@
 +import AppKit
 +import SwiftUI
++
++/// The Loading… screen over a terminal window while it lasts. Its own view,
++/// so the sidebar's every change doesn't redraw the window's terminals.
++struct DockLoadingOverlay: View {
++    @ObservedObject private var model = DockSessions.shared
++
++    var body: some View {
++        ZStack {
++            if model.loading {
++                DockLoadingView().transition(.opacity)
++            }
++        }
++        .animation(.easeOut(duration: 0.4), value: model.loading)
++    }
++}
 +
 +/// Covers the window while the app starts and its sessions come back:
 +/// the app icon in a turning gold ring, Loading… and how many are back.
@@ -8628,10 +8643,10 @@ index 0000000..aa4116b
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..2e80603
+index 0000000..d6c5053
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1393 @@
+@@ -0,0 +1,1422 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -10025,6 +10040,35 @@ index 0000000..2e80603
 +        DispatchQueue.main.async { if v.window != nil { found(v.window) } }
 +    }
 +}
++
++/// The sidebar in a hosting view of its own. In line, every change to the
++/// terminal beside it (typing, its title, focus) laid the whole sidebar out
++/// again, and every sidebar change redrew the terminal, in every window.
++struct DockSidebarHost: View {
++    var onNewTab: () -> Void
++    @AppStorage(DockSettings.showSidebarKey) private var show = true
++    @AppStorage(DockSettings.sidebarWidthKey) private var width = Double(DockSidebarView.width)
++
++    var body: some View {
++        if show {
++            Hosted(onNewTab: onNewTab)
++                .frame(width: CGFloat(width.clamped(to: DockSidebarView.widthRange)))
++                .frame(maxHeight: .infinity)
++        }
++    }
++
++    private struct Hosted: NSViewRepresentable {
++        var onNewTab: () -> Void
++
++        func makeNSView(context: Context) -> NSHostingView<DockSidebarView> {
++            let view = NSHostingView(rootView: DockSidebarView(onNewTab: onNewTab))
++            view.sizingOptions = []
++            return view
++        }
++
++        func updateNSView(_ view: NSHostingView<DockSidebarView>, context: Context) {}
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockSurfaceError.swift b/macos/Sources/Features/Dock/DockSurfaceError.swift
 new file mode 100644
 index 0000000..f0b8d41
@@ -11079,31 +11123,21 @@ index aab51f6..b96bbf4 100644
              return
          }
 diff --git a/macos/Sources/Features/Terminal/TerminalView.swift b/macos/Sources/Features/Terminal/TerminalView.swift
-index b6e1c63..386c856 100644
+index b6e1c63..1d20e4d 100644
 --- a/macos/Sources/Features/Terminal/TerminalView.swift
 +++ b/macos/Sources/Features/Terminal/TerminalView.swift
-@@ -44,6 +44,9 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
-     // The required view model
-     @ObservedObject var viewModel: ViewModel
- 
-+    /// For the Loading… screen while sessions come back at startup.
-+    @ObservedObject private var dock = DockSessions.shared
-+
-     // An optional delegate to receive information about terminal changes.
-     weak var delegate: (any TerminalViewDelegate)?
- 
-@@ -79,6 +82,10 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
+@@ -79,6 +79,10 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                          DebugBuildWarningView()
                      }
  
 +                    HStack(spacing: 0) {
-+                    DockSidebarView(onNewTab: {
++                    DockSidebarHost(onNewTab: {
 +                        NSApp.sendAction(#selector(TerminalController.newTab(_:)), to: nil, from: nil)
 +                    })
                      TerminalSplitTreeView(
                          tree: viewModel.surfaceTree,
                          action: { delegate?.performSplitAction($0) })
-@@ -103,6 +110,7 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
+@@ -103,6 +107,7 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                          }
                          .frame(idealWidth: lastFocusedSurface?.value?.initialSize?.width,
                                 idealHeight: lastFocusedSurface?.value?.initialSize?.height)
@@ -11111,24 +11145,15 @@ index b6e1c63..386c856 100644
                  }
                  // Ignore safe area to extend up in to the titlebar region if we have the "hidden" titlebar style
                  .ignoresSafeArea(.container, edges: ghostty.config.macosTitlebarStyle == .hidden ? .top : [])
-@@ -117,12 +125,17 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
+@@ -117,6 +122,8 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                      }
                  }
  
-+                if dock.loading {
-+                    DockLoadingView().transition(.opacity)
-+                }
++                DockLoadingOverlay()
 +
                  // Show update information above all else.
                  if viewModel.updateOverlayIsVisible {
                      UpdateOverlay()
-                 }
-             }
-             .frame(maxWidth: .greatestFiniteMagnitude, maxHeight: .greatestFiniteMagnitude)
-+            .animation(.easeOut(duration: 0.4), value: dock.loading)
-         }
-     }
- }
 diff --git a/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift b/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift
 index e19d671..fbe4025 100644
 --- a/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift	
