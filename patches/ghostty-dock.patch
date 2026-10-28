@@ -6472,10 +6472,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..ea51e20
+index 0000000..0ceac12
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1553 @@
+@@ -0,0 +1,1576 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -6731,6 +6731,12 @@ index 0000000..ea51e20
 +    /// before Claude answers writes nothing to the transcript, so only the
 +    /// screen shows it stopped.
 +    private var spinnerGone: [String: (since: Int, count: Int)] = [:]
++    /// Sessions the hook last said were done, by id: a Stop hook that
++    /// blocks (one telling Claude to commit first) sends it back to work
++    /// with no new hook until its next tool call.
++    private var done: Set<String> = []
++    /// Of those, the ones whose screen shows it working again: running.
++    private var resumed: Set<String> = []
 +
 +    private init() {
 +        seen = (try? JSONDecoder().decode([String: Int].self,
@@ -7123,6 +7129,16 @@ index 0000000..ea51e20
 +        let files = rows.compactMap { r in r.sessionId.flatMap { transcript($0) } }
 +        let busyFiles = busy.compactMap { sid, since in transcript(sid).map { (sid, $0, since) } }
 +        let quietScreens = checkSpinners()
++        let working = Set(rows.compactMap { row -> String? in
++            guard let sid = row.sessionId, done.contains(sid),
++                  let view = row.controller.flatMap({ $0.focusedSurface ?? $0.surfaceTree.first }),
++                  Self.working(view.cachedVisibleContents.get()) else { return nil }
++            return sid
++        })
++        if working != resumed {
++            resumed = working
++            refresh()
++        }
 +        costQueue.async { [weak self] in
 +            guard let self else { return }
 +            let stopped = Set(busyFiles.filter { self.checkInterrupted($0.1, since: $0.2) }.map(\.0))
@@ -7193,9 +7209,13 @@ index 0000000..ea51e20
 +    /// The timer Claude Code shows while it works, "✻ Burrowing… (8m 37s ·
 +    /// ↓ 9.4k tokens)", or its hints then: "esc to interrupt", and "ctrl+b
 +    /// to run in background" in place of it while a command runs.
++    /// Only the screen's last lines, where they are: the same words higher
++    /// up are old output or a reply quoting them.
 +    static func working(_ screen: String) -> Bool {
-+        screen.contains("esc to interrupt") || screen.contains("to run in background")
-+            || screen.range(of: #"… \(\d+[hms]"#, options: .regularExpression) != nil
++        let tail = screen.split(separator: "\n").filter { $0.contains { !$0.isWhitespace } }
++            .suffix(20).joined(separator: "\n")
++        return tail.contains("esc to interrupt") || tail.contains("to run in background")
++            || tail.range(of: #"… \(\d+[hms]"#, options: .regularExpression) != nil
 +    }
 +
 +    /// The transcript's last turn is over, after the hook last said busy (a
@@ -7315,7 +7335,8 @@ index 0000000..ea51e20
 +        let liveSids = Set(sessions.values.compactMap { $0.session_id }.filter { !$0.isEmpty })
 +        var built: [Row] = []
 +        var busyNow: [String: Int] = [:]
-+        defer { busy = busyNow }
++        var doneNow: Set<String> = []
++        defer { busy = busyNow; done = doneNow }
 +        for controller in TerminalController.all {
 +            guard let window = controller.window else { continue }
 +            let id = ObjectIdentifier(controller)
@@ -7333,8 +7354,10 @@ index 0000000..ea51e20
 +                var status: Status
 +                let sid = s.session_id.flatMap { $0.isEmpty ? nil : $0 }
 +                if let sid, s.status == "running" || s.status == "waiting" { busyNow[sid] = s.since }
++                if let sid, s.status == "done" { doneNow.insert(sid) }
 +                switch s.status {
 +                case _ where sid.map(interrupted.contains) == true: status = .idle
++                case "done" where sid.map(resumed.contains) == true: status = .running
 +                case "running": status = .running
 +                case "waiting": status = .waiting
 +                case "done": status = (seen[key] ?? 0) >= s.since ? .idle : .unread
