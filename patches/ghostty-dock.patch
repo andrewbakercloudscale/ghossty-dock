@@ -6472,10 +6472,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..71ba4c5
+index 0000000..95fe05c
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1486 @@
+@@ -0,0 +1,1528 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -6526,6 +6526,8 @@ index 0000000..71ba4c5
 +        var failed = false
 +        /// The claude process, for the ports it listens on.
 +        var pid: Int32?
++        /// A child terminal's parent row: it is listed just under it.
++        var parent: String?
 +        weak var controller: TerminalController?
 +
 +        static func == (a: Row, b: Row) -> Bool {
@@ -6534,7 +6536,7 @@ index 0000000..71ba4c5
 +                && a.started == b.started && a.project == b.project && a.prompt == b.prompt
 +                && a.ask == b.ask && a.askSurface == b.askSurface
 +                && a.pinned == b.pinned && a.tag == b.tag && a.hatch == b.hatch && a.renamed == b.renamed
-+                && a.failed == b.failed && a.pid == b.pid
++                && a.failed == b.failed && a.pid == b.pid && a.parent == b.parent
 +        }
 +    }
 +
@@ -6660,6 +6662,9 @@ index 0000000..71ba4c5
 +    private var timer: Timer?
 +    /// Tabs whose session was undocked: closed once claude has left them.
 +    private var closeWhenEmpty: [ObjectIdentifier: Date] = [:]
++    /// Child terminals (a plain shell opened from a session's menu), and the
++    /// key of the row each sits under.
++    private var children: [ObjectIdentifier: String] = [:]
 +    private var moveTimer: Timer?
 +    private var watcher: DispatchSourceFileSystemObject?
 +    private var jumpKey: DockHotKey?
@@ -7366,6 +7371,7 @@ index 0000000..71ba4c5
 +                             renamed: m?.name != nil,
 +                             failed: failed,
 +                             pid: best?.pid,
++                             parent: children[id],
 +                             controller: controller))
 +        }
 +        order.removeAll { id in !built.contains { $0.id == id } }
@@ -7406,6 +7412,8 @@ index 0000000..71ba4c5
 +                                           folder: { $0.project.flatMap(DockOrdering.folder(ofProject:)) },
 +                                           tag: \.tag)
 +        for i in grouped.indices { if let name = groupNames[grouped[i].id] { grouped[i].title = name } }
++        children = children.filter { id, _ in built.contains { $0.id == id } }
++        grouped = Self.underParents(grouped)
 +        let flat = grouped.flatMap(\.items)
 +        noticeClosed(flat)
 +        notify(flat, appActive: appActive)
@@ -7530,6 +7538,40 @@ index 0000000..71ba4c5
 +        else { return nil }
 +        let root = out.text.trimmingCharacters(in: .whitespacesAndNewlines)
 +        return root.isEmpty ? nil : root
++    }
++
++    /// Moves each child terminal to just under its parent, whatever the sort
++    /// or grouping put it; one whose parent has gone stays where it is.
++    static func underParents(_ groups: [DockOrdering.Group<Row>]) -> [DockOrdering.Group<Row>] {
++        let all = groups.flatMap(\.items)
++        let keys = Set(all.filter { $0.parent == nil }.map(\.key))
++        let kids = all.filter { $0.parent.map(keys.contains) ?? false }
++        guard !kids.isEmpty else { return groups }
++        var out = groups
++        for g in out.indices { out[g].items.removeAll { kid in kids.contains { $0.id == kid.id } } }
++        for kid in kids {
++            for g in out.indices {
++                if let at = out[g].items.lastIndex(where: { $0.key == kid.parent || $0.parent == kid.parent }) {
++                    out[g].items.insert(kid, at: at + 1)
++                    break
++                }
++            }
++        }
++        return out.filter { !$0.items.isEmpty }
++    }
++
++    /// A plain terminal in the session's folder, in a tab listed under it:
++    /// for what you must type yourself (sudo, a password). `exit` closes it.
++    func childTerminal(_ row: Row) {
++        let folder = row.project ?? row.detail
++        guard let window = row.controller?.window,
++              let ghostty = (NSApp.delegate as? AppDelegate)?.ghostty else { NSSound.beep(); return }
++        var config = Ghostty.SurfaceConfiguration()
++        if !folder.isEmpty { config.workingDirectory = folder }
++        guard let child = TerminalController.newTab(ghostty, from: window, withBaseConfig: config) else { return }
++        // A child of a child goes under the same parent.
++        children[ObjectIdentifier(child)] = row.parent ?? row.key
++        refresh()
 +    }
 +
 +    /// A new session on its own copy of the repo (claude --worktree): its
@@ -8531,10 +8573,10 @@ index 0000000..c119dd3
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..e2db8cd
+index 0000000..22b4bac
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1320 @@
+@@ -0,0 +1,1327 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -8698,6 +8740,8 @@ index 0000000..e2db8cd
 +                    onClose: { model.closeTab(row) },
 +                    onUndock: { model.undock(row) },
 +                    onRestart: { model.restart(row) })
++            // A child terminal is indented under its session.
++            .padding(.leading, row.parent != nil ? 20 : 0)
 +            .onTapGesture { model.select(row) }
 +            // Raised: a little larger and lifted, drawn above its neighbours.
 +            .scaleEffect(row.selected ? 1.025 : 1)
@@ -9159,6 +9203,10 @@ index 0000000..e2db8cd
 +            DockStatusDot(status: row.status).id(row.status)
 +            VStack(alignment: .leading, spacing: 1) {
 +                HStack(spacing: 4) {
++                    if row.parent != nil {
++                        Image(systemName: "apple.terminal").font(.system(size: 10))
++                            .foregroundStyle(DockPalette.text.opacity(0.8))
++                    }
 +                    if row.pinned {
 +                        Image(systemName: "pin.fill").font(.system(size: 8.5, weight: .bold))
 +                            .foregroundStyle(DockPalette.text)
@@ -9332,6 +9380,7 @@ index 0000000..e2db8cd
 +            }
 +            Button("View Diff") { viewDiff() }.disabled(folder.isEmpty)
 +            Button("New Session in a Worktree…") { model.newWorktreeSession(row) }.disabled(folder.isEmpty)
++            Button("Child Terminal Here…") { model.childTerminal(row) }
 +            Button("Move Up") { model.move(row, by: -1) }
 +                .disabled(model.visibleRows.first?.key == row.key)
 +            Button("Move Down") { model.move(row, by: 1) }
