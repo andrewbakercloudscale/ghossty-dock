@@ -278,15 +278,38 @@ to run commands.
 | ⌘⇧O | Overview: every session on one screen |
 | ⌘⇧Y | Daily recap |
 | ⌘⇧T | Reopen the last closed session |
+| ⌘⇧B | Show or hide this tab's browser |
 
 While the sidebar is hidden, ⌘1–9 and the next/previous keys are Ghostty's
 own again (tab order). Everything else in Ghostty (⌘T, ⌘W, splits) is unchanged.
+Double-clicking the title bar zooms the window; ⌥-double-click a tab to rename
+it, or use its right-click menu.
 
 **In Finder:** right-click a folder → **Quick Actions** → **Launch Claude Code
 in Ghostty** or **Continue last Claude Code session in Ghostty** opens it as a
 tab. `install.sh` adds both if they are missing. Settings → Shortcuts → In
 Finder gives each a key (**Add Shortcut**, **Remove Shortcut**), with a picture
 of the menu.
+
+## Browser
+
+⌘⇧B opens a Chromium browser beside the tab's terminal, for watching the app
+a session is building. Each terminal tab has its own, with tabs of its own:
+**+** for a new one, × on a tab to close it, and links that open a new tab or
+window open as one. Drag its left edge to resize it.
+
+⌘⇧B again hides it, and its pages keep running out of sight. The × at the end
+of the address bar closes the browser and all its tabs. Chromium starts the
+first time a browser opens, and its shared helpers run until Ghostty Dock
+quits.
+
+Claude Code can drive it over its debugging port, `127.0.0.1:9223` (not
+Chrome's usual 9222, which a Chrome of your own may hold):
+`chrome-devtools-mcp --browserUrl http://127.0.0.1:9223`. Clicks and
+screenshots work on tabs you are not looking at, and while the browser is
+hidden. A page Claude opens (`new_page`) appears as a tab; one it closes
+loses only its tab. Pages never take the keyboard from the terminal when
+they load: only clicking in a page does.
 
 ## Command line and scripting
 
