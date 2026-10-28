@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
-# Installs Ghostty Dock: the opener and the Claude Code hook into
-# ~/.local/bin, the hook into ~/.claude/settings.json, the "Launch ... in
+# Installs Ghostty Dock: the opener and the Claude Code hooks into
+# ~/.local/bin, the hooks into ~/.claude/settings.json, the dock-browser
+# tools (the browser beside a tab) for every Claude Code, the "Launch ... in
 # Ghostty" Finder Quick Actions added if missing and switched to open tabs,
 # and the app (Ghostty
 # with the session sidebar built in, scripts/build-terminal.sh) into
@@ -18,6 +19,8 @@ AGENT_LABEL="consulting.cloudscale.ghosttydock"
 AGENT_PLIST="$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
 APP="$HOME/Applications/Ghostty Dock.app"
 HOOK_EVENTS=(SessionStart UserPromptSubmit PreToolUse PostToolUse Notification Stop SessionEnd)
+# Claude Code's tools for the browser beside a tab (bin/ghostty-dock-browser-mcp).
+MCP_NAME="dock-browser"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -72,8 +75,9 @@ function main() {
 
     print_step 1 4 "Scripts into $BIN_DIR"
     install_scripts || exit 1
-    print_step 2 4 "Claude Code hooks in $SETTINGS"
+    print_step 2 4 "Claude Code hooks in $SETTINGS, browser tools"
     install_hooks || exit 1
+    install_browser_tools
     print_step 3 4 "Finder Quick Actions open tabs"
     add_quick_actions || exit 1
     switch_quick_actions || exit 1
@@ -97,14 +101,14 @@ function main() {
 function install_scripts() {
     mkdir -p "$BIN_DIR" || return 1
     local f
-    for f in ghostty-dock ghostty-dock-open ghostty-dock-hook; do
+    for f in ghostty-dock ghostty-dock-open ghostty-dock-hook ghostty-dock-context ghostty-dock-browser-mcp; do
         install -m 0755 "$ROOT/bin/$f" "$BIN_DIR/$f" || { print_error "could not install $f"; return 1; }
     done
     install -m 0755 "$ROOT/scripts/move-to-dock.sh" "$BIN_DIR/ghostty-dock-move" ||
         { print_error "could not install ghostty-dock-move"; return 1; }
     install -m 0755 "$ROOT/scripts/restart-dock.sh" "$BIN_DIR/ghostty-dock-restart" ||
         { print_error "could not install ghostty-dock-restart"; return 1; }
-    print_success "ghostty-dock, ghostty-dock-open, ghostty-dock-hook, ghostty-dock-move, ghostty-dock-restart"
+    print_success "ghostty-dock, ghostty-dock-open, ghostty-dock-hook, ghostty-dock-context, ghostty-dock-browser-mcp, ghostty-dock-move, ghostty-dock-restart"
 }
 
 function install_hooks() {
@@ -119,26 +123,51 @@ function install_hooks() {
     mkdir -p "$(dirname "$backup")" && cp "$SETTINGS" "$backup" || return 1
 
     local cmd="$BIN_DIR/ghostty-dock-hook"
+    local context="$BIN_DIR/ghostty-dock-context"
     local events_json
     events_json=$(printf '%s\n' "${HOOK_EVENTS[@]}" | jq -R . | jq -s .)
     local tmp="$SETTINGS.ghostty-dock.tmp"
     # PreToolUse only matters for questions; every other tool call is already
     # "running" from the prompt, and PostToolUse clears a question once answered.
-    jq --arg cmd "$cmd" --argjson events "$events_json" '
-        def mine: any(.hooks[]?; (.command // "") | contains("ghostty-dock-hook"));
+    # SessionStart also tells a session in a dock tab about the browser.
+    jq --arg cmd "$cmd" --arg context "$context" --argjson events "$events_json" '
+        def has($name): any(.hooks[]?; (.command // "") | contains($name));
         reduce $events[] as $ev (.;
             .hooks[$ev] = ((.hooks[$ev] // []) as $list
-                | if any($list[]; mine) then $list
+                | if any($list[]; has("ghostty-dock-hook")) then $list
                   else $list + [{
                       matcher: (if $ev == "PreToolUse" then "AskUserQuestion|ExitPlanMode" else "" end),
                       hooks: [{type: "command", command: $cmd, timeout: 5}]
                   }] end))
+        | .hooks.SessionStart = ((.hooks.SessionStart // []) as $list
+            | if any($list[]; has("ghostty-dock-context")) then $list
+              else $list + [{matcher: "", hooks: [{type: "command", command: $context, timeout: 5}]}] end)
     ' "$SETTINGS" >"$tmp" && jq -e . "$tmp" >/dev/null && mv -f "$tmp" "$SETTINGS" || {
         rm -f "$tmp"
         print_error "could not update $SETTINGS (backup: $backup)"
         return 1
     }
     print_success "hooked ${HOOK_EVENTS[*]} (backup: $backup)"
+}
+
+# The dock-browser MCP server, for every Claude Code of this user: the
+# browser beside a tab. Only a warning when it cannot be added, since the
+# rest of the dock works without it.
+function install_browser_tools() {
+    if ! command -v claude >/dev/null 2>&1; then
+        print_warning "claude is not on PATH: add the browser tools with claude mcp add --scope user $MCP_NAME -- $BIN_DIR/ghostty-dock-browser-mcp"
+        return 0
+    fi
+    command -v node >/dev/null 2>&1 || print_warning "the browser tools need Node.js (node and npx)"
+    if claude mcp get "$MCP_NAME" >/dev/null 2>&1; then
+        print_success "browser tools: $MCP_NAME already added"
+        return 0
+    fi
+    if claude mcp add --scope user "$MCP_NAME" -- "$BIN_DIR/ghostty-dock-browser-mcp" >/dev/null 2>&1; then
+        print_success "browser tools: $MCP_NAME added for every Claude Code session"
+    else
+        print_warning "could not add the browser tools: claude mcp add --scope user $MCP_NAME -- $BIN_DIR/ghostty-dock-browser-mcp"
+    fi
 }
 
 # Adds the two Quick Actions Settings → Shortcuts → In Finder gives keys
@@ -223,12 +252,14 @@ function uninstall_all() {
     rm -f "$AGENT_PLIST"
     pkill -x GhosttyDock 2>/dev/null
     rm -rf "$APP"
-    rm -f "$BIN_DIR/ghostty-dock" "$BIN_DIR/ghostty-dock-open" "$BIN_DIR/ghostty-dock-hook" "$BIN_DIR/ghostty-dock-move" "$BIN_DIR/ghostty-dock-restart"
+    rm -f "$BIN_DIR/ghostty-dock" "$BIN_DIR/ghostty-dock-open" "$BIN_DIR/ghostty-dock-hook" "$BIN_DIR/ghostty-dock-move" "$BIN_DIR/ghostty-dock-restart" \
+        "$BIN_DIR/ghostty-dock-context" "$BIN_DIR/ghostty-dock-browser-mcp"
+    command -v claude >/dev/null 2>&1 && claude mcp remove --scope user "$MCP_NAME" >/dev/null 2>&1
     if [ -f "$SETTINGS" ] && jq -e . "$SETTINGS" >/dev/null 2>&1; then
         local tmp="$SETTINGS.ghostty-dock.tmp"
         jq '
             if .hooks then .hooks |= with_entries(
-                .value |= (map(.hooks |= map(select((.command // "") | contains("ghostty-dock-hook") | not)))
+                .value |= (map(.hooks |= map(select((.command // "") | test("ghostty-dock-(hook|context)") | not)))
                            | map(select(.hooks | length > 0))))
             else . end
         ' "$SETTINGS" >"$tmp" && mv -f "$tmp" "$SETTINGS"

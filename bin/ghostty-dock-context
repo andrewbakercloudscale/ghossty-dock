@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+
+# Claude Code SessionStart hook: tells a session started in a Ghostty Dock
+# tab about the browser beside it and its dock-browser tools. Prints the
+# note as the hook's additional context; anywhere else it prints nothing.
+# Always exits 0, so it never gets in a session's way.
+
+SCRIPT_NAME=$(basename "$0")
+BIN_DIR="${GHOSTTY_DOCK_BIN:-$HOME/.local/bin}"
+
+function usage() {
+    cat <<EOM
+
+Claude Code SessionStart hook for Ghostty Dock: in a Ghostty Dock tab with
+the dock-browser tools installed, tells the session about the browser.
+
+usage: ${SCRIPT_NAME} < hook.json
+
+environment:
+    GHOSTTY_DOCK_SURFACE   set by Ghostty Dock on every terminal it runs
+    GHOSTTY_DOCK_HOLD      set by ghostty-dock-hold on the program it holds
+    GHOSTTY_DOCK_BIN       where the dock's commands are (default ~/.local/bin)
+    GHOSTTY_DOCK_TEST_APP  the Ghostty this runs under, skips the process walk (tests)
+
+EOM
+    exit 1
+}
+
+# True inside a Ghostty Dock tab: held by its holder, or in a terminal of
+# the app itself. A stock Ghostty started from a dock tab inherits the ids.
+function in_dock() {
+    [ -n "${GHOSTTY_DOCK_HOLD:-}" ] && return 0
+    [ -n "${GHOSTTY_DOCK_SURFACE:-}" ] || return 1
+    if [ -n "${GHOSTTY_DOCK_TEST_APP:-}" ]; then
+        [[ "$GHOSTTY_DOCK_TEST_APP" == *"Ghostty Dock.app"* ]]
+        return
+    fi
+    local pid="$PPID" hops comm
+    for ((hops = 0; pid > 1 && hops < 40; hops++)); do
+        comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
+        if [ "${comm##*/}" = "ghostty" ]; then
+            [[ "$comm" == *"Ghostty Dock.app"* ]]
+            return
+        fi
+        pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    done
+    return 1
+}
+
+function note() {
+    cat <<'EOM'
+This session runs in a Ghostty Dock terminal tab, and beside it is a Chromium browser the user can see: use it to load, click through and take screenshots of the web apps you work on.
+- Drive it with the dock-browser MCP tools (mcp__dock-browser__*). They start the browser when first used, and work while it is hidden. It is not the user's own Chrome: do not use 127.0.0.1:9222.
+- Pages you open with new_page appear as tabs in this terminal tab's browser. list_pages also shows pages of other terminal tabs' browsers: use the ones you opened or were asked about.
+- Opening a page never takes the user's keyboard. The user shows or hides the browser with ⌘⇧B; `ghostty-dock browser --show` opens it for them to watch.
+EOM
+}
+
+function main() {
+    case "${1:-}" in
+    -h | --help) usage ;;
+    esac
+    cat >/dev/null
+    command -v jq >/dev/null 2>&1 || exit 0
+    [ -x "$BIN_DIR/ghostty-dock-browser-mcp" ] || exit 0
+    in_dock || exit 0
+    jq -nc --arg note "$(note)" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $note}}'
+    exit 0
+}
+
+main "$@"

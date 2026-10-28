@@ -303,13 +303,22 @@ of the address bar closes the browser and all its tabs. Chromium starts the
 first time a browser opens, and its shared helpers run until Ghostty Dock
 quits.
 
-Claude Code can drive it over its debugging port, `127.0.0.1:9223` (not
-Chrome's usual 9222, which a Chrome of your own may hold):
-`chrome-devtools-mcp --browserUrl http://127.0.0.1:9223`. Clicks and
-screenshots work on tabs you are not looking at, and while the browser is
-hidden. A page Claude opens (`new_page`) appears as a tab; one it closes
-loses only its tab. Pages never take the keyboard from the terminal when
-they load: only clicking in a page does.
+Every Claude Code session in a Ghostty Dock tab knows it is there and can
+drive it. `install.sh` adds the **dock-browser** tools for every Claude Code
+(`claude mcp add --scope user dock-browser`), which run `chrome-devtools-mcp`
+against the browser's debugging port, `127.0.0.1:9223` (not Chrome's usual
+9222, which a Chrome of your own may hold). They start the browser beside
+the session's tab the first time Claude uses them, so a session that never
+needs a browser does not start one. And a `SessionStart` hook
+(`ghostty-dock-context`) tells each session in a dock tab about the browser
+and its tools; elsewhere it says nothing. They need Node.js.
+
+Clicks and screenshots work on tabs you are not looking at, and while the
+browser is hidden. A page Claude opens (`new_page`) appears as a tab in its
+own terminal tab's browser; one it closes loses only its tab. Pages never
+take the keyboard from the terminal when they load: only clicking in a page
+does. Claude sees the pages of every terminal tab's browser on the one port,
+and is told to keep to its own.
 
 ## Command line and scripting
 
@@ -324,6 +333,7 @@ ghostty-dock read aws-cli --lines 20              # what is on its screen
 ghostty-dock wait aws-cli 'passed|failed' --timeout 600
 ghostty-dock notify "Deploy done" "prod is on 1.4.2"
 ghostty-dock open ~/code/repo --command claude    # a new tab
+ghostty-dock browser --show                       # start this tab's browser and show it
 ```
 
 A session is named by its session id, its name in the sidebar, its folder or
@@ -436,10 +446,11 @@ type a password if asked.
 ## Tests
 
     bash tests/hook-test.sh                          # the Claude Code hook
+    bash tests/browser-tools-test.sh                 # the browser note and dock-browser tools
     swift test --package-path tests/dock-logic       # sidebar order, groups, cost (after a build)
     bash tests/patch-test.sh --latest                # the patch still applies to Ghostty
 
-GitHub Actions runs all three on every push, and the patch check every Monday
+GitHub Actions runs them all on every push, and the patch check every Monday
 against the newest Ghostty release.
 
 ## When sessions don't come back

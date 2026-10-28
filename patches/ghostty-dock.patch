@@ -180,17 +180,17 @@ index ade9bf3..0556a38 100644
  // rest of the app.
 diff --git a/macos/Sources/Features/Dock/DockAPI.swift b/macos/Sources/Features/Dock/DockAPI.swift
 new file mode 100644
-index 0000000..098a66e
+index 0000000..5e33c6c
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAPI.swift
-@@ -0,0 +1,179 @@
+@@ -0,0 +1,182 @@
 +import AppKit
 +
 +/// The app's side of the `ghostty-dock` command: requests are JSON files
 +/// dropped in ~/.local/state/ghostty-dock/api (a folder only you can open),
 +/// answered with a file next to them.
 +///
-+/// Request:  req-<id>.json  {"op": "list" | "focus" | "send" | "keys" | "read" | "notify", ...}
++/// Request:  req-<id>.json  {"op": "list" | "focus" | "send" | "keys" | "read" | "notify" | "browser", ...}
 +/// Answer:   res-<id>.json  {"ok": true, ...} or {"ok": false, "error": "..."}
 +@MainActor
 +final class DockAPI {
@@ -264,6 +264,9 @@ index 0000000..098a66e
 +                                   source: .script)
 +            model.postExternal(title: title, body: body)
 +            return ["ok": true]
++        }
++        if op == "browser" {
++            return DockBrowser.prepare(surface: r["surface"] as? String, show: r["show"] as? Bool == true)
 +        }
 +        guard let target = r["target"] as? String, !target.isEmpty else {
 +            return ["ok": false, "error": "say which session: a name, a session id or a folder"]
@@ -3188,10 +3191,10 @@ index 0000000..3725d37
 +}
 diff --git a/macos/Sources/Features/Dock/DockBrowser.swift b/macos/Sources/Features/Dock/DockBrowser.swift
 new file mode 100644
-index 0000000..3189894
+index 0000000..8eb5b23
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockBrowser.swift
-@@ -0,0 +1,458 @@
+@@ -0,0 +1,489 @@
 +import AppKit
 +import SwiftUI
 +
@@ -3217,6 +3220,10 @@ index 0000000..3189894
 +
 +    private static var newView: NewView?
 +    private static var models: [ObjectIdentifier: DockBrowserModel] = [:]
++    /// The terminal tab whose Claude asked for the browser last (and when):
++    /// a page it opens next, with new_page, goes to that tab's browser.
++    private static var asker: (owner: TerminalController, at: Date)?
++    private static let askerSecs: TimeInterval = 30
 +
 +    private static var frameworks: String { Bundle.main.privateFrameworksPath ?? "" }
 +
@@ -3242,6 +3249,24 @@ index 0000000..3189894
 +            return
 +        }
 +        model(for: controller).toggle()
++    }
++
++    /// `ghostty-dock browser`, as Claude's dock-browser tools run it: Chromium
++    /// started, and a page in the browser of the terminal tab holding
++    /// `surface` (else the key window's), shown only if asked.
++    static func prepare(surface: String?, show: Bool) -> [String: Any] {
++        let key = NSApp.keyWindow?.windowController as? TerminalController
++        guard let owner = controller(holding: surface) ?? key ?? TerminalController.all.first else {
++            return ["ok": false, "error": "no terminal window is open"]
++        }
++        guard model(for: owner).prepare(show: show) else { return ["ok": false, "error": "the browser did not start"] }
++        asker = (owner, Date())
++        return ["ok": true, "url": "http://127.0.0.1:\(port)"]
++    }
++
++    private static func controller(holding surface: String?) -> TerminalController? {
++        guard let surface, !surface.isEmpty else { return nil }
++        return TerminalController.all.first { c in c.surfaceTree.contains { $0.id.uuidString == surface } }
 +    }
 +
 +    /// A new browser view, Chromium started first if it is not yet.
@@ -3285,9 +3310,11 @@ index 0000000..3189894
 +    }
 +
 +    /// A page Chromium opened itself (Claude's new_page) becomes the front
-+    /// tab of the key window's browser, open or hidden as that browser is.
++    /// tab of the asking Claude's browser, else the key window's, open or
++    /// hidden as that browser is.
 +    private static func adopt(_ view: NSView, url: String) {
-+        let key: AnyObject? = NSApp.keyWindow?.windowController as? TerminalController
++        let recent = asker.flatMap { Date().timeIntervalSince($0.at) < askerSecs ? $0.owner : nil }
++        let key: AnyObject? = recent ?? NSApp.keyWindow?.windowController as? TerminalController
 +        guard let owner = key ?? models.values.first(where: { !$0.tabs.isEmpty })?.owner
 +                ?? TerminalController.all.first else { return }
 +        model(for: owner).adopt(view, url: url)
@@ -3344,12 +3371,19 @@ index 0000000..3189894
 +    }
 +
 +    func toggle() {
-+        if open { hide(); return }
++        if open { hide() } else { prepare(show: true) }
++    }
++
++    /// A page ready, at the last address when there is none yet; open too
++    /// if `show`. False when Chromium did not start.
++    @discardableResult
++    fileprivate func prepare(show: Bool) -> Bool {
 +        if tabs.isEmpty {
 +            let start = UserDefaults.standard.string(forKey: DockBrowser.lastAddressKey) ?? "about:blank"
-+            guard newTab(url: start) else { return }
++            guard newTab(url: start) else { return false }
 +        }
-+        open = true
++        if show { open = true }
++        return true
 +    }
 +
 +    /// A tab at the end (+), or after `opener` for a link it opened.
