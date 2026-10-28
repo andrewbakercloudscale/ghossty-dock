@@ -205,14 +205,25 @@ function retire_overlay() {
 }
 
 function install_app() {
-    # Replacing the bundle under a running copy is safe; it keeps running the
-    # old build until restarted.
+    # A running copy keeps running the old build until restarted, but still
+    # reads files from the bundle (a new tab's nibs, shell integration). An
+    # rm -rf then a copy left it without them for the length of the copy, and
+    # a tab opened then killed the app (and the tabs' programs with it), so the
+    # new bundle is copied beside it and swapped in with renames.
     local running=false
     ps -axo command= | grep -qxF "$DEST/Contents/MacOS/ghostty" && running=true
     retire_overlay
     mkdir -p "$HOME/Applications" || exit 1
-    rm -rf "$DEST"
-    cp -R "$ROOT/build/$APP_NAME.app" "$DEST" || exit 1
+    rm -rf "$DEST.new" "$DEST.old"
+    cp -R "$ROOT/build/$APP_NAME.app" "$DEST.new" || exit 1
+    if [ -e "$DEST" ]; then
+        mv "$DEST" "$DEST.old" || exit 1
+    fi
+    if ! mv "$DEST.new" "$DEST"; then
+        [ -e "$DEST.old" ] && mv "$DEST.old" "$DEST"
+        exit 1
+    fi
+    rm -rf "$DEST.old"
     echo "== installed: $DEST"
     if $running; then
         echo "== it is running the old build: scripts/restart-dock.sh restarts it and resumes its sessions"
