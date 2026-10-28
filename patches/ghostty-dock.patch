@@ -180,17 +180,17 @@ index ade9bf3..0556a38 100644
  // rest of the app.
 diff --git a/macos/Sources/Features/Dock/DockAPI.swift b/macos/Sources/Features/Dock/DockAPI.swift
 new file mode 100644
-index 0000000..098a66e
+index 0000000..5e33c6c
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAPI.swift
-@@ -0,0 +1,179 @@
+@@ -0,0 +1,182 @@
 +import AppKit
 +
 +/// The app's side of the `ghostty-dock` command: requests are JSON files
 +/// dropped in ~/.local/state/ghostty-dock/api (a folder only you can open),
 +/// answered with a file next to them.
 +///
-+/// Request:  req-<id>.json  {"op": "list" | "focus" | "send" | "keys" | "read" | "notify", ...}
++/// Request:  req-<id>.json  {"op": "list" | "focus" | "send" | "keys" | "read" | "notify" | "browser", ...}
 +/// Answer:   res-<id>.json  {"ok": true, ...} or {"ok": false, "error": "..."}
 +@MainActor
 +final class DockAPI {
@@ -264,6 +264,9 @@ index 0000000..098a66e
 +                                   source: .script)
 +            model.postExternal(title: title, body: body)
 +            return ["ok": true]
++        }
++        if op == "browser" {
++            return DockBrowser.prepare(surface: r["surface"] as? String, show: r["show"] as? Bool == true)
 +        }
 +        guard let target = r["target"] as? String, !target.isEmpty else {
 +            return ["ok": false, "error": "say which session: a name, a session id or a folder"]
@@ -3185,6 +3188,559 @@ index 0000000..3725d37
 +
 +    private static var registered: [String: UNNotificationCategory] = [:]
 +    private static let categoryLock = NSLock()
++}
+diff --git a/macos/Sources/Features/Dock/DockBrowser.swift b/macos/Sources/Features/Dock/DockBrowser.swift
+new file mode 100644
+index 0000000..8eb5b23
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockBrowser.swift
+@@ -0,0 +1,489 @@
++import AppKit
++import SwiftUI
++
++/// Ghostty Dock: a Chromium browser beside the terminal (⌘⇧B), one per tab,
++/// for watching the app a session is building. Claude Code can drive it over
++/// its debugging port: chrome-devtools-mcp --browserUrl http://127.0.0.1:9223.
++/// Not Chrome's usual 9222: a Chrome already holding 127.0.0.1:9222 pushes
++/// Chromium onto [::1] alone, and the URL above would drive that Chrome.
++///
++/// Chromium is DockBrowser.framework (browser/DockBrowser.mm in the repo),
++/// loaded the first time a browser opens, so the app starts without it.
++@MainActor
++enum DockBrowser {
++    static let port: Int32 = 9223
++    static let widthKey = "dock.browser.width"
++    static let lastAddressKey = "dock.browser.lastAddress"
++    static let changed = Notification.Name("DockBrowserChanged")
++    static let adopted = Notification.Name("DockBrowserAdopted")
++
++    private typealias Start = @convention(c) (UnsafePointer<CChar>, UnsafePointer<CChar>, UnsafePointer<CChar>,
++                                              Int32) -> UnsafePointer<CChar>
++    private typealias NewView = @convention(c) (UnsafePointer<CChar>) -> UnsafeMutableRawPointer?
++
++    private static var newView: NewView?
++    private static var models: [ObjectIdentifier: DockBrowserModel] = [:]
++    /// The terminal tab whose Claude asked for the browser last (and when):
++    /// a page it opens next, with new_page, goes to that tab's browser.
++    private static var asker: (owner: TerminalController, at: Date)?
++    private static let askerSecs: TimeInterval = 30
++
++    private static var frameworks: String { Bundle.main.privateFrameworksPath ?? "" }
++
++    /// The browser of the tab that owns it (its TerminalController).
++    static func model(for owner: AnyObject) -> DockBrowserModel {
++        let id = ObjectIdentifier(owner)
++        if let m = models[id] { return m }
++        let m = DockBrowserModel()
++        m.owner = owner as? BaseTerminalController
++        models[id] = m
++        return m
++    }
++
++    /// The tab closed: its browser goes with it.
++    static func forget(_ owner: AnyObject) {
++        models.removeValue(forKey: ObjectIdentifier(owner))?.forgotten()
++    }
++
++    /// ⌘⇧B: shows or hides the key tab's browser.
++    static func toggle() {
++        guard let controller = NSApp.keyWindow?.windowController as? TerminalController else {
++            NSSound.beep()
++            return
++        }
++        model(for: controller).toggle()
++    }
++
++    /// `ghostty-dock browser`, as Claude's dock-browser tools run it: Chromium
++    /// started, and a page in the browser of the terminal tab holding
++    /// `surface` (else the key window's), shown only if asked.
++    static func prepare(surface: String?, show: Bool) -> [String: Any] {
++        let key = NSApp.keyWindow?.windowController as? TerminalController
++        guard let owner = controller(holding: surface) ?? key ?? TerminalController.all.first else {
++            return ["ok": false, "error": "no terminal window is open"]
++        }
++        guard model(for: owner).prepare(show: show) else { return ["ok": false, "error": "the browser did not start"] }
++        asker = (owner, Date())
++        return ["ok": true, "url": "http://127.0.0.1:\(port)"]
++    }
++
++    private static func controller(holding surface: String?) -> TerminalController? {
++        guard let surface, !surface.isEmpty else { return nil }
++        return TerminalController.all.first { c in c.surfaceTree.contains { $0.id.uuidString == surface } }
++    }
++
++    /// A new browser view, Chromium started first if it is not yet.
++    fileprivate static func makeView(url: String) -> NSView? {
++        if newView == nil, let error = start() {
++            DockLog.tools.error("browser: \(error, privacy: .public)")
++            let alert = NSAlert()
++            alert.messageText = "The browser did not start"
++            alert.informativeText = error
++            alert.runModal()
++            return nil
++        }
++        guard let p = newView?(url) else { return nil }
++        return Unmanaged<NSView>.fromOpaque(p).takeRetainedValue()
++    }
++
++    /// Loads and starts Chromium. Nil when it is running, else why not.
++    private static func start() -> String? {
++        let path = frameworks + "/DockBrowser.framework/DockBrowser"
++        guard FileManager.default.fileExists(atPath: path) else { return "This build has no browser in it." }
++        guard let lib = dlopen(path, RTLD_NOW) else { return String(cString: dlerror()) }
++        guard let start = dlsym(lib, "dock_browser_start"), let make = dlsym(lib, "dock_browser_new_view") else {
++            return "DockBrowser.framework is missing its functions."
++        }
++        let cache = FileManager.default.homeDirectoryForCurrentUser
++            .appendingPathComponent(".local/state/ghostty-dock/browser")
++        try? FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true,
++                                                 attributes: [.posixPermissions: 0o700])
++        let helper = frameworks + "/Ghostty Dock Helper.app/Contents/MacOS/Ghostty Dock Helper"
++        let error = String(cString: unsafeBitCast(start, to: Start.self)(
++            frameworks + "/Chromium Embedded Framework.framework", helper, cache.path, port))
++        guard error.isEmpty else { return error }
++        newView = unsafeBitCast(make, to: NewView.self)
++        NotificationCenter.default.addObserver(forName: adopted, object: nil, queue: .main) { note in
++            guard let view = note.object as? NSView else { return }
++            let url = note.userInfo?["url"] as? String ?? ""
++            MainActor.assumeIsolated { adopt(view, url: url) }
++        }
++        DockLog.tools.info("browser started, debugging port \(port)")
++        return nil
++    }
++
++    /// A page Chromium opened itself (Claude's new_page) becomes the front
++    /// tab of the asking Claude's browser, else the key window's, open or
++    /// hidden as that browser is.
++    private static func adopt(_ view: NSView, url: String) {
++        let recent = asker.flatMap { Date().timeIntervalSince($0.at) < askerSecs ? $0.owner : nil }
++        let key: AnyObject? = recent ?? NSApp.keyWindow?.windowController as? TerminalController
++        guard let owner = key ?? models.values.first(where: { !$0.tabs.isEmpty })?.owner
++                ?? TerminalController.all.first else { return }
++        model(for: owner).adopt(view, url: url)
++    }
++
++    /// What was typed in the address bar, as a URL: "localhost:3000" is
++    /// http, a bare name with a dot is https.
++    static func url(from typed: String) -> String {
++        let t = typed.trimmingCharacters(in: .whitespacesAndNewlines)
++        if t.isEmpty || t.contains("://") || t.hasPrefix("about:") { return t.isEmpty ? "about:blank" : t }
++        let local = ["localhost", "127.0.0.1", "0.0.0.0", "[::1]"].contains { t.hasPrefix($0) }
++        return (local ? "http://" : "https://") + t
++    }
++}
++
++/// One page of a browser panel.
++@MainActor
++final class DockBrowserTab: ObservableObject, Identifiable {
++    let view: NSView
++    @Published fileprivate(set) var url: String
++    @Published fileprivate(set) var title = ""
++
++    fileprivate init(view: NSView, url: String) {
++        self.view = view
++        self.url = url
++    }
++
++    /// What the tab strip shows: the page's title, else where it is.
++    var label: String {
++        if !title.isEmpty { return title }
++        if url.isEmpty || url == "about:blank" { return "New Tab" }
++        return URL(string: url)?.host ?? url
++    }
++}
++
++/// A terminal tab's browser: its tabs, the one showing, and the address bar.
++@MainActor
++final class DockBrowserModel: ObservableObject {
++    @Published private(set) var open = false
++    @Published private(set) var tabs: [DockBrowserTab] = []
++    @Published private(set) var selected: DockBrowserTab?
++    @Published var address = ""
++    private var observer: NSObjectProtocol?
++    fileprivate weak var owner: BaseTerminalController?
++
++    var title: String { selected?.title ?? "" }
++
++    fileprivate init() {
++        observer = NotificationCenter.default.addObserver(forName: DockBrowser.changed, object: nil,
++                                                          queue: .main) { [weak self] note in
++            let view = note.object as? NSView, info = note.userInfo as? [String: String] ?? [:]
++            MainActor.assumeIsolated { self?.changed(view, info) }
++        }
++    }
++
++    func toggle() {
++        if open { hide() } else { prepare(show: true) }
++    }
++
++    /// A page ready, at the last address when there is none yet; open too
++    /// if `show`. False when Chromium did not start.
++    @discardableResult
++    fileprivate func prepare(show: Bool) -> Bool {
++        if tabs.isEmpty {
++            let start = UserDefaults.standard.string(forKey: DockBrowser.lastAddressKey) ?? "about:blank"
++            guard newTab(url: start) else { return false }
++        }
++        if show { open = true }
++        return true
++    }
++
++    /// A tab at the end (+), or after `opener` for a link it opened.
++    @discardableResult
++    func newTab(url: String = "about:blank", select: Bool = true, after opener: DockBrowserTab? = nil) -> Bool {
++        guard let view = DockBrowser.makeView(url: url) else { return false }
++        let tab = DockBrowserTab(view: view, url: url)
++        if let opener, let i = tabs.firstIndex(where: { $0 === opener }) {
++            tabs.insert(tab, at: i + 1)
++        } else {
++            tabs.append(tab)
++        }
++        if select || selected == nil { self.select(tab) }
++        return true
++    }
++
++    fileprivate func adopt(_ view: NSView, url: String) {
++        let tab = DockBrowserTab(view: view, url: url)
++        tabs.append(tab)
++        select(tab)
++    }
++
++    func select(_ tab: DockBrowserTab) {
++        // The page going out of sight must not keep the keyboard.
++        if let selected, selected !== tab, hasKeyboard(selected) { returnKeyboard() }
++        selected = tab
++        address = tab.url == "about:blank" ? "" : tab.url
++        if !address.isEmpty { UserDefaults.standard.set(tab.url, forKey: DockBrowser.lastAddressKey) }
++    }
++
++    /// A tab's ×: its page goes, and its Chromium renderer with it. The last
++    /// tab closes the browser.
++    func close(_ tab: DockBrowserTab) {
++        guard let i = tabs.firstIndex(where: { $0 === tab }) else { return }
++        let keyboard = hasKeyboard(tab)
++        tabs.remove(at: i)
++        tab.view.removeFromSuperview()
++        if selected === tab {
++            selected = nil
++            if !tabs.isEmpty { select(tabs[min(i, tabs.count - 1)]) }
++        }
++        if tabs.isEmpty {
++            address = ""
++            if open { open = false; returnKeyboard() }
++        } else if keyboard {
++            returnKeyboard()
++        }
++    }
++
++    /// The bar's ×: every tab goes, and Chromium's renderers with them. ⌘⇧B
++    /// only hides the browser, so Claude can still drive it out of sight.
++    /// Chromium's own helpers stay until the app quits: it starts once per run.
++    func close() {
++        let wasOpen = open
++        tearDown()
++        if wasOpen { returnKeyboard() }
++    }
++
++    func load(_ typed: String) {
++        let url = DockBrowser.url(from: typed)
++        UserDefaults.standard.set(url, forKey: DockBrowser.lastAddressKey)
++        guard let selected else { newTab(url: url); return }
++        selected.view.perform(Selector(("loadURLString:")), with: url)
++    }
++
++    func back() { selected?.view.perform(Selector(("goBack"))) }
++    func forward() { selected?.view.perform(Selector(("goForward"))) }
++    func reload() { selected?.view.perform(Selector(("reload"))) }
++
++    /// Hidden, the page must not keep the keyboard: typing goes back to the
++    /// terminal the browser sits beside.
++    private func hide() {
++        open = false
++        returnKeyboard()
++    }
++
++    private func returnKeyboard() {
++        guard let owner, let window = owner.window,
++              let surface = owner.focusedSurface ?? owner.surfaceTree.first else { return }
++        window.makeFirstResponder(surface)
++    }
++
++    private func hasKeyboard(_ tab: DockBrowserTab) -> Bool {
++        guard let responder = tab.view.window?.firstResponder as? NSView else { return false }
++        return responder.isDescendant(of: tab.view)
++    }
++
++    /// Its terminal tab closed: nothing of it is left.
++    fileprivate func forgotten() {
++        tearDown()
++        observer.map(NotificationCenter.default.removeObserver)
++        observer = nil
++    }
++
++    private func tearDown() {
++        tabs.forEach { $0.view.removeFromSuperview() }
++        tabs = []
++        selected = nil
++        address = ""
++        open = false
++    }
++
++    private func changed(_ view: NSView?, _ info: [String: String]) {
++        guard let tab = tabs.first(where: { $0.view === view }) else { return }
++        if info["closed"] != nil { close(tab); return }
++        if let url = info["popup"] ?? info["background"] {
++            newTab(url: url, select: info["popup"] != nil, after: tab)
++        }
++        if let url = info["url"], url != "about:blank" {
++            tab.url = url
++            if tab === selected {
++                address = url
++                UserDefaults.standard.set(url, forKey: DockBrowser.lastAddressKey)
++            }
++        }
++        if let title = info["title"] { tab.title = title }
++    }
++}
++
++/// The browser's place beside the terminal. Hidden, it keeps its pages, at
++/// no width, so showing it again is instant.
++struct DockBrowserSlot: View {
++    let owner: AnyObject
++    @ObservedObject var model: DockBrowserModel
++    @AppStorage(DockBrowser.widthKey) private var savedWidth: Double = 560
++    /// The width while the handle is dragged, saved when it is let go.
++    @State private var dragWidth: Double?
++
++    private var width: Double { dragWidth ?? savedWidth }
++
++    init(owner: AnyObject) {
++        self.owner = owner
++        self.model = DockBrowser.model(for: owner)
++    }
++
++    var body: some View {
++        HStack(spacing: 0) {
++            if !model.tabs.isEmpty {
++                // Only while open: hidden at no width, its cursor rect would
++                // still sit over the terminal's edge.
++                if model.open {
++                    DockBrowserHandle(width: width,
++                                      onDrag: { dragWidth = $0 },
++                                      onEnd: { if let w = dragWidth { savedWidth = w }; dragWidth = nil })
++                        .frame(width: 7)
++                }
++                VStack(spacing: 0) {
++                    DockBrowserTabStrip(model: model)
++                    DockBrowserBar(model: model)
++                    DockBrowserHost(pages: model.tabs.map(\.view), front: model.selected?.view)
++                }
++            }
++        }
++        .frame(width: model.open && !model.tabs.isEmpty ? width : 0)
++        .clipped()
++        .allowsHitTesting(model.open)
++        .onDisappear { DockBrowser.forget(owner) }
++    }
++}
++
++/// Drag to make the browser wider or narrower. An AppKit view, not a
++/// SwiftUI gesture: its cursor rect shows the resize arrow over the
++/// terminal's and Chromium's cursors, and the drag is measured in window
++/// coordinates, which do not move as the handle itself moves.
++private struct DockBrowserHandle: NSViewRepresentable {
++    let width: Double
++    let onDrag: (Double) -> Void
++    let onEnd: () -> Void
++
++    func makeNSView(context: Context) -> HandleView { HandleView() }
++
++    func updateNSView(_ view: HandleView, context: Context) {
++        view.width = width
++        view.onDrag = onDrag
++        view.onEnd = onEnd
++    }
++
++    final class HandleView: NSView {
++        var width = 0.0
++        var onDrag: (Double) -> Void = { _ in }
++        var onEnd: () -> Void = {}
++        private var start: (x: CGFloat, width: Double)?
++
++        override var mouseDownCanMoveWindow: Bool { false }
++        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
++
++        // Cursor rects lose to the hosting view's own cursor handling, so the
++        // arrow is set on every move over the handle and through the drag.
++        override func updateTrackingAreas() {
++            super.updateTrackingAreas()
++            trackingAreas.forEach(removeTrackingArea)
++            addTrackingArea(NSTrackingArea(rect: .zero,
++                                           options: [.cursorUpdate, .mouseEnteredAndExited, .mouseMoved,
++                                                     .activeInKeyWindow, .inVisibleRect],
++                                           owner: self))
++        }
++
++        override func cursorUpdate(with event: NSEvent) { NSCursor.resizeLeftRight.set() }
++        override func mouseEntered(with event: NSEvent) { NSCursor.resizeLeftRight.set() }
++        override func mouseMoved(with event: NSEvent) { NSCursor.resizeLeftRight.set() }
++        override func mouseExited(with event: NSEvent) {
++            if start == nil { NSCursor.arrow.set() }
++        }
++
++        override func draw(_ dirtyRect: NSRect) {
++            NSColor.separatorColor.setFill()
++            NSRect(x: bounds.midX - 0.5, y: 0, width: 1, height: bounds.height).fill()
++        }
++
++        override func mouseDown(with event: NSEvent) {
++            start = (event.locationInWindow.x, width)
++        }
++
++        override func mouseDragged(with event: NSEvent) {
++            guard let start else { return }
++            NSCursor.resizeLeftRight.set()
++            let w = start.width - Double(event.locationInWindow.x - start.x)
++            onDrag(min(max(w, 320), 2000))
++        }
++
++        override func mouseUp(with event: NSEvent) {
++            start = nil
++            onEnd()
++            if !bounds.contains(convert(event.locationInWindow, from: nil)) { NSCursor.arrow.set() }
++        }
++    }
++}
++
++
++private struct DockBrowserBar: View {
++    @ObservedObject var model: DockBrowserModel
++    @FocusState private var editing: Bool
++
++    var body: some View {
++        HStack(spacing: 6) {
++            Button(action: model.back) { Image(systemName: "chevron.left") }
++                .help("Back")
++            Button(action: model.forward) { Image(systemName: "chevron.right") }
++                .help("Forward")
++            Button(action: model.reload) { Image(systemName: "arrow.clockwise") }
++                .help("Reload")
++            TextField("Address, e.g. localhost:3000", text: $model.address)
++                .textFieldStyle(.roundedBorder)
++                .focused($editing)
++                .onSubmit { model.load(model.address); editing = false }
++            Button(action: model.close) { Image(systemName: "xmark") }
++                .help("Close the browser and its tabs (⌘⇧B only hides it)")
++        }
++        .buttonStyle(.borderless)
++        .padding(.horizontal, 8)
++        .padding(.vertical, 6)
++        .help(model.title)
++        .onAppear { if model.address.isEmpty { editing = true } }
++        // A new tab starts at the address bar.
++        .onChange(of: model.selected?.id) { _ in if model.address.isEmpty { editing = true } }
++    }
++}
++
++/// Holds Chromium's views, which must stay in the window while their pages
++/// live. Only the front tab is in sight; the others, and all of them while
++/// the browser is hidden (the box at no width), keep their last size out of
++/// sight and are never hidden themselves, so they still draw: Claude can
++/// click and take screenshots of a tab you are not looking at.
++private struct DockBrowserHost: NSViewRepresentable {
++    let pages: [NSView]
++    let front: NSView?
++
++    func makeNSView(context: Context) -> Box { Box() }
++
++    func updateNSView(_ box: Box, context: Context) {
++        for page in pages where page.superview !== box {
++            page.autoresizingMask = []
++            box.addSubview(page)
++        }
++        box.front = front
++        box.needsLayout = true
++    }
++
++    final class Box: NSView {
++        /// The pages' width while open, kept for while it is hidden.
++        private var pageWidth: CGFloat = 560
++        weak var front: NSView?
++
++        override init(frame: NSRect) {
++            super.init(frame: frame)
++            wantsLayer = true
++            layer?.masksToBounds = true
++        }
++
++        required init?(coder: NSCoder) { fatalError("not used") }
++
++        override func layout() {
++            super.layout()
++            if bounds.width > 1 { pageWidth = bounds.width }
++            for page in subviews {
++                page.frame = NSRect(x: page === front ? 0 : pageWidth, y: 0, width: pageWidth, height: bounds.height)
++            }
++        }
++    }
++}
+diff --git a/macos/Sources/Features/Dock/DockBrowserTabs.swift b/macos/Sources/Features/Dock/DockBrowserTabs.swift
+new file mode 100644
+index 0000000..4d7dd95
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockBrowserTabs.swift
+@@ -0,0 +1,52 @@
++import SwiftUI
++
++/// The browser's tabs above its address bar: click one to show it, × to
++/// close it, + for a new one. Links that open a new tab or window open here.
++struct DockBrowserTabStrip: View {
++    @ObservedObject var model: DockBrowserModel
++
++    var body: some View {
++        HStack(spacing: 4) {
++            ScrollView(.horizontal, showsIndicators: false) {
++                HStack(spacing: 2) {
++                    ForEach(model.tabs) { tab in
++                        DockBrowserTabButton(tab: tab, selected: tab === model.selected,
++                                             select: { model.select(tab) }, close: { model.close(tab) })
++                    }
++                }
++            }
++            Button { model.newTab() } label: { Image(systemName: "plus") }
++                .buttonStyle(.borderless)
++                .help("New tab")
++        }
++        .padding(.horizontal, 8)
++        .padding(.top, 6)
++    }
++}
++
++private struct DockBrowserTabButton: View {
++    @ObservedObject var tab: DockBrowserTab
++    let selected: Bool
++    let select: () -> Void
++    let close: () -> Void
++
++    var body: some View {
++        HStack(spacing: 4) {
++            Text(tab.label)
++                .lineLimit(1)
++                .truncationMode(.tail)
++                .frame(maxWidth: 160, alignment: .leading)
++            Button(action: close) { Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)) }
++                .buttonStyle(.borderless)
++                .help("Close this tab")
++        }
++        .font(.system(size: 11))
++        .padding(.horizontal, 8)
++        .padding(.vertical, 4)
++        .background(RoundedRectangle(cornerRadius: 5)
++            .fill(selected ? Color.primary.opacity(0.12) : Color.clear))
++        .contentShape(Rectangle())
++        .onTapGesture(perform: select)
++        .help(tab.url)
++    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockCenteredTitle.swift b/macos/Sources/Features/Dock/DockCenteredTitle.swift
 new file mode 100644
@@ -8519,10 +9075,10 @@ index 0000000..33852cd
 +}
 diff --git a/macos/Sources/Features/Dock/DockShortcuts.swift b/macos/Sources/Features/Dock/DockShortcuts.swift
 new file mode 100644
-index 0000000..aa4116b
+index 0000000..a5345e3
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockShortcuts.swift
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,121 @@
 +import AppKit
 +import Carbon
 +
@@ -8590,6 +9146,8 @@ index 0000000..aa4116b
 +                     modifiers: [.command, .shift]) {
 +                UserDefaults.standard.set(!DockSettings.showSidebar, forKey: DockSettings.showSidebarKey)
 +            },
++            Shortcut(keys: "⌘⇧B", title: "Show or Hide the Browser", keyCode: kVK_ANSI_B,
++                     modifiers: [.command, .shift]) { MainActor.assumeIsolated { DockBrowser.toggle() } },
 +        ]
 +        return list
 +    }()
@@ -8607,6 +9165,7 @@ index 0000000..aa4116b
 +        ("Restart session", "⌘⇧R"),
 +        ("Undock session", "⌘⇧U"),
 +        ("Show or hide the sidebar", "⌘⇧S"),
++        ("Show or hide the browser", "⌘⇧B"),
 +    ]
 +
 +    /// The selected row, when it holds a Claude Code session.
@@ -10536,6 +11095,50 @@ index 0000000..0af6f7f
 +        return cfg
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockTitlebarDoubleClick.swift b/macos/Sources/Features/Dock/DockTitlebarDoubleClick.swift
+new file mode 100644
+index 0000000..0a5e412
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockTitlebarDoubleClick.swift
+@@ -0,0 +1,38 @@
++import AppKit
++
++/// Double-clicking the title bar zooms the window (or minimises it, or does
++/// nothing: System Settings › Desktop & Dock). AppKit's own handling never
++/// sees the click: the window's content reaches up under the title bar and
++/// takes it, as does the centred title (DockCenteredTitle). With two or more
++/// tabs the tabs fill the title bar, so a tab zooms too; ⌥-double-click
++/// renames it (TabTitleEditor), as does its right-click menu.
++enum DockTitlebarDoubleClick {
++    /// True when the event was a title bar double-click, now handled.
++    static func handle(_ event: NSEvent, in window: NSWindow) -> Bool {
++        guard event.type == .leftMouseDown, event.clickCount == 2,
++              !event.modifierFlags.contains(.option),
++              window.styleMask.contains(.titled), !window.styleMask.contains(.fullScreen),
++              event.locationInWindow.y >= window.contentLayoutRect.maxY,
++              !onControl(event, in: window) else { return false }
++        switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
++        case "None": break
++        case "Minimize": window.performMiniaturize(nil)
++        default: window.performZoom(nil)
++        }
++        return true
++    }
++
++    /// The window buttons, a tab's close button, the new tab button, or a tab
++    /// title being edited: each takes its own clicks.
++    private static func onControl(_ event: NSEvent, in window: NSWindow) -> Bool {
++        guard let frame = window.contentView?.superview else { return false }
++        var view = frame.hitTest(frame.convert(event.locationInWindow, from: nil))
++        while let v = view, v !== frame {
++            if v is NSText { return true }
++            if let field = v as? NSTextField { if field.isEditable { return true } }
++            else if v is NSControl { return true }
++            view = v.superview
++        }
++        return false
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
 index 0000000..ecd048f
@@ -11123,7 +11726,7 @@ index aab51f6..b96bbf4 100644
              return
          }
 diff --git a/macos/Sources/Features/Terminal/TerminalView.swift b/macos/Sources/Features/Terminal/TerminalView.swift
-index b6e1c63..1d20e4d 100644
+index b6e1c63..98c2e7d 100644
 --- a/macos/Sources/Features/Terminal/TerminalView.swift
 +++ b/macos/Sources/Features/Terminal/TerminalView.swift
 @@ -79,6 +79,10 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
@@ -11137,15 +11740,16 @@ index b6e1c63..1d20e4d 100644
                      TerminalSplitTreeView(
                          tree: viewModel.surfaceTree,
                          action: { delegate?.performSplitAction($0) })
-@@ -103,6 +107,7 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
+@@ -103,6 +107,8 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                          }
                          .frame(idealWidth: lastFocusedSurface?.value?.initialSize?.width,
                                 idealHeight: lastFocusedSurface?.value?.initialSize?.height)
++                    DockBrowserSlot(owner: viewModel)
 +                    }
                  }
                  // Ignore safe area to extend up in to the titlebar region if we have the "hidden" titlebar style
                  .ignoresSafeArea(.container, edges: ghostty.config.macosTitlebarStyle == .hidden ? .top : [])
-@@ -117,6 +122,8 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
+@@ -117,6 +123,8 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                      }
                  }
  
@@ -11155,10 +11759,22 @@ index b6e1c63..1d20e4d 100644
                  if viewModel.updateOverlayIsVisible {
                      UpdateOverlay()
 diff --git a/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift b/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift
-index e19d671..fbe4025 100644
+index e19d671..ea8d897 100644
 --- a/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift	
 +++ b/macos/Sources/Features/Terminal/Window Styles/TerminalWindow.swift	
-@@ -196,12 +196,14 @@ class TerminalWindow: NSWindow {
+@@ -180,6 +180,11 @@ class TerminalWindow: NSWindow {
+     override var canBecomeMain: Bool { return true }
+ 
+     override func sendEvent(_ event: NSEvent) {
++        // Ghostty Dock: before the tab title editor, which would take a
++        // double-click on a tab as a rename (⌥-double-click still is).
++        if DockTitlebarDoubleClick.handle(event, in: self) {
++            return
++        }
+         if tabTitleEditor.handleMouseDown(event) {
+             return
+         }
+@@ -196,12 +201,14 @@ class TerminalWindow: NSWindow {
      override func becomeKey() {
          super.becomeKey()
          resetZoomTabButton.contentTintColor = .controlAccentColor
@@ -11173,7 +11789,7 @@ index e19d671..fbe4025 100644
      }
  
      override func becomeMain() {
-@@ -255,6 +257,8 @@ class TerminalWindow: NSWindow {
+@@ -255,6 +262,8 @@ class TerminalWindow: NSWindow {
          // it. This has been verified to work on macOS 12 to 26
          if isTabBar(childViewController) {
              childViewController.identifier = Self.tabBarIdentifier
@@ -11182,7 +11798,7 @@ index e19d671..fbe4025 100644
              tabBarDidAppear()
          }
      }
-@@ -398,6 +402,7 @@ class TerminalWindow: NSWindow {
+@@ -398,6 +407,7 @@ class TerminalWindow: NSWindow {
              /// Check ``titlebarFont`` down below
              /// to see why we need to check `hasMoreThanOneTabs` here
              titlebarTextField?.usesSingleLineMode = !hasMoreThanOneTabs

@@ -185,9 +185,23 @@ function package_app() {
     clang -O2 -Wall -arch arm64 -arch x86_64 -mmacosx-version-min=13.0 \
         -o "$app/Contents/MacOS/ghostty-dock-hold" "$ROOT/hold/ghostty-dock-hold.c" || exit 1
 
+    # The browser beside the terminal (⌘⇧B): Chromium and its helpers (browser/).
+    "$ROOT/browser/build.sh" || exit 1
+    cp -R "$ROOT/vendor/cef/Release/Chromium Embedded Framework.framework" "$ROOT/build/browser/"*.framework \
+        "$ROOT/build/browser/"*.app "$app/Contents/Frameworks/" || exit 1
+
     source "$ROOT/scripts/sign-id.sh"
     echo "== sign: $DOCK_SIGN_ID"
     codesign --force --deep --options runtime --sign "$DOCK_SIGN_ID" \
+        --entitlements "$SRC/macos/GhosttyReleaseLocal.entitlements" "$app" || exit 1
+    # Chromium's helpers compile JavaScript, which needs entitlements of their
+    # own; the app is sealed again around them.
+    local helper
+    for helper in "$app/Contents/Frameworks/"*Helper*.app; do
+        codesign --force --options runtime --sign "$DOCK_SIGN_ID" \
+            --entitlements "$ROOT/browser/helper.entitlements" "$helper" || exit 1
+    done
+    codesign --force --options runtime --sign "$DOCK_SIGN_ID" \
         --entitlements "$SRC/macos/GhosttyReleaseLocal.entitlements" "$app" || exit 1
     codesign --verify --deep "$app" || exit 1
 }
@@ -205,14 +219,25 @@ function retire_overlay() {
 }
 
 function install_app() {
-    # Replacing the bundle under a running copy is safe; it keeps running the
-    # old build until restarted.
+    # A running copy keeps running the old build until restarted, but still
+    # reads files from the bundle (a new tab's nibs, shell integration). An
+    # rm -rf then a copy left it without them for the length of the copy, and
+    # a tab opened then killed the app (and the tabs' programs with it), so the
+    # new bundle is copied beside it and swapped in with renames.
     local running=false
     ps -axo command= | grep -qxF "$DEST/Contents/MacOS/ghostty" && running=true
     retire_overlay
     mkdir -p "$HOME/Applications" || exit 1
-    rm -rf "$DEST"
-    cp -R "$ROOT/build/$APP_NAME.app" "$DEST" || exit 1
+    rm -rf "$DEST.new" "$DEST.old"
+    cp -R "$ROOT/build/$APP_NAME.app" "$DEST.new" || exit 1
+    if [ -e "$DEST" ]; then
+        mv "$DEST" "$DEST.old" || exit 1
+    fi
+    if ! mv "$DEST.new" "$DEST"; then
+        [ -e "$DEST.old" ] && mv "$DEST.old" "$DEST"
+        exit 1
+    fi
+    rm -rf "$DEST.old"
     echo "== installed: $DEST"
     if $running; then
         echo "== it is running the old build: scripts/restart-dock.sh restarts it and resumes its sessions"

@@ -2,7 +2,7 @@
 
 # Drives Ghostty Dock from a script or another agent: list the sessions,
 # go to one, type into it, press keys, read its screen, wait for text on it,
-# post a notification, open a new tab.
+# post a notification, open a new tab, start the browser beside a tab.
 #
 # Talks to the running app through request files in
 # ~/.local/state/ghostty-dock/api (a folder only you can open): the app
@@ -14,6 +14,9 @@ STATE_DIR="${GHOSTTY_DOCK_STATE:-$HOME/.local/state/ghostty-dock}"
 API_DIR="$STATE_DIR/api"
 OPENER="$HOME/.local/bin/ghostty-dock-open"
 TIMEOUT_SECS=5
+# The browser's debugging port (DockBrowser.port in the app).
+BROWSER_URL="http://127.0.0.1:9223"
+BROWSER_WAIT_SECS=10
 
 function usage() {
     cat <<EOM
@@ -34,6 +37,8 @@ commands:
                                          Wait until its screen matches (default 300s)
     notify <title> [body] [--urgent]     Post a notification (and a phone push)
     open   <folder> [--command <cmd>]    Open a folder as a new tab (a shell, or cmd)
+    browser [--show]                     Start the browser beside this tab, for Claude's
+                                         dock-browser tools ($BROWSER_URL); --show opens it
 
 <session> is a session id, a name as in the sidebar, a folder, or the start
 of a name.
@@ -87,6 +92,35 @@ function call() {
         die "$(jq -r '.error // "failed"' <<<"$out")"
     fi
     printf '%s\n' "$out"
+}
+
+# The terminal this runs in. Under ghostty-dock-hold the program keeps the
+# surface it started in, but a restart reattaches it to a new one: the
+# holder records which.
+function own_surface() {
+    local held=""
+    [ -n "${GHOSTTY_DOCK_HOLD:-}" ] &&
+        held=$(cat "$STATE_DIR/hold/${GHOSTTY_DOCK_HOLD//[^A-Za-z0-9]/}.surface" 2>/dev/null)
+    echo "${held:-${GHOSTTY_DOCK_SURFACE:-}}"
+}
+
+# Starts Chromium and readies this tab's browser, then waits until Chromium
+# lists its page: the port answers a little before that.
+function cmd_browser() {
+    local show=false
+    case "${1:-}" in
+    --show) show=true ;;
+    "") ;;
+    *) usage ;;
+    esac
+    call "$(jq -nc --arg s "$(own_surface)" --argjson v "$show" '{op:"browser", surface:$s, show:$v}')" >/dev/null || exit 1
+    local tries=$((BROWSER_WAIT_SECS * 10))
+    until curl -fs --max-time 1 "$BROWSER_URL/json/list" 2>/dev/null | jq -e 'any(.[]; .type == "page")' >/dev/null; do
+        tries=$((tries - 1))
+        [ "$tries" -gt 0 ] || die "the browser did not open $BROWSER_URL"
+        sleep 0.1
+    done
+    echo "$BROWSER_URL"
 }
 
 function cmd_list() {
@@ -207,6 +241,9 @@ function main() {
                 exec "$OPENER" --command "$2" "$folder"
             fi
             exec "$OPENER" --shell "$folder"
+            ;;
+        browser)
+            cmd_browser "$@"
             ;;
         -h | --help | help)
             usage
