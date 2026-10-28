@@ -278,15 +278,47 @@ to run commands.
 | ⌘⇧O | Overview: every session on one screen |
 | ⌘⇧Y | Daily recap |
 | ⌘⇧T | Reopen the last closed session |
+| ⌘⇧B | Show or hide this tab's browser |
 
 While the sidebar is hidden, ⌘1–9 and the next/previous keys are Ghostty's
 own again (tab order). Everything else in Ghostty (⌘T, ⌘W, splits) is unchanged.
+Double-clicking the title bar zooms the window; ⌥-double-click a tab to rename
+it, or use its right-click menu.
 
 **In Finder:** right-click a folder → **Quick Actions** → **Launch Claude Code
 in Ghostty** or **Continue last Claude Code session in Ghostty** opens it as a
 tab. `install.sh` adds both if they are missing. Settings → Shortcuts → In
 Finder gives each a key (**Add Shortcut**, **Remove Shortcut**), with a picture
 of the menu.
+
+## Browser
+
+⌘⇧B opens a Chromium browser beside the tab's terminal, for watching the app
+a session is building. Each terminal tab has its own, with tabs of its own:
+**+** for a new one, × on a tab to close it, and links that open a new tab or
+window open as one. Drag its left edge to resize it.
+
+⌘⇧B again hides it, and its pages keep running out of sight. The × at the end
+of the address bar closes the browser and all its tabs. Chromium starts the
+first time a browser opens, and its shared helpers run until Ghostty Dock
+quits.
+
+Every Claude Code session in a Ghostty Dock tab knows it is there and can
+drive it. `install.sh` adds the **dock-browser** tools for every Claude Code
+(`claude mcp add --scope user dock-browser`), which run `chrome-devtools-mcp`
+against the browser's debugging port, `127.0.0.1:9223` (not Chrome's usual
+9222, which a Chrome of your own may hold). They start the browser beside
+the session's tab the first time Claude uses them, so a session that never
+needs a browser does not start one. And a `SessionStart` hook
+(`ghostty-dock-context`) tells each session in a dock tab about the browser
+and its tools; elsewhere it says nothing. They need Node.js.
+
+Clicks and screenshots work on tabs you are not looking at, and while the
+browser is hidden. A page Claude opens (`new_page`) appears as a tab in its
+own terminal tab's browser; one it closes loses only its tab. Pages never
+take the keyboard from the terminal when they load: only clicking in a page
+does. Claude sees the pages of every terminal tab's browser on the one port,
+and is told to keep to its own.
 
 ## Command line and scripting
 
@@ -301,6 +333,7 @@ ghostty-dock read aws-cli --lines 20              # what is on its screen
 ghostty-dock wait aws-cli 'passed|failed' --timeout 600
 ghostty-dock notify "Deploy done" "prod is on 1.4.2"
 ghostty-dock open ~/code/repo --command claude    # a new tab
+ghostty-dock browser --show                       # start this tab's browser and show it
 ```
 
 A session is named by its session id, its name in the sidebar, its folder or
@@ -413,10 +446,11 @@ type a password if asked.
 ## Tests
 
     bash tests/hook-test.sh                          # the Claude Code hook
+    bash tests/browser-tools-test.sh                 # the browser note and dock-browser tools
     swift test --package-path tests/dock-logic       # sidebar order, groups, cost (after a build)
     bash tests/patch-test.sh --latest                # the patch still applies to Ghostty
 
-GitHub Actions runs all three on every push, and the patch check every Monday
+GitHub Actions runs them all on every push, and the patch check every Monday
 against the newest Ghostty release.
 
 ## When sessions don't come back
