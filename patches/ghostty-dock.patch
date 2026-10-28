@@ -8531,7 +8531,7 @@ index 0000000..c119dd3
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..4b8c94a
+index 0000000..6569781
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
 @@ -0,0 +1,1337 @@
@@ -8913,7 +8913,7 @@ index 0000000..4b8c94a
 +                DockNoticeList { showNotices = false }
 +            }
 +            }
-+            DockHeaderButton(symbol: "plus", color: DockPalette.green, tip: "New tab (⌘T)",
++            DockHeaderButton(symbol: "apple.terminal", size: 11, color: DockPalette.green, tip: "New tab (⌘T)",
 +                             shownTip: $headerTip, tipColor: $headerTipColor, action: onNewTab)
 +            DockHeaderButton(symbol: "paintpalette.fill", color: selectedTag.map(DockPalette.color) ?? DockPalette.color(DockTag.pink),
 +                             tip: "Colour this session, its row and its terminal", shownTip: $headerTip,
