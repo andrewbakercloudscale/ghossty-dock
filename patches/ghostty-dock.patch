@@ -7964,10 +7964,10 @@ index 0000000..71ba4c5
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..7acabf0
+index 0000000..33852cd
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,411 @@
+@@ -0,0 +1,444 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -8002,6 +8002,9 @@ index 0000000..7acabf0
 +    static let bellFinishedKey = "dock.bell.finished"
 +    static let bellScriptsKey = "dock.bell.scripts"
 +    static let bellReadOnVisitKey = "dock.bell.readOnVisit"
++    /// The selected row's ring: idle, and while it works.
++    static let selectedRingKey = "dock.ring.selected"
++    static let selectedRunningRingKey = "dock.ring.selectedRunning"
 +    static let bellKeepChoices = [50, 100, 200, 500]
 +
 +    static func register() {
@@ -8024,6 +8027,8 @@ index 0000000..7acabf0
 +            bellFinishedKey: true,
 +            bellScriptsKey: true,
 +            bellReadOnVisitKey: true,
++            selectedRingKey: DockRing.blue.rawValue,
++            selectedRunningRingKey: DockRing.gold.rawValue,
 +        ])
 +    }
 +
@@ -8078,6 +8083,8 @@ index 0000000..7acabf0
 +    @AppStorage(DockSettings.bellFinishedKey) private var bellFinished = true
 +    @AppStorage(DockSettings.bellScriptsKey) private var bellScripts = true
 +    @AppStorage(DockSettings.bellReadOnVisitKey) private var bellReadOnVisit = true
++    @AppStorage(DockSettings.selectedRingKey) private var selectedRing = DockRing.blue
++    @AppStorage(DockSettings.selectedRunningRingKey) private var selectedRunningRing = DockRing.gold
 +    @ObservedObject private var updates = DockUpdates.shared
 +    @State private var startAtLogin = SMAppService.mainApp.status == .enabled
 +    @State private var loginError: String?
@@ -8119,6 +8126,12 @@ index 0000000..7acabf0
 +                    .font(.callout)
 +                Toggle("Also show Ghostty's tab bar", isOn: $showTabBar)
 +            }
++            Section("Selected row border") {
++                ringPicker("When idle or waiting", $selectedRing)
++                ringPicker("While it's running", $selectedRunningRing)
++                Text("The ring round the session you are in. Other running sessions keep a chrome ring.")
++                    .font(.callout)
++            }
 +            Section("Cost usage panel") {
 +                LabeledContent("Claude Code Cost Sidebar") {
 +                    if DockSessions.costPanelInstalled {
@@ -8131,6 +8144,26 @@ index 0000000..7acabf0
 +                    .font(.callout)
 +            }
 +            compaction
++    }
++
++    private func ringPicker(_ title: String, _ ring: Binding<DockRing>) -> some View {
++        Picker(title, selection: ring) {
++            ForEach(DockRing.allCases, id: \.self) { r in
++                Label { Text(r.label) } icon: {
++                    Image(nsImage: Self.dot(r.colors.base))
++                }
++                .tag(r)
++            }
++        }
++    }
++
++    /// A coloured dot for a menu item: menus drop SwiftUI's tint on symbols.
++    private static func dot(_ color: NSColor) -> NSImage {
++        NSImage(size: NSSize(width: 12, height: 12), flipped: false) { r in
++            color.setFill()
++            NSBezierPath(ovalIn: r.insetBy(dx: 1, dy: 1)).fill()
++            return true
++        }
 +    }
 +
 +    @ViewBuilder private var themePage: some View {
@@ -8498,10 +8531,10 @@ index 0000000..c119dd3
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..17f6993
+index 0000000..4b8c94a
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1315 @@
+@@ -0,0 +1,1337 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -9131,6 +9164,8 @@ index 0000000..17f6993
 +    @State private var hover = false
 +    @State private var hoverClose = false
 +    @State private var hoverGit = false
++    @AppStorage(DockSettings.selectedRingKey) private var selectedRing = DockRing.blue
++    @AppStorage(DockSettings.selectedRunningRingKey) private var selectedRunningRing = DockRing.gold
 +
 +    private var folder: String { row.project ?? row.detail }
 +    private func viewDiff() { DockDiffWindow.shared.show(folder: folder, name: row.name) }
@@ -9249,7 +9284,7 @@ index 0000000..17f6993
 +                        .shadow(color: .black.opacity(0.4), radius: 1.5, y: 1.5)
 +                        .shadow(color: .black.opacity(0.65), radius: 9, y: 6)
 +                }
-+                // With no colour the raised card and gold ring mark the
++                // With no colour the raised card and its ring mark the
 +                // selection: a blue wash read as a colour None didn't clear.
 +                RoundedRectangle(cornerRadius: 7)
 +                    .fill(row.tag != nil ? accent.opacity(row.selected ? 0.28 : hover ? 0.24 : 0.16)
@@ -9272,13 +9307,15 @@ index 0000000..17f6993
 +                }
 +            }
 +        }
-+        // One ring per row, and nothing that beats: gold marks the tab you
-+        // are in (its glint runs while it works), chrome the others at work.
++        // One ring per row, and nothing that beats: the tab you are in wears
++        // its Settings colours (blue, gold while it works, by default; its
++        // glint runs while it works), chrome the others at work.
 +        .overlay {
 +            if row.selected {
-+                DockRunningShimmer(metal: .gold, moving: row.status == .running)
++                DockRunningShimmer(ring: row.status == .running ? selectedRunningRing : selectedRing,
++                                   moving: row.status == .running, strong: true)
 +            } else if row.status == .running {
-+                DockRunningShimmer(metal: .chrome, moving: true)
++                DockRunningShimmer(ring: .chrome, moving: true)
 +            } else if row.status == .waiting {
 +                DockAttentionRing()
 +            }
@@ -9474,27 +9511,45 @@ index 0000000..17f6993
 +    }
 +}
 +
-+/// A metal ring round a row: gold for the tab you are in, chrome for the
-+/// others while they work. A glint runs round it while the session is busy;
-+/// it is steady otherwise. No pulse: a slow sweep is enough to catch the eye.
++/// The ring colours a row can wear. The selected row's are picked in
++/// Settings (one while idle, one while it works); chrome marks the others at work.
++enum DockRing: String, CaseIterable {
++    case blue, gold, chrome, green, pink, purple, orange, red
++
++    var label: String { rawValue.capitalized }
++
++    /// Base, the glint's highlight, and the dim part of the sweep.
++    var colors: (base: NSColor, shine: NSColor, shade: NSColor) {
++        func c(_ hex: Int) -> NSColor { NSColor(Color(hex: hex)) }
++        switch self {
++        case .gold: return (NSColor(DockRunningShimmer.gold), c(0xfffbe6), NSColor(DockRunningShimmer.gold).withAlphaComponent(0.45))
++        // Dark and light steel, so it reads as metal on a light or dark theme.
++        case .chrome: return (c(0xa7afba), .white, c(0x6c7480).withAlphaComponent(0.7))
++        case .blue: return (c(0x2f7bff), c(0xdcebff), c(0x2f7bff).withAlphaComponent(0.45))
++        case .green: return (c(0x22c55e), c(0xe3fbe9), c(0x22c55e).withAlphaComponent(0.45))
++        case .pink: return (c(0xff4fa3), c(0xffe3f1), c(0xff4fa3).withAlphaComponent(0.45))
++        case .purple: return (c(0x8b5cf6), c(0xede6ff), c(0x8b5cf6).withAlphaComponent(0.45))
++        case .orange: return (c(0xff8a1f), c(0xfff0e0), c(0xff8a1f).withAlphaComponent(0.45))
++        case .red: return (c(0xef4444), c(0xffe4e4), c(0xef4444).withAlphaComponent(0.45))
++        }
++    }
++}
++
++/// A ring round a row: the selected row's colour from Settings, chrome for
++/// the others while they work. A glint runs round it while the session is
++/// busy; it is steady otherwise. No pulse: a slow sweep is enough to catch the eye.
 +struct DockRunningShimmer: View {
-+    enum Metal { case gold, chrome }
 +    static let gold = Color(hex: 0xffc61a)
 +
-+    var metal: Metal
++    var ring: DockRing
 +    var moving: Bool
++    /// The selected row's ring is thicker and glows.
++    var strong = false
 +
 +    var body: some View {
-+        DockLayerAnimation(key: "\(metal)-\(moving)") { root, b, _ in
-+            let base, shine, shade: NSColor
-+            switch metal {
-+            case .gold:
-+                base = NSColor(Self.gold); shine = NSColor(Color(hex: 0xfffbe6)); shade = base.withAlphaComponent(0.45)
-+            case .chrome:
-+                // Dark and light steel, so it reads as metal on a light or dark theme.
-+                base = NSColor(Color(hex: 0xa7afba)); shine = .white; shade = NSColor(Color(hex: 0x6c7480)).withAlphaComponent(0.7)
-+            }
-+            // Still: plain gold edging and a drop shadow, no glint.
++        DockLayerAnimation(key: "\(ring)-\(moving)-\(strong)") { root, b, _ in
++            let (base, shine, shade) = ring.colors
++            // Still: plain edging and a drop shadow, no glint.
 +            if !moving {
 +                let edge = CAShapeLayer()
 +                edge.frame = b
@@ -9522,7 +9577,7 @@ index 0000000..17f6993
 +            let band = CALayer()
 +            band.frame = b
 +            band.addSublayer(sweep)
-+            let width: CGFloat = metal == .gold ? 2.6 : 2
++            let width: CGFloat = strong ? 2.6 : 2
 +            let mask = CAShapeLayer()
 +            mask.frame = b
 +            mask.path = DockLayerAnimation.border(b, radius: 7, width: width)
@@ -9531,10 +9586,10 @@ index 0000000..17f6993
 +            mask.lineWidth = width
 +            band.mask = mask
 +            root.addSublayer(band)
-+            root.shadowColor = metal == .gold ? base.cgColor : NSColor.black.cgColor
++            root.shadowColor = strong ? base.cgColor : NSColor.black.cgColor
 +            root.shadowOffset = .zero
-+            root.shadowOpacity = metal == .gold ? 0.8 : 0.25
-+            root.shadowRadius = metal == .gold ? 4 : 2
++            root.shadowOpacity = strong ? 0.8 : 0.25
++            root.shadowRadius = strong ? 4 : 2
 +        }
 +        .allowsHitTesting(false)
 +    }
