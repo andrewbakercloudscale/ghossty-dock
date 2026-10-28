@@ -8531,10 +8531,10 @@ index 0000000..c119dd3
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..6569781
+index 0000000..e2db8cd
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1337 @@
+@@ -0,0 +1,1320 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -9019,22 +9019,6 @@ index 0000000..6569781
 +    }
 +}
 +
-+/// The picker in a small panel near the pointer, for the row's menu.
-+enum DockColourPanel {
-+    private static var panel: NSPanel?
-+
-+    static func show(for row: DockSessions.Row) {
-+        panel?.close()
-+        let p = NSPanel(contentRect: .zero, styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
-+        p.title = "Colour"
-+        p.isReleasedWhenClosed = false
-+        p.contentViewController = NSHostingController(rootView: DockColourPicker(row: row) { panel?.close() })
-+        p.place(near: NSEvent.mouseLocation)
-+        p.makeKeyAndOrderFront(nil)
-+        panel = p
-+    }
-+}
-+
 +/// The Restart button while a restart waits: a red hourglass that
 +/// flashes, so it is plain that one is coming.
 +private struct DockRestartWaiting: View {
@@ -9370,7 +9354,6 @@ index 0000000..6569781
 +                .disabled(row.tag == nil)
 +                Button("None") { model.setTag(row, nil) }.disabled(row.tag == nil)
 +            }
-+            Button("Colour…") { DockColourPanel.show(for: row) }
 +            Divider()
 +            if row.sessionId != nil {
 +                if DockSessions.burstInstalled {
