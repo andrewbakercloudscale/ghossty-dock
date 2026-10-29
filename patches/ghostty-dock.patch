@@ -5176,6 +5176,52 @@ index 0000000..db9ed48
 +        return CGPath(roundedRect: inset, cornerWidth: r, cornerHeight: r, transform: nil)
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockLayout.swift b/macos/Sources/Features/Dock/DockLayout.swift
+new file mode 100644
+index 0000000..dd98e55
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockLayout.swift
+@@ -0,0 +1,40 @@
++import AppKit
++
++/// Ghostty Dock: the splits of every tab that has them, in layout.json
++/// beside the other state, so a restart puts the terminals of a split tab
++/// back side by side instead of each in a tab of its own
++/// (ghostty-dock-restart reads it).
++///
++/// Each tab is its split tree: a terminal is {"s": "<surface id>"}, the id
++/// in GHOSTTY_DOCK_SURFACE and hold/<name>.surface; a split is
++/// {"d": "right" | "down", "l": ..., "r": ...}.
++enum DockLayout {
++    static let file = FileManager.default.homeDirectoryForCurrentUser
++        .appendingPathComponent(".local/state/ghostty-dock/layout.json")
++
++    private static var written: Data?
++
++    /// Writes layout.json when the splits have changed since the last time.
++    static func save() {
++        let tabs = NSApp.windows.compactMap { ($0.windowController as? TerminalController)?.surfaceTree.root }
++            .filter { if case .split = $0 { return true } else { return false } }
++            .map(node)
++        guard let data = try? JSONSerialization.data(withJSONObject: ["tabs": tabs], options: [.sortedKeys]),
++              data != written else { return }
++        do {
++            try data.write(to: file, options: .atomic)
++            written = data
++        } catch {
++            DockLog.restart.error("could not save the tabs' splits: \(error.localizedDescription)")
++        }
++    }
++
++    private static func node(_ n: SplitTree<Ghostty.SurfaceView>.Node) -> [String: Any] {
++        switch n {
++        case .leaf(let view):
++            return ["s": view.id.uuidString]
++        case .split(let s):
++            return ["d": s.direction == .horizontal ? "right" : "down", "l": node(s.left), "r": node(s.right)]
++        }
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockLoadingView.swift b/macos/Sources/Features/Dock/DockLoadingView.swift
 new file mode 100644
 index 0000000..b9cfd97
@@ -7377,10 +7423,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..c829575
+index 0000000..c24491a
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1591 @@
+@@ -0,0 +1,1592 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -7748,6 +7794,7 @@ index 0000000..c829575
 +            self.saveTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
 +                // One at a time: a slow save must not stack up behind itself.
 +                guard let self, !self.saving else { return }
++                DockLayout.save()
 +                self.saving = true
 +                DispatchQueue.global(qos: .utility).async {
 +                    _ = DockProcess.run("/bin/bash", [restarter, "--save"], timeout: 60, log: DockLog.restart)
