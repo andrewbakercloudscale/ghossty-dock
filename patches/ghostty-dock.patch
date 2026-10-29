@@ -5453,10 +5453,10 @@ index 0000000..6d9cbd4
 +}
 diff --git a/macos/Sources/Features/Dock/DockLogin.swift b/macos/Sources/Features/Dock/DockLogin.swift
 new file mode 100644
-index 0000000..d9a1f65
+index 0000000..3e1c5d0
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockLogin.swift
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,214 @@
 +import AppKit
 +import Combine
 +
@@ -5484,10 +5484,22 @@ index 0000000..d9a1f65
 +        set { UserDefaults.standard.set(newValue, forKey: Self.changedKey) }
 +    }
 +
++    /// Whether Claude Code can run here at all: installed, and logged in
++    /// (an API key or a cloud provider counts). Nil until first asked.
++    enum Access: Equatable { case ready, signedOut, missing }
++    @Published private(set) var access: Access?
++    private var accessAt: Date?
++    private var accessFor: Date?
++    private var asking = false
++
 +    func start() {
 +        guard timer == nil else { return }
 +        check()
-+        timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in self?.check() }
++        checkAccess()
++        timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
++            self?.check()
++            self?.checkAccess()
++        }
 +        DockSessions.shared.$rows
 +            .throttle(for: .seconds(2), scheduler: RunLoop.main, latest: true)
 +            .sink { [weak self] _ in self?.findStale() }
@@ -5521,6 +5533,72 @@ index 0000000..d9a1f65
 +                self.findStale()
 +            }
 +        }
++    }
++
++    /// Asks claude auth status in your login shell, so its PATH and any
++    /// ANTHROPIC_API_KEY count: at launch, then every 30 seconds (or when
++    /// ~/.claude.json, which a login writes, changes) until it's ready.
++    private func checkAccess(force: Bool = false) {
++        guard !asking else { return }
++        let m = (try? FileManager.default.attributesOfItem(atPath: configURL.path))?[.modificationDate] as? Date
++        // claude rewrites ~/.claude.json often: once ready, only notice a
++        // logout every few minutes, so a shell isn't started for each write.
++        let since = Date().timeIntervalSince(accessAt ?? .distantPast)
++        let due = force || accessAt == nil
++            || (access == .ready ? m != accessFor && since > 300 : m != accessFor || since > 30)
++        guard due else { return }
++        asking = true
++        DispatchQueue.global(qos: .utility).async { [weak self] in
++            let found = Self.askAccess()
++            DispatchQueue.main.async {
++                guard let self else { return }
++                self.asking = false
++                self.accessAt = Date()
++                self.accessFor = m
++                // A shell that failed or timed out tells nothing: keep what we had.
++                guard let found else { return }
++                if found != self.access {
++                    DockLog.sessions.notice("Claude access: \(String(describing: found), privacy: .public)")
++                    self.access = found
++                }
++            }
++        }
++    }
++
++    private static func askAccess() -> Access? {
++        let shell = ProcessInfo.processInfo.environment["SHELL"].flatMap { $0.isEmpty ? nil : $0 } ?? "/bin/zsh"
++        // Where the installers put it, in case the shell's PATH doesn't say.
++        let script = """
++            PATH="$PATH:$HOME/.local/bin:$HOME/.claude/local:/opt/homebrew/bin:/usr/local/bin"
++            command -v claude >/dev/null 2>&1 || { echo GHOSTTY_DOCK_NO_CLAUDE; exit 0; }
++            claude auth status --json 2>/dev/null
++            """
++        guard let r = DockProcess.run(shell, ["-ilc", script], timeout: 20, quiet: [1]) else { return nil }
++        let text = r.text
++        if text.contains("GHOSTTY_DOCK_NO_CLAUDE") { return .missing }
++        // An interactive shell may print a greeting first.
++        guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start < end,
++              let json = try? JSONSerialization.jsonObject(with: Data(text[start...end].utf8)) as? [String: Any]
++        else { return nil }
++        if json["loggedIn"] as? Bool == true { return .ready }
++        if let provider = json["apiProvider"] as? String, provider != "firstParty" { return .ready }
++        return .signedOut
++    }
++
++    /// A tab that runs claude auth login (or installs Claude Code first),
++    /// in your shell: the browser opens to sign in, and the tab stays for
++    /// whatever it asks.
++    func logIn() {
++        guard let ghostty = (NSApp.delegate as? AppDelegate)?.ghostty else { NSSound.beep(); return }
++        var config = Ghostty.SurfaceConfiguration()
++        config.workingDirectory = FileManager.default.homeDirectoryForCurrentUser.path
++        config.initialInput = access == .missing
++            ? "curl -fsSL https://claude.ai/install.sh | bash && ~/.local/bin/claude auth login\n"
++            : "claude auth login\n"
++        let window = NSApp.keyWindow ?? NSApp.windows.first { $0.windowController is TerminalController }
++        _ = TerminalController.newTab(ghostty, from: window, withBaseConfig: config)
++        // Look again soon after, rather than on the 30-second beat.
++        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in self?.checkAccess(force: true) }
 +    }
 +
 +    private func findStale() {
@@ -9473,10 +9551,10 @@ index 0000000..a5345e3
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..f7e7697
+index 0000000..afaa051
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1527 @@
+@@ -0,0 +1,1544 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -9698,6 +9776,23 @@ index 0000000..f7e7697
 +                        .controlSize(.small)
 +                        .help("Stop the restart; the sessions carry on as they are")
 +                }
++            }
++            // A new install whose Claude Code isn't logged in (or isn't
++            // there): sessions can't start, so this comes first.
++            if let access = login.access, access != .ready {
++                VStack(alignment: .leading, spacing: 5) {
++                    Label(access == .missing ? "Claude Code isn't installed" : "Claude Code isn't logged in",
++                          systemImage: "person.crop.circle.badge.exclamationmark")
++                        .font(.system(size: 11, weight: .bold))
++                        .foregroundStyle(DockPalette.peach)
++                        .fixedSize(horizontal: false, vertical: true)
++                    Button(access == .missing ? "Install and Log In…" : "Log In…") { login.logIn() }
++                        .buttonStyle(.bordered)
++                        .controlSize(.small)
++                }
++                .help(access == .missing
++                      ? "No claude on your PATH. This opens a tab that installs Claude Code, then logs you in."
++                      : "claude auth status says you're not logged in. This opens a tab that runs claude auth login; your browser opens to sign in.")
 +            }
 +            // Sessions still on the login you left: Remote Control is gone
 +            // from them until they are resumed.
