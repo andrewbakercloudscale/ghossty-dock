@@ -338,8 +338,11 @@ function held_items() {
 
 # The terminal a session was last in, from the hook's state.
 function session_surface() {
-    local file
-    file=$(grep -l "\"session_id\":\"$1\"" "$STATE_DIR"/sessions/srf-*.json 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
+    local files file
+    files=$(grep -l "\"session_id\":\"$1\"" "$STATE_DIR"/sessions/srf-*.json 2>/dev/null)
+    # Not through xargs: GNU xargs runs ls with no files, listing the folder.
+    [ -n "$files" ] || return 0
+    file=$(ls -t $files | head -1)
     file="${file##*/srf-}"
     echo "${file%.json}"
 }
