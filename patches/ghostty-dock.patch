@@ -9220,10 +9220,10 @@ index 0000000..a5345e3
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..4732c36
+index 0000000..1e6e2e1
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1520 @@
+@@ -0,0 +1,1525 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -9688,7 +9688,7 @@ index 0000000..4732c36
 +    }
 +}
 +
-+/// 30 colours for a session, by hue, and None. The row and its terminal take it.
++/// 21 colours for a session, by hue, and None. The row and its terminal take it.
 +struct DockColourPicker: View {
 +    var row: DockSessions.Row
 +    var done: () -> Void
@@ -9701,7 +9701,9 @@ index 0000000..4732c36
 +            Text("Colour for \(row.name)").font(.system(size: 12, weight: .semibold))
 +                .foregroundStyle(DockPalette.text).lineLimit(1)
 +            LazyVGrid(columns: Array(repeating: GridItem(.fixed(26), spacing: 8), count: 7), spacing: 8) {
-+                ForEach(DockTag.offered + (row.tag.map { DockTag.offered.contains($0) ? [] : [$0] } ?? []), id: \.self) { tag in
++                // Only the offered colours, three full rows: a row's colour no
++                // longer offered shows beside its name below, not on a row of its own.
++                ForEach(DockTag.offered, id: \.self) { tag in
 +                    Button {
 +                        DockSessions.shared.setTag(row, tag)
 +                        done()
@@ -9740,7 +9742,10 @@ index 0000000..4732c36
 +            }
 +            .disabled(row.tag == nil)
 +            .opacity(row.tag == nil ? 0.4 : 1)
-+            HStack {
++            HStack(spacing: 6) {
++                if let tag = row.tag, !DockTag.offered.contains(tag), hover == nil, !hoveringHatch {
++                    Circle().fill(DockPalette.color(tag)).frame(width: 12, height: 12)
++                }
 +                Text(hoveringHatch ? (hoverHatch?.label ?? "Plain") : hover?.label ?? row.tag?.label ?? "No colour")
 +                    .font(.system(size: 11)).foregroundStyle(DockPalette.grey)
 +                Spacer()
@@ -11058,10 +11063,10 @@ index 0000000..cf53b7e
 +}
 diff --git a/macos/Sources/Features/Dock/DockTint.swift b/macos/Sources/Features/Dock/DockTint.swift
 new file mode 100644
-index 0000000..0af6f7f
+index 0000000..a6e3621
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockTint.swift
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,169 @@
 +import AppKit
 +import GhosttyKit
 +import SwiftUI
@@ -11101,7 +11106,8 @@ index 0000000..0af6f7f
 +                let id = ObjectIdentifier(view)
 +                seen.insert(id)
 +                guard applied[id] != want else { continue }
-+                guard let surface = view.surface, set(surface, background: want) else { continue }
++                guard let surface = view.surface,
++                      set(surface, background: want, prompt: row.tag.map(Self.promptBackground)) else { continue }
 +                applied[id] = want
 +            }
 +        }
@@ -11173,24 +11179,43 @@ index 0000000..0af6f7f
 +
 +    /// The theme's background with some of the colour mixed in.
 +    static func background(_ tag: DockTag) -> Int {
++        mixed(tag, strength)
++    }
++
++    /// How much of the colour goes into the band behind your prompts.
++    private static let promptStrength = 0.45
++
++    /// The band behind your prompts in Claude Code: much more of the colour
++    /// than the background, so what you typed stands out from its output.
++    static func promptBackground(_ tag: DockTag) -> Int {
++        mixed(tag, promptStrength)
++    }
++
++    /// The palette slot Claude Code's Ghostty Dock theme draws your prompts
++    /// on (install.sh): 255 in light, 237 in dark. Outside Ghostty Dock each
++    /// is about the grey Claude uses anyway.
++    static var promptSlot: Int { DockPalette.scheme == .dark ? 237 : 255 }
++
++    private static func mixed(_ tag: DockTag, _ amount: Double) -> Int {
 +        let base = NSColor(DockPalette.base).usingColorSpace(.sRGB) ?? .black
 +        let mix = { (from: CGFloat, shift: Int) -> Int in
 +            let to = Double((tag.hex >> shift) & 0xff) / 255
-+            return Int(((Double(from) + (to - Double(from)) * strength) * 255).rounded())
++            return Int(((Double(from) + (to - Double(from)) * amount) * 255).rounded())
 +        }
 +        return mix(base.redComponent, 16) << 16 | mix(base.greenComponent, 8) << 8 | mix(base.blueComponent, 0)
 +    }
 +
 +    /// Gives one surface the app's config with this background, or the
 +    /// app's own config back with nil.
-+    private func set(_ surface: ghostty_surface_t, background: Int?) -> Bool {
++    private func set(_ surface: ghostty_surface_t, background: Int?, prompt: Int?) -> Bool {
 +        guard let ghostty = (NSApp.delegate as? AppDelegate)?.ghostty else { return false }
 +        guard let background else {
 +            ghostty.reloadConfig(surface: surface, soft: true)
 +            return true
 +        }
 +        let file = FileManager.default.temporaryDirectory.appendingPathComponent("ghostty-dock-tint.conf")
-+        guard (try? String(format: "background = #%06x\n", background)
++        let prompt = prompt.map { String(format: "palette = %d=#%06x\n", Self.promptSlot, $0) } ?? ""
++        guard (try? (String(format: "background = #%06x\n", background) + prompt)
 +            .write(to: file, atomically: true, encoding: .utf8)) != nil else { return false }
 +        let config = Ghostty.Config(config: Self.load(extra: file.path))
 +        guard let c = config.config else { return false }

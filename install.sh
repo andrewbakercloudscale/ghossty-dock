@@ -78,6 +78,7 @@ function main() {
     print_step 2 4 "Claude Code hooks in $SETTINGS, browser tools"
     install_hooks || exit 1
     install_browser_tools
+    install_prompt_theme
     print_step 3 4 "Finder Quick Actions open tabs"
     add_quick_actions || exit 1
     switch_quick_actions || exit 1
@@ -168,6 +169,34 @@ function install_browser_tools() {
     else
         print_warning "could not add the browser tools: claude mcp add --scope user $MCP_NAME -- $BIN_DIR/ghostty-dock-browser-mcp"
     fi
+}
+
+# Claude Code themes like its own light and dark, but with your prompts on
+# 256-colour slots (255 light, 237 dark) rather than a fixed grey: in a tab
+# you coloured, Ghostty Dock makes that slot a strong shade of the colour,
+# so what you typed stands out from Claude's output. Elsewhere the slots
+# are the greys Claude uses anyway. Switches to them from plain light/dark.
+function install_prompt_theme() {
+    local dir="$HOME/.claude/themes" base slot
+    mkdir -p "$dir" || return 0
+    for base in light dark; do
+        [ "$base" = light ] && slot=255 || slot=237
+        jq -n --arg base "$base" --arg c "ansi256($slot)" '{
+            name: ("Ghostty Dock " + $base), base: $base,
+            overrides: {userMessageBackground: $c}
+        }' >"$dir/ghostty-dock-$base.json" || return 0
+    done
+    local theme
+    theme=$(jq -r '.theme // "dark"' "$SETTINGS" 2>/dev/null)
+    case "$theme" in
+    light | dark)
+        local tmp="$SETTINGS.ghostty-dock.tmp"
+        jq --arg t "custom:ghostty-dock-$theme" '.theme = $t' "$SETTINGS" >"$tmp" && mv -f "$tmp" "$SETTINGS" &&
+            print_success "Claude Code theme: Ghostty Dock $theme (prompts in a coloured tab's colour; /theme to change)"
+        ;;
+    custom:ghostty-dock-*) print_success "Claude Code theme: already Ghostty Dock's" ;;
+    *) print_warning "Claude Code theme '$theme' kept: choose Ghostty Dock light or dark in /theme for coloured prompts" ;;
+    esac
 }
 
 # Adds the two Quick Actions Settings → Shortcuts → In Finder gives keys
@@ -262,8 +291,10 @@ function uninstall_all() {
                 .value |= (map(.hooks |= map(select((.command // "") | test("ghostty-dock-(hook|context)") | not)))
                            | map(select(.hooks | length > 0))))
             else . end
+            | if (.theme // "") | startswith("custom:ghostty-dock-") then .theme |= ltrimstr("custom:ghostty-dock-") else . end
         ' "$SETTINGS" >"$tmp" && mv -f "$tmp" "$SETTINGS"
     fi
+    rm -f "$HOME/.claude/themes/ghostty-dock-light.json" "$HOME/.claude/themes/ghostty-dock-dark.json"
     # Settings > "One Dock icon" hid Ghostty from the Dock; put it back.
     local cfg="$HOME/.config/ghostty/config"
     if grep -q '^# ghostty-dock: one Dock icon' "$cfg" 2>/dev/null; then
