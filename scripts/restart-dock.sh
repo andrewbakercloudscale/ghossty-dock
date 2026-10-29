@@ -29,6 +29,10 @@ STATUS="$STATE_DIR/restart-status"
 # The sessions a restart is bringing back, while it runs: --save and
 # --restore leave them alone, and the app's Loading screen counts them.
 RESTARTING="$STATE_DIR/restarting.tsv"
+# The splits of each tab, which the app records (DockLayout.swift), and the
+# copy a restart takes before the app quits.
+LAYOUT="$STATE_DIR/layout.json"
+LAYOUT_KEPT="$STATE_DIR/layout-restart.json"
 OPENER="$HOME/.local/bin/ghostty-dock-open"
 APP_BIN="$HOME/Applications/Ghostty Dock.app/Contents/MacOS/ghostty"
 HOLD="${GHOSTTY_DOCK_HOLD_BIN:-$HOME/Applications/Ghostty Dock.app/Contents/MacOS/ghostty-dock-hold}"
@@ -305,28 +309,109 @@ function running_anywhere() {
 
 function restore() {
     restarting && { log "restore: skipped, a restart is reopening the sessions"; return 0; }
-    reattach_all
-    [ -s "$SAVED" ] || return 0
+    local held
+    held=$(held_items)
+    [ -n "$held" ] && log "reattaching $(grep -c . <<<"$held") terminal(s)"
+    if [ ! -s "$SAVED" ]; then
+        open_items "$LAYOUT" <<<"$held"
+        return 0
+    fi
     local sessions
     sessions=$(cat "$SAVED")
     rm -f "$SAVED"
     log "restore: $(conditions)"
-    reopen_all "$sessions" "$(open_sessions $(holder_pids) | cut -f2)"
+    reopen_all "$sessions" "$(open_sessions $(holder_pids) | cut -f2)" "$held"
 }
 
-# Opens a tab on every holder left without one, so what ran in the tabs
-# before a quit, crash or restart is back with its output.
-function reattach_all() {
-    local name hpid attached cwd rest tabs=""
+# Prints "<surface>\t<folder>\t<command>" reattaching every holder left
+# without a tab, so what ran in the tabs before a quit, crash or restart
+# is back with its output. <surface> is the terminal it was in, or "-".
+function held_items() {
+    local name hpid attached cwd rest surface
     while IFS=$'\t' read -r name hpid attached cwd rest; do
         [ -n "$name" ] && [ "$attached" = 0 ] || continue
         [ -d "$cwd" ] || cwd="$HOME"
-        tabs+="'$HOLD' attach $name"$'\t'"$cwd"$'\n'
+        surface=$(cat "$STATE_DIR/hold/$name.surface" 2>/dev/null)
+        printf '%s\t%s\t%s\n' "${surface:--}" "$cwd" "'$HOLD' attach $name"
     done < <(holders --detached)
+}
+
+# The terminal a session was last in, from the hook's state.
+function session_surface() {
+    local files file
+    files=$(grep -l "\"session_id\":\"$1\"" "$STATE_DIR"/sessions/srf-*.json 2>/dev/null)
+    # Not through xargs: GNU xargs runs ls with no files, listing the folder.
+    [ -n "$files" ] || return 0
+    file=$(ls -t $files | head -1)
+    file="${file##*/srf-}"
+    echo "${file%.json}"
+}
+
+# Prints "<surface>\t<folder>\t<command>" resuming each session not
+# already running.
+function session_items() {
+    local cwd sid flags surface
+    while IFS=$'\t' read -r cwd sid flags; do
+        [ -z "$sid" ] && continue
+        # Once only: never a second tab on a session already back.
+        running_anywhere "$sid" && continue
+        surface=$(session_surface "$sid")
+        printf '%s\t%s\t%s\n' "${surface:--}" "$cwd" "caffeinate -i claude --resume $sid $flags"
+    done <<<"$1"
+}
+
+# What to open, in order, to put the given terminals back as they were
+# split: "tab <surface>" for each tab's first terminal, then "split
+# <surface> <beside> <right|down>" for the others. Terminals gone are left
+# out of their tab's tree; those in no tab are not listed.
+function layout_plan() {
+    local layout="$1"
+    shift
+    [ -s "$layout" ] && command -v jq >/dev/null || return 0
+    jq -r '
+        def keep: if .s then (if (.s | IN($ARGS.positional[])) then . else null end)
+            else (.l | keep) as $l | (.r | keep) as $r
+                | if $l and $r then {d, l: $l, r: $r} else ($l // $r) end end;
+        def lead: if .s then .s else .l | lead end;
+        def steps: if .s then empty
+            else "split \(.r | lead) \(.l | lead) \(.d)", (.l | steps), (.r | steps) end;
+        .tabs[]? | keep | select(. != null) | "tab \(lead)", steps' "$layout" --args "$@" 2>/dev/null
+}
+
+# Opens the "<surface>\t<folder>\t<command>" lines on stdin, each in a
+# tab of its own, but the terminals that shared a tab before (the layout
+# file says which) as splits of one tab again.
+function open_items() {
+    local layout="$1"
+    local items surfaces opened="" n=0
+    items=$(grep .)
+    [ -z "$items" ] && return 0
+    surfaces=$(cut -f1 <<<"$items" | grep -vx -- -)
+    local step surface beside direction line cwd cmd new to
+    while read -r step surface beside direction; do
+        line=$(awk -F'\t' -v s="$surface" '$1 == s { print; exit }' <<<"$items")
+        [ -z "$line" ] && continue
+        IFS=$'\t' read -r _ cwd cmd <<<"$line"
+        new=""
+        if [ "$step" = split ]; then
+            to=$(awk -v s="$beside" '$1 == s { print $2; exit }' <<<"$opened")
+            [ -n "$to" ] && new=$("$OPENER" --print-terminal --split "$to" --direction "$direction" --command "$cmd" "$cwd" 2>>"$LOG")
+            [ -z "$new" ] && log "$(basename "$cwd"): could not split it beside the terminal it was beside; opening a tab"
+        fi
+        [ -z "$new" ] && new=$("$OPENER" --print-terminal --command "$cmd" "$cwd" 2>>"$LOG")
+        [ -z "$new" ] && log "$(basename "$cwd"): opening the tab failed"
+        opened+="$surface ${new:--}"$'\n'
+        n=$((n + 1))
+    done < <(layout_plan "$layout" $surfaces)
+    [ "$n" -gt 0 ] && log "put back $n terminal(s) of split tabs"
+    # The rest, a tab each, all in one go: a tab at a time took seconds each.
+    local tabs=""
+    while IFS=$'\t' read -r surface cwd cmd; do
+        [ "$surface" != - ] && grep -q "^$surface " <<<"$opened" && continue
+        tabs+="$cmd"$'\t'"$cwd"$'\n'
+    done <<<"$items"
     [ -n "$tabs" ] || return 0
-    # All in one go: a tab at a time took seconds each.
-    printf '%s' "$tabs" | "$OPENER" --batch >>"$LOG" 2>&1 || log "reattaching some tabs failed"
-    log "reattached $(grep -c . <<<"$tabs") tab(s)"
+    printf '%s' "$tabs" | "$OPENER" --batch >>"$LOG" 2>&1 || log "opening some tabs failed"
     return 0
 }
 
@@ -341,10 +426,13 @@ function reopen_missing() {
 }
 
 # Opens the sessions not already running, then checks they started. The
-# second argument lists ids already back in a holder.
+# second argument lists ids already back in a holder; the third, holders
+# to reattach with them (held_items), so a tab split between the two kinds
+# comes back as one.
 function reopen_all() {
     local sessions="$1"
     local held="${2:-}"
+    local reattach="${3:-}"
     local cwd sid flags todo=""
     while IFS=$'\t' read -r cwd sid flags; do
         [ -z "$sid" ] || [ ! -d "$cwd" ] && continue
@@ -352,7 +440,11 @@ function reopen_all() {
         grep -qxF "$sid" <<<"$held" && continue
         todo+="$cwd"$'\t'"$sid"$'\t'"$flags"$'\n'
     done <<<"$sessions"
-    [ -n "$todo" ] && resume_all "$todo"
+    if [ -n "$todo" ]; then
+        resume_all "$todo" "$reattach" "$LAYOUT"
+    else
+        open_items "$LAYOUT" <<<"$reattach"
+    fi
 }
 
 # What a failed reopen usually comes down to, for the log.
@@ -378,19 +470,19 @@ function wait_for_display() {
     sleep 5
 }
 
-# Opens a tab resuming each session, then checks they started, tries the
-# missing ones once more and records any still missing in $MISSING.
+# Opens a tab resuming each session, with the holders to reattach (the
+# second argument, held_items) and in the splits the layout file (the
+# third) records, then checks they started, tries the missing ones once
+# more and records any still missing in $MISSING.
 function resume_all() {
     local sessions="$1"
+    local reattach="${2:-}"
+    local layout="${3:-$LAYOUT}"
     local cwd sid flags
     while IFS=$'\t' read -r cwd sid flags; do
-        [ -z "$sid" ] && continue
-        # Once only: never a second tab on a session already back.
-        running_anywhere "$sid" && continue
-        log "resuming $(basename "$cwd")"
-        "$OPENER" --command "caffeinate -i claude --resume $sid $flags" "$cwd" >>"$LOG" 2>&1 \
-            || log "$(basename "$cwd"): opening the tab failed"
+        [ -n "$sid" ] && log "resuming $(basename "$cwd")"
     done <<<"$sessions"
+    printf '%s\n%s\n' "$reattach" "$(session_items "$sessions")" | open_items "$layout"
     sleep 20
     while IFS=$'\t' read -r cwd sid flags; do
         [ -z "$sid" ] && continue
@@ -461,6 +553,9 @@ function restart() {
     status quitting
     # The holders keep their tabs' programs running rather than hang them up.
     mkdir -p "$STATE_DIR/hold" && echo "$pid" >"$STATE_DIR/hold/quitting"
+    # Before any of its terminals close: the app may record the splits again
+    # as the sessions end.
+    cp -f "$LAYOUT" "$LAYOUT_KEPT" 2>/dev/null || rm -f "$LAYOUT_KEPT"
     # Claude saves its session as it ends; held ones are not ended, so
     # with none to end there is nothing to wait for.
     local ended=0
@@ -476,9 +571,15 @@ function restart() {
 
     # The opener starts the app with window-save-state=never, so it comes up
     # with only these tabs.
-    reattach_all
-    [ -n "$sessions" ] && resume_all "$sessions"
-    rm -f "$RESTARTING"
+    local reattach
+    reattach=$(held_items)
+    [ -n "$reattach" ] && log "reattaching $(grep -c . <<<"$reattach") terminal(s)"
+    if [ -n "$sessions" ]; then
+        resume_all "$sessions" "$reattach" "$LAYOUT_KEPT"
+    else
+        open_items "$LAYOUT_KEPT" <<<"$reattach"
+    fi
+    rm -f "$RESTARTING" "$LAYOUT_KEPT"
     log "done"
 }
 
