@@ -1,0 +1,62 @@
+:root {
+  --fg: #1f2328;
+  --muted: #59636e;
+  --bg: #ffffff;
+  --line: #d1d9e0;
+  --code-bg: #f6f8fa;
+  --link: #0969da;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e6edf3;
+    --muted: #9198a1;
+    --bg: #0d1117;
+    --line: #3d444d;
+    --code-bg: #151b23;
+    --link: #4493f8;
+  }
+}
+html, body { margin: 0; background: var(--bg); color: var(--fg); }
+body {
+  font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+main { padding: 16px 24px 48px; max-width: 900px; }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, pre { font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* Markdown */
+.md h1, .md h2 { border-bottom: 1px solid var(--line); padding-bottom: .3em; }
+.md h1 { font-size: 1.9em; margin: .6em 0 .5em; }
+.md h2 { font-size: 1.45em; margin: 1.4em 0 .6em; }
+.md h3 { font-size: 1.2em; margin: 1.3em 0 .5em; }
+.md p, .md ul, .md ol, .md table, .md pre, .md blockquote { margin: 0 0 1em; }
+.md ul, .md ol { padding-left: 2em; }
+.md li + li { margin-top: .2em; }
+.md li.task { list-style: none; margin-left: -1.4em; }
+.md li.task input { margin: 0 .4em 0 0; vertical-align: middle; }
+.md :not(pre) > code { background: var(--code-bg); padding: .15em .35em; border-radius: 5px; font-size: 85%; }
+.md pre { background: var(--code-bg); padding: 12px 14px; border-radius: 6px; overflow: auto; }
+.md pre code { background: none; padding: 0; }
+.md blockquote { color: var(--muted); border-left: .25em solid var(--line); padding: 0 1em; margin-left: 0; }
+.md table { border-collapse: collapse; display: block; overflow: auto; }
+.md th, .md td { border: 1px solid var(--line); padding: 6px 13px; }
+.md th { background: var(--code-bg); }
+.md img { max-width: 100%; }
+.md hr { border: 0; border-top: 1px solid var(--line); margin: 1.5em 0; }
+
+/* Source and text files: line numbers beside the code. */
+main.code { max-width: none; padding: 0; }
+.code table { border-collapse: collapse; width: 100%; }
+.code td { padding: 0 12px; vertical-align: top; white-space: pre; }
+.code td.n { color: var(--muted); text-align: right; user-select: none; width: 1%; border-right: 1px solid var(--line); }
+.code pre { margin: 0; padding: 12px 0; }
+.code pre code.hljs { background: none; padding: 0; }
+
+/* Images */
+main.image { max-width: none; display: flex; justify-content: center; }
+main.image img { max-width: 100%; height: auto; }
+
+.note { color: var(--muted); padding: 24px; }
