@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 
 # Claude Code SessionStart hook: tells a session started in a Ghostty Dock
-# tab about the browser beside it and its dock-browser tools. Prints the
-# note as the hook's additional context; anywhere else it prints nothing.
+# tab about the browser beside it and its dock-browser tools, and about the
+# file viewer beside it. Prints the note as the hook's additional context;
+# anywhere else it prints nothing.
 # Always exits 0, so it never gets in a session's way.
 
 SCRIPT_NAME=$(basename "$0")
@@ -53,6 +54,7 @@ This session runs in a Ghostty Dock terminal tab, and beside it is a Chromium br
 - Drive it with the dock-browser MCP tools (mcp__dock-browser__*). They start the browser when first used, and work while it is hidden. It is not the user's own Chrome: do not use 127.0.0.1:9222.
 - Pages you open with new_page appear as tabs in this terminal tab's browser. list_pages also shows pages of other terminal tabs' browsers: use the ones you opened or were asked about.
 - Opening a page never takes the user's keyboard. The user shows or hides the browser with ⌘⇧B; `ghostty-dock browser --show` opens it for them to watch.
+- There is also a file viewer beside the terminal: `ghostty-dock view <file>` shows a file there for the user to read (Markdown rendered, code highlighted), such as a plan you just wrote, and it reloads as the file changes. The user opens a file there by ⌘-clicking its name in your output, so name files by a path relative to the working folder or in full.
 EOM
 }
 

@@ -279,6 +279,8 @@ to run commands.
 | ⌘⇧Y | Daily recap |
 | ⌘⇧T | Reopen the last closed session |
 | ⌘⇧B | Show or hide this tab's browser |
+| ⌘⇧E | Show or hide this tab's file viewer |
+| ⌘-click a file name | Open it in the file viewer (web links open as before) |
 
 While the sidebar is hidden, ⌘1–9 and the next/previous keys are Ghostty's
 own again (tab order). Everything else in Ghostty (⌘T, ⌘W, splits) is unchanged.
@@ -320,6 +322,28 @@ take the keyboard from the terminal when they load: only clicking in a page
 does. Claude sees the pages of every terminal tab's browser on the one port,
 and is told to keep to its own.
 
+## File viewer
+
+⌘-click a file name in a terminal, such as the `plan.md` Claude Code just
+wrote, and it opens beside the terminal, left of the browser:
+
+- Markdown is rendered, with tables, task lists and highlighted code blocks.
+- Source and text files show with line numbers and highlighting, and are
+  never run: a ⌘-clicked `.sh` used to offer to run it in Terminal.
+- Images and PDFs show as they are.
+- HTML files, web links and anything else open in their usual app, as before.
+
+It reloads as the file changes, keeping your place. Each file is a tab; ⌘-click
+an open one to bring it to the front. ⌘⇧E hides and shows it, and the bar has
+reload, Show in Finder, open in its usual app, and × to close it and its
+files. Drag its left edge to resize it.
+
+⌘-click works in Claude Code too, though it has the mouse: Ghostty Dock
+looks for links whenever ⌘ is held, which no program sees. A name relative to
+the terminal's folder works. `ghostty-dock view <file>` opens one from a
+script, and every Claude Code session in a dock tab is told it can show you a
+file this way.
+
 ## Command line and scripting
 
 `ghostty-dock` drives the running app, for scripts and other agents:
@@ -334,6 +358,7 @@ ghostty-dock wait aws-cli 'passed|failed' --timeout 600
 ghostty-dock notify "Deploy done" "prod is on 1.4.2"
 ghostty-dock open ~/code/repo --command claude    # a new tab
 ghostty-dock browser --show                       # start this tab's browser and show it
+ghostty-dock view docs/plan.md                    # show a file in this tab's viewer
 ```
 
 A session is named by its session id, its name in the sidebar, its folder or
@@ -447,6 +472,8 @@ type a password if asked.
 
     bash tests/hook-test.sh                          # the Claude Code hook
     bash tests/browser-tools-test.sh                 # the browser note and dock-browser tools
+    bash tests/restart-test.sh                       # split tabs come back split after a restart
+    bash tests/viewer-test.sh                        # the file viewer's page (macOS, after a build)
     swift test --package-path tests/dock-logic       # sidebar order, groups, cost (after a build)
     bash tests/patch-test.sh --latest                # the patch still applies to Ghostty
 

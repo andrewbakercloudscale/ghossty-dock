@@ -40,3 +40,5 @@ jobs:
         run: swift test --package-path tests/dock-logic
       - name: DockCore
         run: swift test
+      - name: File viewer page
+        run: bash tests/viewer-test.sh

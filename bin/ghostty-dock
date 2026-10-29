@@ -2,7 +2,8 @@
 
 # Drives Ghostty Dock from a script or another agent: list the sessions,
 # go to one, type into it, press keys, read its screen, wait for text on it,
-# post a notification, open a new tab, start the browser beside a tab.
+# post a notification, open a new tab, start the browser beside a tab, show
+# a file in the viewer beside it.
 #
 # Talks to the running app through request files in
 # ~/.local/state/ghostty-dock/api (a folder only you can open): the app
@@ -39,6 +40,8 @@ commands:
     open   <folder> [--command <cmd>]    Open a folder as a new tab (a shell, or cmd)
     browser [--show]                     Start the browser beside this tab, for Claude's
                                          dock-browser tools ($BROWSER_URL); --show opens it
+    view   <file> [--hidden]             Show a file in the viewer beside this tab: Markdown
+                                         rendered, code highlighted (--hidden: load it only)
 
 <session> is a session id, a name as in the sidebar, a folder, or the start
 of a name.
@@ -121,6 +124,24 @@ function cmd_browser() {
         sleep 0.1
     done
     echo "$BROWSER_URL"
+}
+
+# Opens a file in the viewer beside this tab (DockViewer in the app).
+function cmd_view() {
+    local file="" show=true
+    while [ $# -gt 0 ]; do
+        case $1 in
+        --hidden) show=false ;;
+        -*) usage ;;
+        *) [ -z "$file" ] && file="$1" || usage ;;
+        esac
+        shift
+    done
+    [ -n "$file" ] || usage
+    [ -f "$file" ] || die "no such file: $file"
+    file="$(cd "$(dirname "$file")" && pwd)/$(basename "$file")"
+    call "$(jq -nc --arg p "$file" --arg s "$(own_surface)" --argjson v "$show" \
+        '{op:"view", path:$p, surface:$s, show:$v}')" | jq -r '.path'
 }
 
 function cmd_list() {
@@ -244,6 +265,9 @@ function main() {
             ;;
         browser)
             cmd_browser "$@"
+            ;;
+        view)
+            cmd_view "$@"
             ;;
         -h | --help | help)
             usage
