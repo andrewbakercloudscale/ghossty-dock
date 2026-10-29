@@ -317,15 +317,16 @@ function restore() {
 # Opens a tab on every holder left without one, so what ran in the tabs
 # before a quit, crash or restart is back with its output.
 function reattach_all() {
-    local name hpid attached cwd rest n=0
+    local name hpid attached cwd rest tabs=""
     while IFS=$'\t' read -r name hpid attached cwd rest; do
         [ -n "$name" ] && [ "$attached" = 0 ] || continue
         [ -d "$cwd" ] || cwd="$HOME"
-        "$OPENER" --command "'$HOLD' attach $name" "$cwd" >>"$LOG" 2>&1 \
-            || log "$(basename "$cwd"): reattaching failed"
-        n=$((n + 1))
+        tabs+="'$HOLD' attach $name"$'\t'"$cwd"$'\n'
     done < <(holders --detached)
-    [ "$n" -gt 0 ] && log "reattached $n tab(s)"
+    [ -n "$tabs" ] || return 0
+    # All in one go: a tab at a time took seconds each.
+    printf '%s' "$tabs" | "$OPENER" --batch >>"$LOG" 2>&1 || log "reattaching some tabs failed"
+    log "reattached $(grep -c . <<<"$tabs") tab(s)"
     return 0
 }
 

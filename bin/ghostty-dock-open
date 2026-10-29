@@ -30,11 +30,13 @@ Opens a folder as a new tab in the shared Ghostty window.
 usage: ${SCRIPT_NAME} [options] <launcher> <folder>
        ${SCRIPT_NAME} [options] --shell <folder>
        ${SCRIPT_NAME} [options] --command <command> <folder>
+       ${SCRIPT_NAME} --batch          (lines of "<command><tab><folder>" on stdin)
 
 options:
     --shell                      Open the user's shell, no launcher
     --command        <command>   Run this shell command line instead of a launcher
     --window                     Open a new window instead of a tab
+    --batch                      Open a tab for each line on stdin, in one go
     -h|--help                    Show this help message
 
 dependencies: ${DEPENDENCIES[@]}
@@ -66,6 +68,11 @@ function main() {
             command="$1"
             ;;
         --window) window=true ;;
+        --batch)
+            exit_on_missing_tools "${DEPENDENCIES[@]}"
+            open_batch
+            exit $?
+            ;;
         -h | --help) usage ;;
         -*)
             echo "Error: Unknown option '$1'" >&2
@@ -118,6 +125,68 @@ function main() {
         exit 0
     fi
     record_tab "$dock_id" "$result" "$shown" "$folder"
+}
+
+# Opens a tab for each "<command>\t<folder>" line on stdin with one
+# AppleScript call: one call per tab took seconds each, and a restart opens
+# every held tab. A tab the call could not open is opened on its own.
+function open_batch() {
+    local cmds=() folders=() ids=() args=() line cmd folder id
+    while IFS=$'\t' read -r cmd folder; do
+        [ -n "$cmd" ] || continue
+        [ -d "$folder" ] || folder="$HOME"
+        cmds+=("$cmd")
+        folders+=("$folder")
+        id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+        ids+=("$id")
+        args+=("$id" "/usr/bin/env $(shell_quote "PATH=$(command_path)") $cmd" "$folder")
+    done
+    [ "${#cmds[@]}" -gt 0 ] || return 0
+    local results=() failed=0 i
+    if ensure_ghostty_running; then
+        while IFS= read -r line; do results+=("$line"); done < <(open_tabs "${args[@]}")
+    fi
+    for i in "${!cmds[@]}"; do
+        if [ -n "${results[$i]:-}" ] && [ "${results[$i]}" != "-" ]; then
+            record_tab "${ids[$i]}" "${results[$i]}" "${cmds[$i]}" "${folders[$i]}"
+        else
+            "$0" --command "${cmds[$i]}" "${folders[$i]}" || failed=1
+        fi
+    done
+    return $failed
+}
+
+# Prints "<tab id> <terminal id>" for each (dock id, command, folder) of
+# its arguments, or "-" for one it could not open.
+function open_tabs() {
+    sed "s/tell application \"Ghostty\"/tell $APP_REF/" <<'APPLESCRIPT' | osascript - "$@" 2>/dev/null
+on run argv
+    set out to {}
+    tell application "Ghostty"
+        repeat with i from 1 to (count argv) by 3
+            try
+                set cfg to new surface configuration
+                set initial working directory of cfg to item (i + 2) of argv
+                set environment variables of cfg to {"DOCK_TAB_ID=" & item i of argv}
+                set command of cfg to item (i + 1) of argv
+                set wait after command of cfg to false
+                if (count windows) is 0 then
+                    set w to new window with configuration cfg
+                    set t to selected tab of w
+                else
+                    set t to new tab in front window with configuration cfg
+                end if
+                set end of out to (id of t) & " " & (id of focused terminal of t)
+            on error
+                set end of out to "-"
+            end try
+        end repeat
+        activate
+    end tell
+    set AppleScript's text item delimiters to linefeed
+    return out as text
+end run
+APPLESCRIPT
 }
 
 # The caller's PATH with the usual tool folders in front, once each.

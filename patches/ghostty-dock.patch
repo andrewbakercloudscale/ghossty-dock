@@ -5178,25 +5178,28 @@ index 0000000..db9ed48
 +}
 diff --git a/macos/Sources/Features/Dock/DockLoadingView.swift b/macos/Sources/Features/Dock/DockLoadingView.swift
 new file mode 100644
-index 0000000..dad1607
+index 0000000..b9cfd97
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockLoadingView.swift
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,84 @@
 +import AppKit
 +import SwiftUI
 +
 +/// The Loading… screen over a terminal window while it lasts. Its own view,
 +/// so the sidebar's every change doesn't redraw the window's terminals.
++/// Watches only `loading`: observing the model redrew every window's
++/// terminal view at each of its changes.
 +struct DockLoadingOverlay: View {
-+    @ObservedObject private var model = DockSessions.shared
++    @State private var loading = DockSessions.shared.loading
 +
 +    var body: some View {
 +        ZStack {
-+            if model.loading {
++            if loading {
 +                DockLoadingView().transition(.opacity)
 +            }
 +        }
-+        .animation(.easeOut(duration: 0.4), value: model.loading)
++        .animation(.easeOut(duration: 0.4), value: loading)
++        .onReceive(DockSessions.shared.$loading.removeDuplicates()) { loading = $0 }
 +    }
 +}
 +
@@ -7043,10 +7046,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..0ceac12
+index 0000000..c829575
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1576 @@
+@@ -0,0 +1,1591 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -7308,6 +7311,9 @@ index 0000000..0ceac12
 +    private var done: Set<String> = []
 +    /// Of those, the ones whose screen shows it working again: running.
 +    private var resumed: Set<String> = []
++    /// The hook's session files as last read, by path, with their change
++    /// date: refresh, twice a second, decodes only those that changed.
++    private var sessionFiles: [String: (changed: Date, session: Session)] = [:]
 +
 +    private init() {
 +        seen = (try? JSONDecoder().decode([String: Int].self,
@@ -7888,15 +7894,27 @@ index 0000000..0ceac12
 +
 +    func refresh() {
 +        var sessions: [String: Session] = [:]
-+        let files = (try? FileManager.default.contentsOfDirectory(at: sessionsDir, includingPropertiesForKeys: nil)) ?? []
++        let files = (try? FileManager.default.contentsOfDirectory(
++            at: sessionsDir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
++        var read: [String: (changed: Date, session: Session)] = [:]
++        defer { sessionFiles = read }
 +        for url in files where url.lastPathComponent.hasPrefix("srf-") && url.pathExtension == "json" {
-+            guard let data = try? Data(contentsOf: url),
-+                  let s = try? JSONDecoder().decode(Session.self, from: data) else { continue }
++            let changed = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
++                .contentModificationDate ?? .distantPast
++            let s: Session
++            if let old = sessionFiles[url.path], old.changed == changed, changed != .distantPast {
++                s = old.session
++            } else {
++                guard let data = try? Data(contentsOf: url),
++                      let decoded = try? JSONDecoder().decode(Session.self, from: data) else { continue }
++                s = decoded
++            }
 +            if let pid = s.claude_pid, kill(pid, 0) != 0, errno != EPERM {
 +                // claude went away without a SessionEnd (closed tab, crash).
 +                try? FileManager.default.removeItem(at: url)
 +                continue
 +            }
++            read[url.path] = (changed, s)
 +            sessions[String(url.deletingPathExtension().lastPathComponent.dropFirst(4))] = s
 +        }
 +
@@ -9202,10 +9220,10 @@ index 0000000..a5345e3
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..d6c5053
+index 0000000..4732c36
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1422 @@
+@@ -0,0 +1,1520 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -10585,18 +10603,118 @@ index 0000000..d6c5053
 +    }
 +}
 +
-+/// Hands back the window a view is in, once it is in one.
++/// Hands back the window a view is in, once it is in one, and again when it
++/// moves to another: a sidebar moves to whichever tab is in front.
 +struct DockWindowReader: NSViewRepresentable {
 +    var found: (NSWindow?) -> Void
 +
-+    func makeNSView(context: Context) -> NSView {
-+        let v = NSView()
++    final class Reader: NSView {
++        var found: (NSWindow?) -> Void = { _ in }
++
++        override func viewDidMoveToWindow() {
++            super.viewDidMoveToWindow()
++            guard let window else { return }
++            DispatchQueue.main.async { [found] in found(window) }
++        }
++    }
++
++    func makeNSView(context: Context) -> Reader {
++        let v = Reader()
++        v.found = found
 +        DispatchQueue.main.async { found(v.window) }
 +        return v
 +    }
 +
-+    func updateNSView(_ v: NSView, context: Context) {
++    func updateNSView(_ v: Reader, context: Context) {
++        v.found = found
 +        DispatchQueue.main.async { if v.window != nil { found(v.window) } }
++    }
++}
++
++/// Where a tab's sidebar goes. Only the tab in front of each window has
++/// one: the sidebars are lent to whichever tab is in front and handed back
++/// when it goes behind another. One each, 14 tabs kept 14 sidebars up to
++/// date with every change, those out of sight too.
++final class DockSidebarSlot: NSView {
++    private static var slots: [Weak] = []
++    private static var spare: NSHostingView<DockSidebarView>?
++    private static var watching = false
++    private struct Weak { weak var slot: DockSidebarSlot? }
++
++    private let onNewTab: () -> Void
++    private var hosted: NSHostingView<DockSidebarView>?
++
++    init(onNewTab: @escaping () -> Void) {
++        self.onNewTab = onNewTab
++        super.init(frame: .zero)
++        Self.slots.append(Weak(slot: self))
++        Self.watch()
++    }
++
++    required init?(coder: NSCoder) { fatalError("not used") }
++
++    override var isFlipped: Bool { true }
++
++    override func layout() {
++        super.layout()
++        hosted?.frame = bounds
++    }
++
++    override func viewDidMoveToWindow() {
++        super.viewDidMoveToWindow()
++        Self.lend()
++    }
++
++    /// The tab in front of its window.
++    private var inFront: Bool {
++        guard let window else { return false }
++        return (window.tabGroup?.selectedWindow ?? window) === window
++    }
++
++    private static func watch() {
++        guard !watching else { return }
++        watching = true
++        let names: [Notification.Name] = [NSWindow.didBecomeKeyNotification,
++                                          NSWindow.didBecomeMainNotification,
++                                          NSWindow.didChangeOcclusionStateNotification]
++        for name in names {
++            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in lend() }
++        }
++    }
++
++    /// Takes the sidebars back from tabs gone behind another, then gives
++    /// them to the tabs in front that have none.
++    private static func lend() {
++        slots.removeAll { $0.slot == nil }
++        let all = slots.compactMap(\.slot)
++        for slot in all where !slot.inFront { slot.giveBack() }
++        for slot in all where slot.inFront && slot.hosted == nil { slot.borrow() }
++    }
++
++    private func borrow() {
++        let view = Self.spare ?? {
++            let view = NSHostingView(rootView: DockSidebarView(onNewTab: onNewTab))
++            view.sizingOptions = []
++            return view
++        }()
++        Self.spare = nil
++        view.frame = bounds
++        view.autoresizingMask = [.width, .height]
++        addSubview(view)
++        hosted = view
++    }
++
++    private func giveBack() {
++        guard let view = hosted else { return }
++        hosted = nil
++        view.removeFromSuperview()
++        // One kept for the next tab to come to the front; more would only
++        // be kept up to date for nothing.
++        if Self.spare == nil { Self.spare = view }
++    }
++
++    deinit {
++        if let view = hosted, Self.spare == nil { Self.spare = view }
 +    }
 +}
 +
@@ -10619,13 +10737,11 @@ index 0000000..d6c5053
 +    private struct Hosted: NSViewRepresentable {
 +        var onNewTab: () -> Void
 +
-+        func makeNSView(context: Context) -> NSHostingView<DockSidebarView> {
-+            let view = NSHostingView(rootView: DockSidebarView(onNewTab: onNewTab))
-+            view.sizingOptions = []
-+            return view
++        func makeNSView(context: Context) -> DockSidebarSlot {
++            DockSidebarSlot(onNewTab: onNewTab)
 +        }
 +
-+        func updateNSView(_ view: NSHostingView<DockSidebarView>, context: Context) {}
++        func updateNSView(_ view: DockSidebarSlot, context: Context) {}
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockSurfaceError.swift b/macos/Sources/Features/Dock/DockSurfaceError.swift
@@ -11710,6 +11826,46 @@ index 0000000..9be71a4
 +        return pr
 +    }
 +}
+diff --git a/macos/Sources/Features/Terminal/BaseTerminalController.swift b/macos/Sources/Features/Terminal/BaseTerminalController.swift
+index d4b0ac0..4ec0c1d 100644
+--- a/macos/Sources/Features/Terminal/BaseTerminalController.swift
++++ b/macos/Sources/Features/Terminal/BaseTerminalController.swift
+@@ -837,10 +837,27 @@ class BaseTerminalController: NSWindowController,
+ 
+     private func titleDidChange(to: String) {
+         lastComputedTitle = to
++        // Dock: Claude Code animates its title several times a second, and
++        // each new title lays out the title bar. A tab behind another takes
++        // its newest title at most once a second, and as it comes to the front.
++        if let window, (window.tabGroup?.selectedWindow ?? window) !== window {
++            guard !titlePending else { return }
++            titlePending = true
++            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
++                guard let self, self.titlePending else { return }
++                self.titlePending = false
++                self.applyTitleToWindow()
++            }
++            return
++        }
+         applyTitleToWindow()
+     }
+ 
++    /// A title is waiting to be shown on a tab behind another.
++    private var titlePending = false
++
+     private func applyTitleToWindow() {
++        titlePending = false
+         guard let window else { return }
+ 
+         if let titleOverride {
+@@ -1230,6 +1247,7 @@ class BaseTerminalController: NSWindowController,
+     }
+ 
+     func windowDidBecomeKey(_ notification: Notification) {
++        if titlePending { applyTitleToWindow() }
+         // If when we become key our first responder is the window itself, then we
+         // want to move focus to our focused terminal surface. This works around
+         // various weirdness with moving surfaces around.
 diff --git a/macos/Sources/Features/Terminal/TerminalRestorable.swift b/macos/Sources/Features/Terminal/TerminalRestorable.swift
 index aab51f6..b96bbf4 100644
 --- a/macos/Sources/Features/Terminal/TerminalRestorable.swift
