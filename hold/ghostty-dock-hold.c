@@ -288,6 +288,16 @@ static int is_shell(pid_t pid) {
     return 0;
 }
 
+// Whether the foreground group is just a shell at its prompt. A script that
+// launches a program (a wrapper around claude) keeps it in its own group.
+static int shell_only(pid_t pgrp) {
+    pid_t pids[256];
+    int n = proc_listpids(PROC_PGRP_ONLY, (uint32_t)pgrp, pids, sizeof pids) / (int)sizeof *pids;
+    if (n <= 0) return is_shell(pgrp);
+    for (int i = 0; i < n; i++) if (pids[i] > 0 && !is_shell(pids[i])) return 0;
+    return 1;
+}
+
 static void replay(int fd, int pty, struct winsize ws) {
     size_t n;
     char *buf = kept(&n);
@@ -313,7 +323,7 @@ static void replay(int fd, int pty, struct winsize ws) {
 
     // A program redraws on a size change; a shell would only print its prompt again.
     pid_t fg = tcgetpgrp(pty);
-    if (fg > 0 && !is_shell(fg) && ws.ws_col > 2) {
+    if (fg > 0 && !shell_only(fg) && ws.ws_col > 2) {
         struct winsize nudge = ws;
         nudge.ws_col--;
         ioctl(pty, TIOCSWINSZ, &nudge);
