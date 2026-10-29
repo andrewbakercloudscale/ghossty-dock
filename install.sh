@@ -96,6 +96,7 @@ function main() {
         bash "$ROOT/scripts/build-terminal.sh" --no-open || exit 1
     fi
     print_success "Ghostty Dock is installed: open it from ~/Applications"
+    check_claude_login
     echo "  - Sessions already open keep their own Ghostty app until closed."
 }
 
@@ -168,6 +169,32 @@ function install_browser_tools() {
         print_success "browser tools: $MCP_NAME added for every Claude Code session"
     else
         print_warning "could not add the browser tools: claude mcp add --scope user $MCP_NAME -- $BIN_DIR/ghostty-dock-browser-mcp"
+    fi
+}
+
+# Sessions can't start until Claude Code is logged in: offers to log in
+# now (the app also asks, with a Log In button in the sidebar).
+function check_claude_login() {
+    if ! command -v claude >/dev/null 2>&1; then
+        print_warning "Claude Code is not installed: curl -fsSL https://claude.ai/install.sh | bash"
+        return 0
+    fi
+    local status
+    status=$(claude auth status --json 2>/dev/null)
+    if echo "$status" | jq -e '.loggedIn == true or (.apiProvider // "firstParty") != "firstParty"' >/dev/null 2>&1; then
+        print_success "Claude Code: logged in$(echo "$status" | jq -r '.email // empty | " as " + .')"
+        return 0
+    fi
+    print_warning "Claude Code is not logged in, so sessions won't start"
+    if [ -t 0 ]; then
+        local answer
+        read -r -p "  Log in now? [Y/n] " answer
+        case "$answer" in
+        [nN]*) echo "  - Later: claude auth login (or Log In… in Ghostty Dock's sidebar)" ;;
+        *) claude auth login ;;
+        esac
+    else
+        echo "  - Run: claude auth login (or Log In… in Ghostty Dock's sidebar)"
     fi
 }
 
