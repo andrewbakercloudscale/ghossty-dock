@@ -6227,6 +6227,259 @@ index 0000000..ddb67af
 +        window?.makeKeyAndOrderFront(nil)
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockPrompts.swift b/macos/Sources/Features/Dock/DockPrompts.swift
+new file mode 100644
+index 0000000..15fd2f3
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockPrompts.swift
+@@ -0,0 +1,247 @@
++import AppKit
++import SwiftUI
++
++/// What you typed to a session, oldest first, from its transcript. Opened
++/// from a row's View Prompts.
++final class DockPromptsModel: ObservableObject {
++    struct Prompt: Identifiable, Equatable {
++        let id: Int
++        let at: Date?
++        let text: String
++        /// Images pasted with it.
++        let images: Int
++    }
++
++    @Published var name = ""
++    @Published var prompts: [Prompt] = []
++    @Published var loading = false
++    @Published var error: String?
++    private var sessionId: String?
++    private var generation = 0
++
++    func load(sessionId: String?, name: String) {
++        self.sessionId = sessionId
++        self.name = name
++        prompts = []
++        refresh()
++    }
++
++    func refresh() {
++        generation += 1
++        let gen = generation
++        guard let sid = sessionId, let url = DockSessions.shared.transcriptURL(sid) else {
++            prompts = []
++            error = "No transcript for this session yet."
++            return
++        }
++        loading = true
++        DispatchQueue.global(qos: .userInitiated).async {
++            let found = Self.prompts(in: url)
++            DispatchQueue.main.async {
++                guard gen == self.generation else { return }
++                self.loading = false
++                self.error = found == nil ? "Could not read the transcript." : nil
++                self.prompts = found ?? []
++            }
++        }
++    }
++
++    private static let stamp: ISO8601DateFormatter = {
++        let f = ISO8601DateFormatter()
++        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
++        return f
++    }()
++
++    /// The user lines that are prompts: not tool results, subagents, meta
++    /// lines, compaction summaries or command output.
++    static func prompts(in url: URL) -> [Prompt]? {
++        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
++        var out: [Prompt] = []
++        for line in data.split(separator: UInt8(ascii: "\n")) {
++            // Most lines are not the user's; skip them before parsing.
++            guard line.range(of: Data("\"type\":\"user\"".utf8)) != nil,
++                  let o = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
++                  o["type"] as? String == "user",
++                  o["isMeta"] as? Bool != true, o["isSidechain"] as? Bool != true,
++                  o["isCompactSummary"] as? Bool != true,
++                  let message = o["message"] as? [String: Any] else { continue }
++            var text = "", images = 0
++            if let s = message["content"] as? String {
++                text = s
++            } else if let parts = message["content"] as? [[String: Any]] {
++                for p in parts {
++                    switch p["type"] as? String {
++                    case "text": text += (text.isEmpty ? "" : "\n") + (p["text"] as? String ?? "")
++                    case "image": images += 1
++                    default: break
++                    }
++                }
++            }
++            guard let shown = shown(text), !shown.isEmpty || images > 0 else { continue }
++            out.append(Prompt(id: out.count, at: (o["timestamp"] as? String).flatMap(stamp.date(from:)),
++                              text: shown, images: images))
++        }
++        return out
++    }
++
++    /// The prompt as you typed it: a slash command as "/name args", and nil
++    /// for what Claude Code wrote itself.
++    private static func shown(_ text: String) -> String? {
++        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
++        if t.hasPrefix("[Request interrupted") { return nil }
++        if t.hasPrefix("<command-name>") || t.hasPrefix("<command-message>") {
++            guard let name = tag("command-name", in: t) else { return nil }
++            let args = tag("command-args", in: t) ?? ""
++            return args.isEmpty ? name : "\(name) \(args)"
++        }
++        if t.hasPrefix("<local-command") || t.hasPrefix("<system-reminder>")
++            || t.hasPrefix("<bash-") || t.hasPrefix("<task-notification>") { return nil }
++        return pastes(t)
++    }
++
++    /// Text pasted into the prompt, as Claude Code shows it: a line, not the paste.
++    private static func pastes(_ text: String) -> String {
++        var out = text
++        // The closing tag carries the id too: </pasted_content id="…">.
++        while let a = out.range(of: "<pasted_content"),
++              let close = out.range(of: "</pasted_content", range: a.upperBound..<out.endIndex),
++              let b = out.range(of: ">", range: close.upperBound..<out.endIndex) {
++            let body = out[a.upperBound..<close.lowerBound]
++            let lines = body.split(separator: "\n", omittingEmptySubsequences: false).count - 1
++            out.replaceSubrange(a.lowerBound..<b.upperBound, with: "[Pasted text, \(max(lines, 1)) lines]")
++        }
++        return out.trimmingCharacters(in: .whitespacesAndNewlines)
++    }
++
++    private static func tag(_ name: String, in text: String) -> String? {
++        guard let a = text.range(of: "<\(name)>"),
++              let b = text.range(of: "</\(name)>", range: a.upperBound..<text.endIndex) else { return nil }
++        return text[a.upperBound..<b.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
++    }
++}
++
++struct DockPromptsView: View {
++    @ObservedObject var model: DockPromptsModel
++    @State private var query = ""
++    @State private var copied: Int?
++
++    var body: some View {
++        let shown = query.isEmpty ? model.prompts
++            : model.prompts.filter { $0.text.localizedCaseInsensitiveContains(query) }
++        VStack(spacing: 0) {
++            HStack(spacing: 8) {
++                VStack(alignment: .leading, spacing: 2) {
++                    Text(model.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
++                    Text(summary).font(.system(size: 11)).foregroundStyle(DockPalette.grey)
++                }
++                Spacer()
++                Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(DockPalette.grey)
++                TextField("Filter", text: $query).textFieldStyle(.plain).font(.system(size: 12)).frame(width: 160)
++                Button { model.refresh() } label: { Image(systemName: "arrow.clockwise") }
++                    .buttonStyle(.plain).help("Refresh")
++                    .keyboardShortcut("r", modifiers: .command)
++            }
++            .foregroundStyle(DockPalette.text)
++            .padding(10)
++            Divider()
++            if let error = model.error {
++                Text(error).font(.system(size: 12)).foregroundStyle(DockPalette.grey).padding(10)
++                Spacer()
++            } else if shown.isEmpty && !model.loading {
++                Text(query.isEmpty ? "No prompts yet." : "No prompt has \"\(query)\".")
++                    .font(.system(size: 12)).foregroundStyle(DockPalette.grey).padding(10)
++                Spacer()
++            } else {
++                ScrollViewReader { proxy in
++                    ScrollView {
++                        LazyVStack(alignment: .leading, spacing: 0) {
++                            ForEach(Array(shown.enumerated()), id: \.element.id) { i, p in
++                                row(p, day: i == 0 || !Self.sameDay(shown[i - 1].at, p.at))
++                            }
++                        }
++                        .padding(.vertical, 8)
++                    }
++                    // The latest first in view, as in the terminal.
++                    .onAppear { proxy.scrollTo(shown.last?.id, anchor: .bottom) }
++                    .onChange(of: model.prompts) { _ in proxy.scrollTo(model.prompts.last?.id, anchor: .bottom) }
++                }
++            }
++        }
++        .background(DockPalette.base)
++        .environment(\.colorScheme, DockPalette.scheme)
++    }
++
++    private var summary: String {
++        let n = model.prompts.count
++        guard let first = model.prompts.first?.at else { return model.loading ? "Loading…" : "\(n) prompts" }
++        return "\(n) prompt\(n == 1 ? "" : "s") since " + first.formatted(date: .abbreviated, time: .shortened)
++    }
++
++    @ViewBuilder
++    private func row(_ p: DockPromptsModel.Prompt, day: Bool) -> some View {
++        if day, let at = p.at {
++            Text(at.formatted(date: .complete, time: .omitted))
++                .font(.system(size: 11, weight: .semibold)).foregroundStyle(DockPalette.grey)
++                .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 4)
++        }
++        HStack(alignment: .top, spacing: 10) {
++            // The timeline: a dot per prompt on a line.
++            VStack(spacing: 0) {
++                Circle().fill(DockPalette.blue).frame(width: 7, height: 7).padding(.top, 5)
++                Rectangle().fill(DockPalette.grey.opacity(0.3)).frame(width: 1)
++            }
++            .frame(width: 7)
++            Text(p.at.map { $0.formatted(date: .omitted, time: .shortened) } ?? "")
++                .font(.system(size: 11, design: .monospaced)).foregroundStyle(DockPalette.grey)
++                .frame(width: 64, alignment: .leading).padding(.top, 1)
++            VStack(alignment: .leading, spacing: 3) {
++                Text(p.text.isEmpty ? "(image)" : p.text)
++                    .font(.system(size: 12.5)).foregroundStyle(DockPalette.text)
++                    .textSelection(.enabled)
++                    .frame(maxWidth: .infinity, alignment: .leading)
++                if p.images > 0 {
++                    Label("\(p.images) image\(p.images == 1 ? "" : "s")", systemImage: "photo")
++                        .font(.system(size: 10.5)).foregroundStyle(DockPalette.grey)
++                }
++            }
++            Button {
++                NSPasteboard.general.clearContents()
++                NSPasteboard.general.setString(p.text, forType: .string)
++                copied = p.id
++            } label: {
++                Image(systemName: copied == p.id ? "checkmark" : "doc.on.doc").font(.system(size: 11))
++            }
++            .buttonStyle(.plain).foregroundStyle(DockPalette.grey).help("Copy")
++        }
++        .padding(.horizontal, 14).padding(.bottom, 10)
++        .id(p.id)
++    }
++
++    private static func sameDay(_ a: Date?, _ b: Date?) -> Bool {
++        guard let a, let b else { return true }
++        return Calendar.current.isDate(a, inSameDayAs: b)
++    }
++}
++
++/// The prompts in their own window, reused for whichever session asks.
++final class DockPromptsWindow {
++    static let shared = DockPromptsWindow()
++    private var window: NSWindow?
++    private let model = DockPromptsModel()
++
++    func show(sessionId: String?, name: String) {
++        model.load(sessionId: sessionId, name: name)
++        if window == nil {
++            let w = NSWindow(contentViewController: NSHostingController(rootView: DockPromptsView(model: model)))
++            w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
++            w.isReleasedWhenClosed = false
++            w.setContentSize(NSSize(width: 720, height: 640))
++            w.setFrameAutosaveName("GhosttyDockPrompts")
++            if !w.setFrameUsingName("GhosttyDockPrompts") { w.center() }
++            window = w
++        }
++        window?.title = "Prompts in \(name)"
++        NSApp.activate(ignoringOtherApps: true)
++        window?.makeKeyAndOrderFront(nil)
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockRaiseBanner.swift b/macos/Sources/Features/Dock/DockRaiseBanner.swift
 new file mode 100644
 index 0000000..9b29fc8
@@ -9220,10 +9473,10 @@ index 0000000..a5345e3
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..1e6e2e1
+index 0000000..f7e7697
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1525 @@
+@@ -0,0 +1,1527 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -10082,6 +10335,8 @@ index 0000000..1e6e2e1
 +                }
 +            }
 +            Button("View Diff") { viewDiff() }.disabled(folder.isEmpty)
++            Button("View Prompts") { DockPromptsWindow.shared.show(sessionId: row.sessionId, name: row.name) }
++                .disabled(row.sessionId == nil)
 +            Button("New Session in a Worktree…") { model.newWorktreeSession(row) }.disabled(folder.isEmpty)
 +            Button("Child Terminal Here…") { model.childTerminal(row) }
 +            Button("Move Up") { model.move(row, by: -1) }
