@@ -180,17 +180,17 @@ index ade9bf3..0556a38 100644
  // rest of the app.
 diff --git a/macos/Sources/Features/Dock/DockAPI.swift b/macos/Sources/Features/Dock/DockAPI.swift
 new file mode 100644
-index 0000000..5e33c6c
+index 0000000..b2f5fe6
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAPI.swift
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,186 @@
 +import AppKit
 +
 +/// The app's side of the `ghostty-dock` command: requests are JSON files
 +/// dropped in ~/.local/state/ghostty-dock/api (a folder only you can open),
 +/// answered with a file next to them.
 +///
-+/// Request:  req-<id>.json  {"op": "list" | "focus" | "send" | "keys" | "read" | "notify" | "browser", ...}
++/// Request:  req-<id>.json  {"op": "list" | "focus" | "send" | "keys" | "read" | "notify" | "browser" | "view", ...}
 +/// Answer:   res-<id>.json  {"ok": true, ...} or {"ok": false, "error": "..."}
 +@MainActor
 +final class DockAPI {
@@ -267,6 +267,10 @@ index 0000000..5e33c6c
 +        }
 +        if op == "browser" {
 +            return DockBrowser.prepare(surface: r["surface"] as? String, show: r["show"] as? Bool == true)
++        }
++        if op == "view" {
++            guard let path = r["path"] as? String, !path.isEmpty else { return ["ok": false, "error": "say which file"] }
++            return DockViewer.open(path: path, surface: r["surface"] as? String, show: r["show"] as? Bool != false)
 +        }
 +        guard let target = r["target"] as? String, !target.isEmpty else {
 +            return ["ok": false, "error": "say which session: a name, a session id or a folder"]
@@ -3191,7 +3195,7 @@ index 0000000..3725d37
 +}
 diff --git a/macos/Sources/Features/Dock/DockBrowser.swift b/macos/Sources/Features/Dock/DockBrowser.swift
 new file mode 100644
-index 0000000..8eb5b23
+index 0000000..bd5b5c6
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockBrowser.swift
 @@ -0,0 +1,489 @@
@@ -3544,11 +3548,11 @@ index 0000000..8eb5b23
 +    }
 +}
 +
-+/// Drag to make the browser wider or narrower. An AppKit view, not a
++/// Drag to make the browser (or the file viewer) wider or narrower. An AppKit view, not a
 +/// SwiftUI gesture: its cursor rect shows the resize arrow over the
 +/// terminal's and Chromium's cursors, and the drag is measured in window
 +/// coordinates, which do not move as the handle itself moves.
-+private struct DockBrowserHandle: NSViewRepresentable {
++struct DockBrowserHandle: NSViewRepresentable {
 +    let width: Double
 +    let onDrag: (Double) -> Void
 +    let onEnd: () -> Void
@@ -9471,10 +9475,10 @@ index 0000000..33852cd
 +}
 diff --git a/macos/Sources/Features/Dock/DockShortcuts.swift b/macos/Sources/Features/Dock/DockShortcuts.swift
 new file mode 100644
-index 0000000..a5345e3
+index 0000000..012d5f4
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockShortcuts.swift
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,124 @@
 +import AppKit
 +import Carbon
 +
@@ -9544,6 +9548,8 @@ index 0000000..a5345e3
 +            },
 +            Shortcut(keys: "⌘⇧B", title: "Show or Hide the Browser", keyCode: kVK_ANSI_B,
 +                     modifiers: [.command, .shift]) { MainActor.assumeIsolated { DockBrowser.toggle() } },
++            Shortcut(keys: "⌘⇧E", title: "Show or Hide the File Viewer", keyCode: kVK_ANSI_E,
++                     modifiers: [.command, .shift]) { MainActor.assumeIsolated { DockViewer.toggle() } },
 +        ]
 +        return list
 +    }()
@@ -9562,6 +9568,7 @@ index 0000000..a5345e3
 +        ("Undock session", "⌘⇧U"),
 +        ("Show or hide the sidebar", "⌘⇧S"),
 +        ("Show or hide the browser", "⌘⇧B"),
++        ("Show or hide the file viewer (⌘-click a file name to open one)", "⌘⇧E"),
 +    ]
 +
 +    /// The selected row, when it holds a Claude Code session.
@@ -12074,6 +12081,563 @@ index 0000000..ecd048f
 +        return (r.status, r.text)
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockViewer.swift b/macos/Sources/Features/Dock/DockViewer.swift
+new file mode 100644
+index 0000000..e9f8b02
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockViewer.swift
+@@ -0,0 +1,344 @@
++import AppKit
++import UniformTypeIdentifiers
++import WebKit
++
++/// Ghostty Dock: a file viewer beside the terminal (⌘⇧E), one per tab. A
++/// ⌘-click on a file name in the terminal, a plan.md Claude Code just wrote
++/// say, opens it here instead of in another app: Markdown rendered, source
++/// and text files highlighted, images and PDFs as they are. It reloads as
++/// the file changes.
++///
++/// Each file is a WKWebView on dockview://app/viewer.html#<path>, the page
++/// in Resources/viewer of the repo; the page reads the file from
++/// dockview://app/f<path>, the same origin (DockViewerScheme).
++@MainActor
++enum DockViewer {
++    static let widthKey = "dock.viewer.width"
++    static let scheme = "dockview"
++    /// Bigger files open in their usual app.
++    static let sizeLimit = 20 * 1024 * 1024
++
++    private static var models: [ObjectIdentifier: DockViewerModel] = [:]
++    private static let markdown: Set<String> = ["md", "markdown", "mdown", "mkd", "mdx"]
++    /// Shown by the page, or by WebKit itself (PDFs).
++    private static let media: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico",
++                                             "tif", "tiff", "heic", "pdf"]
++    /// Text, but better in a browser.
++    private static let elsewhere: Set<String> = ["html", "htm", "xhtml", "webloc"]
++
++    /// The viewer of the tab that owns it (its TerminalController).
++    static func model(for owner: AnyObject) -> DockViewerModel {
++        let id = ObjectIdentifier(owner)
++        if let m = models[id] { return m }
++        let m = DockViewerModel(owner: owner as? BaseTerminalController)
++        models[id] = m
++        return m
++    }
++
++    /// The tab closed: its viewer goes with it.
++    static func forget(_ owner: AnyObject) {
++        models.removeValue(forKey: ObjectIdentifier(owner))?.close()
++    }
++
++    /// ⌘⇧E: shows or hides the key tab's viewer.
++    static func toggle() {
++        guard let controller = NSApp.keyWindow?.windowController as? TerminalController else {
++            NSSound.beep()
++            return
++        }
++        model(for: controller).toggle()
++    }
++
++    /// A link ⌘-clicked in `surface`: opens it in the viewer beside it when
++    /// it is a file the viewer shows. False leaves it to the usual app.
++    static func open(_ url: URL, from surface: Ghostty.SurfaceView?) -> Bool {
++        guard let controller = surface?.window?.windowController as? TerminalController else { return false }
++        guard viewable(url) else {
++            // A name Claude Code broke across lines comes here cut short.
++            if url.isFileURL {
++                let why = FileManager.default.fileExists(atPath: url.path) ? "not a kind it shows" : "no such file"
++                DockLog.files.notice("viewer: left \(url.path, privacy: .public) to its app: \(why, privacy: .public)")
++            }
++            return false
++        }
++        model(for: controller).open(url)
++        DockLog.files.notice("viewer: opened \(url.path, privacy: .public)")
++        return true
++    }
++
++    /// `ghostty-dock view <file>`: the file in the viewer of the terminal
++    /// tab holding `surface`, else the key window's.
++    static func open(path: String, surface: String?, show: Bool) -> [String: Any] {
++        let url = URL(filePath: NSString(string: path).standardizingPath)
++        guard viewable(url) else { return ["ok": false, "error": "not a file the viewer shows: \(url.path)"] }
++        let holding = surface.flatMap { id in
++            id.isEmpty ? nil : TerminalController.all.first { $0.surfaceTree.contains { $0.id.uuidString == id } }
++        }
++        guard let owner = holding ?? NSApp.keyWindow?.windowController as? TerminalController
++            ?? TerminalController.all.first else { return ["ok": false, "error": "no terminal window is open"] }
++        model(for: owner).open(url, show: show)
++        return ["ok": true, "path": url.path]
++    }
++
++    /// A local file, not too big, that is Markdown, an image or PDF, or text.
++    static func viewable(_ url: URL) -> Bool {
++        guard url.isFileURL,
++              let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
++              values.isRegularFile == true, (values.fileSize ?? 0) <= sizeLimit else { return false }
++        let ext = url.pathExtension.lowercased()
++        if elsewhere.contains(ext) { return false }
++        if markdown.contains(ext) || media.contains(ext) { return true }
++        if let type = UTType(filenameExtension: ext), type.conforms(to: .text) || type.conforms(to: .sourceCode) {
++            return true
++        }
++        return looksLikeText(url)
++    }
++
++    static func isPDF(_ url: URL) -> Bool { url.pathExtension.lowercased() == "pdf" }
++
++    /// No NUL bytes, and UTF-8, in its first 8 KB: for names macOS does not
++    /// know (a .zig, a Makefile).
++    private static func looksLikeText(_ url: URL) -> Bool {
++        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
++        defer { try? handle.close() }
++        let head = (try? handle.read(upToCount: 8192)) ?? Data()
++        if head.isEmpty { return true }
++        if head.contains(0) { return false }
++        // A cut in the middle of a character at the end is fine.
++        for drop in 0...3 where String(data: head.dropLast(drop), encoding: .utf8) != nil { return true }
++        return false
++    }
++
++
++    static func pageURL(for file: URL) -> URL? {
++        if isPDF(file) { return fileURL(file.path) }
++        var c = URLComponents()
++        c.scheme = scheme
++        c.host = "app"
++        c.path = "/viewer.html"
++        c.fragment = file.path
++        return c.url
++    }
++
++    /// Where the page reads a file from.
++    static let filePrefix = "/f"
++
++    static func fileURL(_ path: String) -> URL? {
++        var c = URLComponents()
++        c.scheme = scheme
++        c.host = "app"
++        c.path = filePrefix + path
++        return c.url
++    }
++
++}
++
++/// One file in a viewer: its page, and a watch on the file that reloads it.
++@MainActor
++final class DockViewerFile: ObservableObject, Identifiable {
++    let url: URL
++    let view: WKWebView
++    private var source: DispatchSourceFileSystemObject?
++    private var pending: DispatchWorkItem?
++
++    var label: String { url.lastPathComponent }
++
++    init(url: URL, configuration: WKWebViewConfiguration, delegate: WKNavigationDelegate) {
++        self.url = url
++        view = WKWebView(frame: .zero, configuration: configuration)
++        view.navigationDelegate = delegate
++        view.setValue(false, forKey: "drawsBackground")
++        if let page = DockViewer.pageURL(for: url) { view.load(URLRequest(url: page)) }
++        watch()
++    }
++
++    func reload() {
++        if DockViewer.isPDF(url) {
++            view.reload()
++        } else {
++            view.evaluateJavaScript("window.dockReload && dockReload()")
++        }
++    }
++
++    func stop() {
++        pending?.cancel()
++        source?.cancel()
++        source = nil
++        view.removeFromSuperview()
++    }
++
++    /// Editors, Claude Code's among them, often write a new file and rename
++    /// it over the old: the watch then follows the new file.
++    private func watch() {
++        source?.cancel()
++        let fd = Darwin.open(url.path, O_EVTONLY)
++        guard fd >= 0 else {
++            // Gone for a moment while it is replaced: look again shortly.
++            schedule(after: 0.5) { [weak self] in self?.watch(); self?.reload() }
++            return
++        }
++        let s = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd,
++                                                          eventMask: [.write, .extend, .delete, .rename],
++                                                          queue: .main)
++        s.setEventHandler { [weak self, weak s] in
++            MainActor.assumeIsolated {
++                guard let self, let s else { return }
++                if !s.data.intersection([.delete, .rename]).isEmpty {
++                    self.schedule(after: 0.2) { [weak self] in self?.watch(); self?.reload() }
++                } else {
++                    self.schedule(after: 0.15) { [weak self] in self?.reload() }
++                }
++            }
++        }
++        s.setCancelHandler { Darwin.close(fd) }
++        s.resume()
++        source = s
++    }
++
++    private func schedule(after secs: Double, _ work: @escaping @MainActor () -> Void) {
++        pending?.cancel()
++        let item = DispatchWorkItem { MainActor.assumeIsolated { work() } }
++        pending = item
++        DispatchQueue.main.asyncAfter(deadline: .now() + secs, execute: item)
++    }
++}
++
++/// A terminal tab's viewer: its files and the one showing.
++@MainActor
++final class DockViewerModel: NSObject, ObservableObject, WKNavigationDelegate {
++    @Published private(set) var open = false
++    @Published private(set) var files: [DockViewerFile] = []
++    @Published private(set) var selected: DockViewerFile?
++    private weak var owner: BaseTerminalController?
++
++    private lazy var configuration: WKWebViewConfiguration = {
++        let c = WKWebViewConfiguration()
++        c.setURLSchemeHandler(DockViewerScheme(), forURLScheme: DockViewer.scheme)
++        c.userContentController.add(DockViewerLog(), name: "viewer")
++        return c
++    }()
++
++    fileprivate init(owner: BaseTerminalController?) {
++        self.owner = owner
++    }
++
++    func toggle() {
++        if open {
++            hide()
++        } else if files.isEmpty {
++            NSSound.beep()
++        } else {
++            open = true
++        }
++    }
++
++    /// The file's tab, a new one if it has none, in front; shown if `show`.
++    func open(_ url: URL, show: Bool = true) {
++        if let file = files.first(where: { $0.url == url }) {
++            select(file)
++            file.reload()
++        } else {
++            let file = DockViewerFile(url: url, configuration: configuration, delegate: self)
++            files.append(file)
++            select(file)
++        }
++        if show { open = true }
++    }
++
++    func select(_ file: DockViewerFile) {
++        if let selected, selected !== file, hasKeyboard(selected) { returnKeyboard() }
++        selected = file
++    }
++
++    /// A tab's ×. The last one closes the viewer.
++    func close(_ file: DockViewerFile) {
++        guard let i = files.firstIndex(where: { $0 === file }) else { return }
++        let keyboard = hasKeyboard(file)
++        files.remove(at: i)
++        file.stop()
++        if selected === file {
++            selected = nil
++            if !files.isEmpty { select(files[min(i, files.count - 1)]) }
++        }
++        if files.isEmpty {
++            if open { open = false; returnKeyboard() }
++        } else if keyboard {
++            returnKeyboard()
++        }
++    }
++
++    /// The bar's ×: every file closes.
++    func close() {
++        let wasOpen = open
++        files.forEach { $0.stop() }
++        files = []
++        selected = nil
++        open = false
++        if wasOpen { returnKeyboard() }
++    }
++
++    func openElsewhere() {
++        guard let url = selected?.url else { return }
++        NSWorkspace.shared.open(url)
++    }
++
++    func revealInFinder() {
++        guard let url = selected?.url else { return }
++        NSWorkspace.shared.activateFileViewerSelecting([url])
++    }
++
++    /// Hidden, the viewer must not keep the keyboard.
++    private func hide() {
++        open = false
++        returnKeyboard()
++    }
++
++    private func returnKeyboard() {
++        guard let owner, let window = owner.window,
++              let surface = owner.focusedSurface ?? owner.surfaceTree.first else { return }
++        window.makeFirstResponder(surface)
++    }
++
++    private func hasKeyboard(_ file: DockViewerFile) -> Bool {
++        guard let responder = file.view.window?.firstResponder as? NSView else { return false }
++        return responder.isDescendant(of: file.view)
++    }
++
++    // MARK: WKNavigationDelegate
++
++    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error) {
++        DockLog.files.error("viewer: \(webView.url?.absoluteString ?? "", privacy: .public) did not load: \(error.localizedDescription, privacy: .public)")
++    }
++
++    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error) {
++        DockLog.files.error("viewer: \(webView.url?.absoluteString ?? "", privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
++    }
++
++    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
++        DockLog.files.error("viewer: its web process ended; reloading")
++        webView.reload()
++    }
++
++    /// A link clicked in a file: another file the viewer shows opens in a
++    /// tab of its own, anything else in its usual app.
++    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
++                 decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
++        guard action.navigationType == .linkActivated, let url = action.request.url else {
++            decisionHandler(.allow)
++            return
++        }
++        decisionHandler(.cancel)
++        if let file = DockViewerScheme.file(of: url) {
++            if DockViewer.viewable(file) { open(file) } else { NSWorkspace.shared.open(file) }
++        } else {
++            NSWorkspace.shared.open(url)
++        }
++    }
++}
++
++/// The page's errors, in the app's log.
++private final class DockViewerLog: NSObject, WKScriptMessageHandler {
++    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
++        DockLog.files.error("viewer page: \(String(describing: message.body), privacy: .public)")
++    }
++}
+diff --git a/macos/Sources/Features/Dock/DockViewerScheme.swift b/macos/Sources/Features/Dock/DockViewerScheme.swift
+new file mode 100644
+index 0000000..f54a3e0
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockViewerScheme.swift
+@@ -0,0 +1,78 @@
++import Foundation
++import UniformTypeIdentifiers
++import WebKit
++
++/// Serves dockview://app/f<path> from disk and the rest of dockview://app/
++/// from the viewer's page folder.
++final class DockViewerScheme: NSObject, WKURLSchemeHandler {
++    /// Where the page and its scripts are, in the app's resources.
++    nonisolated(unsafe) static var pageFolder: URL? = Bundle.main.resourceURL?.appendingPathComponent("viewer")
++
++    /// The file a dockview:// address names, if it names one.
++    static func file(of url: URL) -> URL? {
++        guard url.scheme == "dockview", url.host == "app", url.path.hasPrefix("/f/") else { return nil }
++        return URL(filePath: String(url.path.dropFirst(2)))
++    }
++
++    private var stopped = Set<ObjectIdentifier>()
++
++    func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
++        guard let url = task.request.url else { return fail(task, 400, "no address") }
++        let file: URL
++        let page: Bool
++        if let named = Self.file(of: url) {
++            file = named
++            page = false
++        } else if url.host == "app" {
++            guard let folder = Self.pageFolder else {
++                return fail(task, 404, "the viewer's page is missing")
++            }
++            let candidate = folder.appendingPathComponent(url.path).standardizedFileURL
++            // Nothing outside the page's folder.
++            guard candidate.path.hasPrefix(folder.standardizedFileURL.path + "/") else {
++                return fail(task, 403, "outside the viewer")
++            }
++            file = candidate
++            page = true
++        } else {
++            return fail(task, 404, "unknown")
++        }
++        let data: Data
++        do {
++            data = try Data(contentsOf: file, options: .mappedIfSafe)
++        } catch {
++            return fail(task, 404, error.localizedDescription)
++        }
++        respond(task, url, 200, Self.mime(file, page: page), data)
++    }
++
++    /// The page's own files as what they are; a user's file as an image or
++    /// PDF, else as text, whatever it is: the page decides how to show it,
++    /// and an .html or .svg of theirs must never run as a page.
++    private static func mime(_ file: URL, page: Bool) -> String {
++        let type = UTType(filenameExtension: file.pathExtension)
++        if page, let m = type?.preferredMIMEType { return m.hasPrefix("text/") ? m + "; charset=utf-8" : m }
++        if let type, type.conforms(to: .pdf) || (type.conforms(to: .image) && type != .svg),
++           let m = type.preferredMIMEType { return m }
++        return "text/plain; charset=utf-8"
++    }
++
++    func webView(_ webView: WKWebView, stop task: any WKURLSchemeTask) {
++        stopped.insert(ObjectIdentifier(task))
++    }
++
++    private func fail(_ task: any WKURLSchemeTask, _ status: Int, _ message: String) {
++        respond(task, task.request.url ?? URL(string: "dockview://error")!, status,
++                "text/plain; charset=utf-8", Data(message.utf8))
++    }
++
++    private func respond(_ task: any WKURLSchemeTask, _ url: URL, _ status: Int, _ mime: String, _ data: Data) {
++        guard stopped.remove(ObjectIdentifier(task)) == nil else { return }
++        let headers = ["Content-Type": mime, "Content-Length": "\(data.count)", "Cache-Control": "no-store"]
++        guard let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1",
++                                             headerFields: headers) else { return }
++        task.didReceive(response)
++        task.didReceive(data)
++        task.didFinish()
++    }
++}
+diff --git a/macos/Sources/Features/Dock/DockViewerView.swift b/macos/Sources/Features/Dock/DockViewerView.swift
+new file mode 100644
+index 0000000..d5e7c01
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockViewerView.swift
+@@ -0,0 +1,117 @@
++import SwiftUI
++import WebKit
++
++/// The file viewer's place beside the terminal, left of the browser.
++/// Hidden, it keeps its files, at no width.
++struct DockViewerSlot: View {
++    let owner: AnyObject
++    @ObservedObject var model: DockViewerModel
++    @AppStorage(DockViewer.widthKey) private var savedWidth: Double = 520
++    /// The width while the handle is dragged, saved when it is let go.
++    @State private var dragWidth: Double?
++
++    private var width: Double { dragWidth ?? savedWidth }
++    private var shown: Bool { model.open && !model.files.isEmpty }
++
++    init(owner: AnyObject) {
++        self.owner = owner
++        self.model = DockViewer.model(for: owner)
++    }
++
++    var body: some View {
++        HStack(spacing: 0) {
++            if shown {
++                DockBrowserHandle(width: width,
++                                  onDrag: { dragWidth = $0 },
++                                  onEnd: { if let w = dragWidth { savedWidth = w }; dragWidth = nil })
++                    .frame(width: 7)
++                VStack(spacing: 0) {
++                    DockViewerTabStrip(model: model)
++                    DockViewerBar(model: model)
++                    DockViewerHost(page: model.selected?.view)
++                }
++            }
++        }
++        .frame(width: shown ? width : 0)
++        .clipped()
++        .onDisappear { DockViewer.forget(owner) }
++    }
++}
++
++private struct DockViewerTabStrip: View {
++    @ObservedObject var model: DockViewerModel
++
++    var body: some View {
++        ScrollView(.horizontal, showsIndicators: false) {
++            HStack(spacing: 2) {
++                ForEach(model.files) { file in
++                    HStack(spacing: 4) {
++                        Text(file.label)
++                            .lineLimit(1)
++                            .truncationMode(.middle)
++                            .frame(maxWidth: 180, alignment: .leading)
++                        Button { model.close(file) } label: {
++                            Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
++                        }
++                        .buttonStyle(.borderless)
++                        .help("Close this file")
++                    }
++                    .font(.system(size: 11))
++                    .padding(.horizontal, 8)
++                    .padding(.vertical, 4)
++                    .background(RoundedRectangle(cornerRadius: 5)
++                        .fill(file === model.selected ? Color.primary.opacity(0.12) : Color.clear))
++                    .contentShape(Rectangle())
++                    .onTapGesture { model.select(file) }
++                    .help(file.url.path)
++                }
++            }
++        }
++        .padding(.horizontal, 8)
++        .padding(.top, 6)
++    }
++}
++
++private struct DockViewerBar: View {
++    @ObservedObject var model: DockViewerModel
++
++    var body: some View {
++        HStack(spacing: 6) {
++            Text(model.selected.map { ($0.url.path as NSString).abbreviatingWithTildeInPath } ?? "")
++                .font(.system(size: 11))
++                .foregroundStyle(.secondary)
++                .lineLimit(1)
++                .truncationMode(.head)
++                .textSelection(.enabled)
++            Spacer(minLength: 4)
++            Button { model.selected?.reload() } label: { Image(systemName: "arrow.clockwise") }
++                .help("Reload")
++            Button(action: model.revealInFinder) { Image(systemName: "folder") }
++                .help("Show in Finder")
++            Button(action: model.openElsewhere) { Image(systemName: "arrow.up.forward.app") }
++                .help("Open in its usual app")
++            Button(action: model.close) { Image(systemName: "xmark") }
++                .help("Close the viewer and its files (⌘⇧E only hides it)")
++        }
++        .buttonStyle(.borderless)
++        .padding(.horizontal, 8)
++        .padding(.vertical, 6)
++    }
++}
++
++/// Shows the front file's page.
++private struct DockViewerHost: NSViewRepresentable {
++    let page: WKWebView?
++
++    func makeNSView(context: Context) -> NSView { NSView() }
++
++    func updateNSView(_ box: NSView, context: Context) {
++        for view in box.subviews where view !== page { view.removeFromSuperview() }
++        guard let page else { return }
++        if page.superview !== box {
++            page.frame = box.bounds
++            page.autoresizingMask = [.width, .height]
++            box.addSubview(page)
++        }
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockWorkspace.swift b/macos/Sources/Features/Dock/DockWorkspace.swift
 new file mode 100644
 index 0000000..9be71a4
@@ -12304,7 +12868,7 @@ index aab51f6..b96bbf4 100644
              return
          }
 diff --git a/macos/Sources/Features/Terminal/TerminalView.swift b/macos/Sources/Features/Terminal/TerminalView.swift
-index b6e1c63..98c2e7d 100644
+index b6e1c63..0798eeb 100644
 --- a/macos/Sources/Features/Terminal/TerminalView.swift
 +++ b/macos/Sources/Features/Terminal/TerminalView.swift
 @@ -79,6 +79,10 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
@@ -12318,16 +12882,17 @@ index b6e1c63..98c2e7d 100644
                      TerminalSplitTreeView(
                          tree: viewModel.surfaceTree,
                          action: { delegate?.performSplitAction($0) })
-@@ -103,6 +107,8 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
+@@ -103,6 +107,9 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                          }
                          .frame(idealWidth: lastFocusedSurface?.value?.initialSize?.width,
                                 idealHeight: lastFocusedSurface?.value?.initialSize?.height)
++                    DockViewerSlot(owner: viewModel)
 +                    DockBrowserSlot(owner: viewModel)
 +                    }
                  }
                  // Ignore safe area to extend up in to the titlebar region if we have the "hidden" titlebar style
                  .ignoresSafeArea(.container, edges: ghostty.config.macosTitlebarStyle == .hidden ? .top : [])
-@@ -117,6 +123,8 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
+@@ -117,6 +124,8 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                      }
                  }
  
@@ -12385,7 +12950,7 @@ index e19d671..ea8d897 100644
      }
  
 diff --git a/macos/Sources/Ghostty/Ghostty.App.swift b/macos/Sources/Ghostty/Ghostty.App.swift
-index 2f0644b..1807a0c 100644
+index 2f0644b..9beda05 100644
 --- a/macos/Sources/Ghostty/Ghostty.App.swift
 +++ b/macos/Sources/Ghostty/Ghostty.App.swift
 @@ -549,7 +549,12 @@ extension Ghostty {
@@ -12401,6 +12966,38 @@ index 2f0644b..1807a0c 100644
  
              case GHOSTTY_ACTION_FLOAT_WINDOW:
                  toggleFloatWindow(app, target: target, mode: action.action.float_window)
+@@ -621,7 +626,7 @@ extension Ghostty {
+                 checkForUpdates(app)
+ 
+             case GHOSTTY_ACTION_OPEN_URL:
+-                return openURL(action.action.open_url)
++                return openURL(action.action.open_url, target: target)
+ 
+             case GHOSTTY_ACTION_UNDO:
+                 return undo(app, target: target)
+@@ -700,7 +705,8 @@ extension Ghostty {
+         }
+ 
+         private static func openURL(
+-            _ v: ghostty_action_open_url_s
++            _ v: ghostty_action_open_url_s,
++            target: ghostty_target_s? = nil
+         ) -> Bool {
+             let action = Ghostty.Action.OpenURL(c: v)
+ 
+@@ -718,6 +724,12 @@ extension Ghostty {
+                 url = URL(filePath: expandedPath)
+             }
+ 
++            // Ghostty Dock: a file the viewer shows opens beside the terminal.
++            if let target, target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface,
++               MainActor.assumeIsolated({ DockViewer.open(url, from: surfaceView(from: surface)) }) {
++                return true
++            }
++
+             switch action.kind {
+             case .text:
+                 // Open with the default editor for `*.ghostty` file or just system text editor
 diff --git a/macos/Sources/Ghostty/Ghostty.Config.swift b/macos/Sources/Ghostty/Ghostty.Config.swift
 index 160894b..0853534 100644
 --- a/macos/Sources/Ghostty/Ghostty.Config.swift
@@ -12480,3 +13077,35 @@ index 3129acf..b271610 100644
              let surface = surface_cfg.withCValue(view: self) { surface_cfg_c in
                  ghostty_surface_new(app, &surface_cfg_c)
              }
+diff --git a/src/Surface.zig b/src/Surface.zig
+index 4d66622..83a671f 100644
+--- a/src/Surface.zig
++++ b/src/Surface.zig
+@@ -2678,7 +2678,10 @@ pub fn keyCallback(
+         // 1. mouse reporting is off
+         // OR
+         // 2. mouse reporting is on and we are not reporting shift to the terminal
++        // Ghostty Dock: or ⌘ is held, which no mouse report carries, so a
++        // ⌘-click opens a link in Claude Code too.
+         if (self.io.terminal.flags.mouse_event == .none or
++            self.mouse.mods.super or
+             (self.mouse.mods.shift and !self.mouseShiftCapture(false)))
+         {
+             // Refresh our link state
+@@ -3990,6 +3993,8 @@ pub fn mouseButtonCallback(
+             // If we have shift-pressed and we aren't allowed to capture it,
+             // then we do not do a mouse report.
+             if (mods.shift and !shift_capture) break :report;
++            // Ghostty Dock: nor a ⌘-click on a link, which opens it.
++            if (mods.super and self.mouse.over_link) break :report;
+ 
+             // In any other mouse button scenario without shift pressed we
+             // clear the selection since the underlying application can handle
+@@ -4715,6 +4720,7 @@ pub fn cursorPosCallback(
+         self.mouse.link_point == null or
+         (self.mouse.link_point != null and !self.mouse.link_point.?.eql(pos_vp))) and
+         (self.io.terminal.flags.mouse_event == .none or
++            self.mouse.mods.super or // Ghostty Dock: ⌘, as above
+             (self.mouse.mods.shift and !self.mouseShiftCapture(false))))
+     {
+         // If we were previously over a link, we always update. We do this so that if the text

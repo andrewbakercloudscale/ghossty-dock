@@ -56,7 +56,8 @@ function fetch_sources() {
 function save_patch() {
     mkdir -p "$(dirname "$PATCH")" || exit 1
     # Tool state (.omc) that other tools leave in the tree is not part of the fork.
-    local only=(macos/Sources ':(exclude,glob)**/.omc/**')
+    # src/Surface.zig: ⌘-click opens links while a program has the mouse.
+    local only=(macos/Sources src/Surface.zig ':(exclude,glob)**/.omc/**')
     git -C "$SRC" add -N -- "${only[@]}" || exit 1
     # Against the release tag, not HEAD: the fork's own commits are part of the patch.
     git -C "$SRC" diff "$GHOSTTY_TAG" -- "${only[@]}" >"$PATCH" || exit 1
@@ -180,6 +181,8 @@ function package_app() {
     cp "$ROOT/Resources/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns" || exit 1
     # Find Agents' catalogue, from Plexiform (scripts/import-agent-catalog.py).
     cp -R "$ROOT/Resources/agent-catalog" "$app/Contents/Resources/agent-catalog" || exit 1
+    # The file viewer's page (⌘⇧E, DockViewer.swift).
+    cp -R "$ROOT/Resources/viewer" "$app/Contents/Resources/viewer" || exit 1
     stamp_version "$plist"
     # The holder every tab runs in, so tabs outlive the app (hold/).
     clang -O2 -Wall -arch arm64 -arch x86_64 -mmacosx-version-min=13.0 \
