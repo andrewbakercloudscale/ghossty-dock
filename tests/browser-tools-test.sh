@@ -59,6 +59,8 @@ function test_context() {
         "$(jq -r '.hookSpecificOutput.hookEventName' <<<"$out" 2>/dev/null)" "SessionStart"
     expect "the note names the dock-browser tools" \
         "$(jq -r '.hookSpecificOutput.additionalContext | test("mcp__dock-browser__")' <<<"$out" 2>/dev/null)" "true"
+    expect "the note tells it about the file viewer" \
+        "$(jq -r '.hookSpecificOutput.additionalContext | test("ghostty-dock view")' <<<"$out" 2>/dev/null)" "true"
     expect "the note warns off the user's Chrome" \
         "$(jq -r '.hookSpecificOutput.additionalContext | test("9222")' <<<"$out" 2>/dev/null)" "true"
 
