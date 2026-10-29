@@ -17,6 +17,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: bash tests/hook-test.sh
       - run: bash tests/browser-tools-test.sh
+      - run: bash tests/restart-test.sh
 
   patch:
     name: Patch applies to Ghostty

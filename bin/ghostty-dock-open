@@ -37,6 +37,10 @@ options:
     --command        <command>   Run this shell command line instead of a launcher
     --window                     Open a new window instead of a tab
     --batch                      Open a tab for each line on stdin, in one go
+    --split          <terminal>  Split this terminal (an AppleScript terminal
+                                 id) instead of opening a tab
+    --direction      right|down  Which way --split splits (default: right)
+    --print-terminal             Print the new terminal's id
     -h|--help                    Show this help message
 
 dependencies: ${DEPENDENCIES[@]}
@@ -58,6 +62,9 @@ function main() {
     local shell=false
     local command=""
     local window=false
+    local split=""
+    local direction=right
+    local print_terminal=false
     local positional=()
 
     while [ "$1" != "" ]; do
@@ -73,6 +80,15 @@ function main() {
             open_batch
             exit $?
             ;;
+        --split)
+            shift
+            split="$1"
+            ;;
+        --direction)
+            shift
+            direction="$1"
+            ;;
+        --print-terminal) print_terminal=true ;;
         -h | --help) usage ;;
         -*)
             echo "Error: Unknown option '$1'" >&2
@@ -98,6 +114,13 @@ function main() {
         usage
     fi
     folder=$(cd "$folder" && pwd)
+    case "$direction" in
+    right | down) ;;
+    *)
+        echo "Error: --direction must be right or down, not '$direction'" >&2
+        usage
+        ;;
+    esac
 
     exit_on_missing_tools "${DEPENDENCIES[@]}"
 
@@ -119,12 +142,19 @@ function main() {
     local dock_id
     dock_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
     local result
-    if ! result=$(open_tab "$dock_id" "$command" "$folder" "$window"); then
+    if [ -n "$split" ]; then
+        # No fallback: the terminal to split is gone, so the caller opens a tab.
+        if ! result=$(split_terminal "$dock_id" "$command" "$folder" "$split" "$direction"); then
+            echo "Error: Ghostty did not split terminal $split ($result)" >&2
+            exit 1
+        fi
+    elif ! result=$(open_tab "$dock_id" "$command" "$folder" "$window"); then
         echo "Error: Ghostty did not open the tab ($result); opening a separate Ghostty instead" >&2
         fallback_new_app "$launcher" "$folder" "$command"
         exit 0
     fi
     record_tab "$dock_id" "$result" "$shown" "$folder"
+    if $print_terminal; then echo "${result##* }"; fi
 }
 
 # Opens a tab for each "<command>\t<folder>" line on stdin with one
@@ -251,6 +281,40 @@ on run argv
         end if
         activate
         return (id of t) & " " & (id of focused terminal of t)
+    end tell
+end run
+APPLESCRIPT
+}
+
+# Prints "<tab id> <terminal id>" of a new terminal split off another.
+function split_terminal() {
+    local dock_id="$1"
+    local command="$2"
+    local folder="$3"
+    local target="$4"
+    local direction="$5"
+    sed "s/tell application \"Ghostty\"/tell $APP_REF/; s/direction right/direction $direction/" <<'APPLESCRIPT' | osascript - "$dock_id" "$command" "$folder" "$target" 2>&1
+on run argv
+    set dockId to item 1 of argv
+    set cmd to item 2 of argv
+    set dir to item 3 of argv
+    set target to item 4 of argv
+    tell application "Ghostty"
+        set cfg to new surface configuration
+        set initial working directory of cfg to dir
+        set environment variables of cfg to {"DOCK_TAB_ID=" & dockId}
+        if cmd is not "" then
+            set command of cfg to cmd
+            set wait after command of cfg to false
+        end if
+        set t to split (terminal id target) direction right with configuration cfg
+        set newId to id of t
+        repeat with w in windows
+            repeat with tb in tabs of w
+                if (count of (terminals of tb whose id is newId)) > 0 then return (id of tb) & " " & newId
+            end repeat
+        end repeat
+        return "- " & newId
     end tell
 end run
 APPLESCRIPT
