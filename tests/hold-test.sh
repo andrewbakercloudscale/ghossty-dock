@@ -27,7 +27,7 @@ function main() {
     trap 'rm -rf "$tmp"' EXIT
     clang -O2 -Wall -Werror -o "$tmp/hold" "$ROOT/hold/ghostty-dock-hold.c" || exit 1
     HOLD="$tmp/hold" STATE="$tmp/state" python3 - <<'PY'
-import os, pty, time, subprocess, signal, select, sys
+import os, pty, time, subprocess, signal, select, sys, fcntl, termios, struct
 HOLD, st = os.environ["HOLD"], os.environ["STATE"]
 os.makedirs(st + "/sessions")
 env = dict(os.environ, GHOSTTY_DOCK_STATE=st, GHOSTTY_DOCK_SURFACE="S1")
@@ -42,7 +42,9 @@ def app():
     p = subprocess.Popen(["sleep", "300"]); env["GHOSTTY_DOCK_HOLD_TEST_APP"] = str(p.pid); return p
 def spawn(args):
     pid, fd = pty.fork()
-    if pid == 0: os.execve(HOLD, ["ghostty-dock-hold"] + args, env)
+    if pid == 0:
+        fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+        os.execve(HOLD, ["ghostty-dock-hold"] + args, env)
     return pid, fd
 def read(fd, t=1.0):
     out = b""; end = time.time() + t
@@ -84,6 +86,18 @@ fake.kill()
 
 pid, fd = spawn(["new", "--login", "--", "/bin/sh", "-c", "echo bye"])
 check("the program ending closes the tab", b"bye" in read(fd) and os.waitpid(pid, 0)[1] == 0 and lst() == "")
+
+# A program a wrapper script started is asked to redraw like one started
+# directly; the script is a shell, but not one at its prompt.
+fake = app(); env["GHOSTTY_DOCK_SURFACE"] = "S3"
+prog = "import signal,sys,time; signal.signal(signal.SIGWINCH, lambda *a: print('redraw', flush=True)); print('up', flush=True); time.sleep(30)"
+pid, fd = spawn(["new", "--", "/bin/bash", "-c", f"python3 -c \"{prog}\"; true"])
+before = read(fd).count(b"redraw")
+fake.kill(); fake.wait(); os.kill(pid, signal.SIGKILL); os.waitpid(pid, 0); time.sleep(0.5)
+fake = app()
+pid, fd = spawn(["attach", lst().split("\t")[0]])
+check("a wrapped program redraws on reattach", read(fd, 1.5).count(b"redraw") > before)
+os.kill(pid, signal.SIGHUP); time.sleep(1.5); fake.kill()
 
 pid, fd = spawn(["new", "--", "/nonexistent/prog"])
 read(fd); os.waitpid(pid, 0)
