@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 
 # Tests what tells Claude Code about the browser beside a tab, and the tools
-# it drives it with: bin/ghostty-dock-context (the SessionStart note) and
-# bin/ghostty-dock-browser-mcp (the MCP launcher), with stand-ins for the
-# app, npx and curl. No Claude, no Ghostty, no Chromium.
+# it drives it with: bin/ghostty-dock-context (the SessionStart note),
+# bin/ghostty-dock-browser-mcp (the MCP launcher) and bin/ghostty-dock-browse
+# ($BROWSER), with stand-ins for the app, npx, curl and open. No Claude, no
+# Ghostty, no Chromium.
 
 SCRIPT_NAME=$(basename "$0")
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CONTEXT="$ROOT/bin/ghostty-dock-context"
 MCP="$ROOT/bin/ghostty-dock-browser-mcp"
+BROWSE="$ROOT/bin/ghostty-dock-browse"
+DOCK="$ROOT/bin/ghostty-dock"
 START='{"hook_event_name":"SessionStart","session_id":"s1","source":"startup"}'
 PASSED=0
 FAILED=0
@@ -35,6 +38,8 @@ function main() {
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT
     test_context "$tmp"
+    test_browse "$tmp"
+    test_url "$tmp"
     if command -v node >/dev/null; then
         test_mcp "$tmp"
         test_retype
@@ -137,6 +142,50 @@ function test_retype() {
         "$(sed -n 3p <<<"$got" | jq -r '[.result.targetInfos[].type] | join(",")')" "page,other"
     expect "other types are left alone" "$(sed -n 4p <<<"$got" | jq -r .params.targetInfo.type)" "worker"
     expect "what is not JSON passes as it is" "$(sed -n 5p <<<"$got")" 'not json "other"'
+}
+
+# $BROWSER: web links go to the app, the rest (and all of them when the app
+# does not answer) to open.
+function test_browse() {
+    local bin="$1/browse" log="$1/browse.log"
+    mkdir -p "$bin"
+    printf '#!/bin/sh\necho "dock $*" >>"%s"\n[ -z "$DOCK_DOWN" ]\n' "$log" >"$bin/ghostty-dock"
+    printf '#!/bin/sh\necho "open $*" >>"%s"\n' "$log" >"$bin/open"
+    chmod +x "$bin/ghostty-dock" "$bin/open"
+
+    PATH="$bin:$PATH" GHOSTTY_DOCK_BIN="$bin" "$BROWSE" https://example.com/a "mailto:x@example.com"
+    expect "a web link goes to the dock, anything else to open" "$(cat "$log")" \
+        "$(printf 'dock url https://example.com/a\nopen mailto:x@example.com')"
+    rm -f "$log"
+    PATH="$bin:$PATH" GHOSTTY_DOCK_BIN="$bin" DOCK_DOWN=1 "$BROWSE" http://localhost:3000
+    expect "with the app not answering it opens as before" "$(cat "$log")" \
+        "$(printf 'dock url http://localhost:3000\nopen http://localhost:3000')"
+}
+
+# ghostty-dock url: the request the app gets, and what it refuses itself.
+function test_url() {
+    local state="$1/state"
+    mkdir -p "$state/api"
+    (
+        for _ in $(seq 100); do
+            for req in "$state"/api/req-*.json; do
+                [ -f "$req" ] || continue
+                cp "$req" "$state/got.json"
+                printf '{"ok":true,"url":"https://example.com/"}' >"${req/req-/res-}"
+                rm -f "$req"
+                exit 0
+            done
+            sleep 0.05
+        done
+    ) &
+    local out
+    out=$(GHOSTTY_DOCK_STATE="$state" GHOSTTY_DOCK_SURFACE=S1 "$DOCK" url https://example.com/)
+    wait
+    expect "ghostty-dock url prints the page" "$out" "https://example.com/"
+    expect "and asks for it beside this terminal" "$(jq -c . "$state/got.json")" \
+        '{"op":"url","url":"https://example.com/","surface":"S1"}'
+    GHOSTTY_DOCK_STATE="$state" "$DOCK" url file:///etc/passwd 2>/dev/null
+    expect "a link that is not http is refused" "$?" "1"
 }
 
 function expect() {
