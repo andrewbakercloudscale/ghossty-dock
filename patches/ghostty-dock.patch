@@ -7474,10 +7474,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..c24491a
+index 0000000..381a73f
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1592 @@
+@@ -0,0 +1,1595 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -8214,13 +8214,16 @@ index 0000000..c24491a
 +
 +    /// The timer Claude Code shows while it works, "✻ Burrowing… (8m 37s ·
 +    /// ↓ 9.4k tokens)", or its hints then: "esc to interrupt", and "ctrl+b
-+    /// to run in background" in place of it while a command runs.
++    /// to run in background" in place of it while a command runs, and
++    /// "Waiting for API response · will retry in 1m 38s" while it waits out
++    /// an API error to try again.
 +    /// Only the screen's last lines, where they are: the same words higher
 +    /// up are old output or a reply quoting them.
 +    static func working(_ screen: String) -> Bool {
 +        let tail = screen.split(separator: "\n").filter { $0.contains { !$0.isWhitespace } }
 +            .suffix(20).joined(separator: "\n")
 +        return tail.contains("esc to interrupt") || tail.contains("to run in background")
++            || tail.contains("Waiting for API response") || tail.contains("will retry in")
 +            || tail.range(of: #"… \(\d+[hms]"#, options: .regularExpression) != nil
 +    }
 +
