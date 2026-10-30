@@ -300,6 +300,15 @@ a session is building. Each terminal tab has its own, with tabs of its own:
 **+** for a new one, × on a tab to close it, and links that open a new tab or
 window open as one. Drag its left edge to resize it.
 
+Web links open there too, as a new tab with the browser shown: a link you
+⌘-click in the terminal, one you click in Claude Code, a web link in a file
+in the viewer, and a page a program opens, such as Claude Code's `/login`.
+Ghostty Dock sets `$BROWSER` in its terminals to `ghostty-dock-browse`,
+which Claude Code, `gh` and Python's `webbrowser` follow; it falls back to
+your usual browser when the app does not answer. A `$BROWSER` Ghostty Dock
+was started with is kept. `ghostty-dock url <url>` opens a page from a
+script.
+
 ⌘⇧B again hides it, and its pages keep running out of sight. The × at the end
 of the address bar closes the browser and all its tabs. Chromium starts the
 first time a browser opens, and its shared helpers run until Ghostty Dock
@@ -358,6 +367,7 @@ ghostty-dock wait aws-cli 'passed|failed' --timeout 600
 ghostty-dock notify "Deploy done" "prod is on 1.4.2"
 ghostty-dock open ~/code/repo --command claude    # a new tab
 ghostty-dock browser --show                       # start this tab's browser and show it
+ghostty-dock url http://localhost:3000            # open a page in this tab's browser
 ghostty-dock view docs/plan.md                    # show a file in this tab's viewer
 ```
 
@@ -471,7 +481,7 @@ type a password if asked.
 ## Tests
 
     bash tests/hook-test.sh                          # the Claude Code hook
-    bash tests/browser-tools-test.sh                 # the browser note and dock-browser tools
+    bash tests/browser-tools-test.sh                 # the browser note, dock-browser tools and $BROWSER
     bash tests/restart-test.sh                       # split tabs come back split after a restart
     bash tests/viewer-test.sh                        # the file viewer's page (macOS, after a build)
     swift test --package-path tests/dock-logic       # sidebar order, groups, cost (after a build)

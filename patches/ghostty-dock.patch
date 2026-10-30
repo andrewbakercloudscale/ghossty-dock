@@ -180,10 +180,10 @@ index ade9bf3..0556a38 100644
  // rest of the app.
 diff --git a/macos/Sources/Features/Dock/DockAPI.swift b/macos/Sources/Features/Dock/DockAPI.swift
 new file mode 100644
-index 0000000..b2f5fe6
+index 0000000..d6dd4fa
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAPI.swift
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,190 @@
 +import AppKit
 +
 +/// The app's side of the `ghostty-dock` command: requests are JSON files
@@ -267,6 +267,10 @@ index 0000000..b2f5fe6
 +        }
 +        if op == "browser" {
 +            return DockBrowser.prepare(surface: r["surface"] as? String, show: r["show"] as? Bool == true)
++        }
++        if op == "url" {
++            guard let url = r["url"] as? String, !url.isEmpty else { return ["ok": false, "error": "say which page"] }
++            return DockBrowser.open(url: url, surface: r["surface"] as? String)
 +        }
 +        if op == "view" {
 +            guard let path = r["path"] as? String, !path.isEmpty else { return ["ok": false, "error": "say which file"] }
@@ -3195,10 +3199,10 @@ index 0000000..3725d37
 +}
 diff --git a/macos/Sources/Features/Dock/DockBrowser.swift b/macos/Sources/Features/Dock/DockBrowser.swift
 new file mode 100644
-index 0000000..bd5b5c6
+index 0000000..39fe17e
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockBrowser.swift
-@@ -0,0 +1,489 @@
+@@ -0,0 +1,532 @@
 +import AppKit
 +import SwiftUI
 +
@@ -3215,6 +3219,13 @@ index 0000000..bd5b5c6
 +    static let port: Int32 = 9223
 +    static let widthKey = "dock.browser.width"
 +    static let lastAddressKey = "dock.browser.lastAddress"
++    /// $BROWSER in every terminal, so web links Claude Code opens come here,
++    /// unless the app was started with a $BROWSER of the user's own.
++    nonisolated static var browseCommand: String? {
++        guard ProcessInfo.processInfo.environment["BROWSER"] == nil else { return nil }
++        let path = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/ghostty-dock-browse").path
++        return FileManager.default.isExecutableFile(atPath: path) ? path : nil
++    }
 +    static let changed = Notification.Name("DockBrowserChanged")
 +    static let adopted = Notification.Name("DockBrowserAdopted")
 +
@@ -3266,6 +3277,35 @@ index 0000000..bd5b5c6
 +        guard model(for: owner).prepare(show: show) else { return ["ok": false, "error": "the browser did not start"] }
 +        asker = (owner, Date())
 +        return ["ok": true, "url": "http://127.0.0.1:\(port)"]
++    }
++
++    /// `ghostty-dock url`, which Ghostty Dock's terminals have as $BROWSER:
++    /// the page as a new tab in the browser of the terminal tab holding
++    /// `surface` (else the key window's), and the browser open.
++    static func open(url: String, surface: String?) -> [String: Any] {
++        guard let link = URL(string: url), ["http", "https"].contains(link.scheme?.lowercased()) else {
++            return ["ok": false, "error": "not a web link: \(url)"]
++        }
++        let key = NSApp.keyWindow?.windowController as? TerminalController
++        guard let owner = controller(holding: surface) ?? key ?? TerminalController.all.first else {
++            return ["ok": false, "error": "no terminal window is open"]
++        }
++        guard model(for: owner).show(link.absoluteString) else { return ["ok": false, "error": "the browser did not start"] }
++        return ["ok": true, "url": link.absoluteString]
++    }
++
++    /// A web link ⌘-clicked in a terminal opens beside it. False for any
++    /// other link, or a terminal outside a dock tab.
++    static func open(_ url: URL, from surface: Ghostty.SurfaceView?) -> Bool {
++        open(url, in: surface?.window?.windowController as? TerminalController)
++    }
++
++    /// A web link opened in the terminal tab `owner`, or one of its panels.
++    static func open(_ url: URL, in owner: AnyObject?) -> Bool {
++        guard ["http", "https"].contains(url.scheme?.lowercased()), let owner else { return false }
++        guard model(for: owner).show(url.absoluteString) else { return false }
++        DockLog.tools.notice("browser: opened \(url.absoluteString, privacy: .public)")
++        return true
 +    }
 +
 +    private static func controller(holding surface: String?) -> TerminalController? {
@@ -3387,6 +3427,13 @@ index 0000000..bd5b5c6
 +            guard newTab(url: start) else { return false }
 +        }
 +        if show { open = true }
++        return true
++    }
++
++    /// A link from the terminal: a new tab at the end, and the browser open.
++    fileprivate func show(_ url: String) -> Bool {
++        guard newTab(url: url) else { return false }
++        open = true
 +        return true
 +    }
 +
@@ -12083,10 +12130,10 @@ index 0000000..ecd048f
 +}
 diff --git a/macos/Sources/Features/Dock/DockViewer.swift b/macos/Sources/Features/Dock/DockViewer.swift
 new file mode 100644
-index 0000000..e9f8b02
+index 0000000..1c92b24
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockViewer.swift
-@@ -0,0 +1,344 @@
+@@ -0,0 +1,345 @@
 +import AppKit
 +import UniformTypeIdentifiers
 +import WebKit
@@ -12409,7 +12456,8 @@ index 0000000..e9f8b02
 +    }
 +
 +    /// A link clicked in a file: another file the viewer shows opens in a
-+    /// tab of its own, anything else in its usual app.
++    /// tab of its own, a web page in the browser beside it, anything else in
++    /// its usual app.
 +    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
 +                 decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
 +        guard action.navigationType == .linkActivated, let url = action.request.url else {
@@ -12419,7 +12467,7 @@ index 0000000..e9f8b02
 +        decisionHandler(.cancel)
 +        if let file = DockViewerScheme.file(of: url) {
 +            if DockViewer.viewable(file) { open(file) } else { NSWorkspace.shared.open(file) }
-+        } else {
++        } else if !DockBrowser.open(url, in: owner) {
 +            NSWorkspace.shared.open(url)
 +        }
 +    }
@@ -12950,7 +12998,7 @@ index e19d671..ea8d897 100644
      }
  
 diff --git a/macos/Sources/Ghostty/Ghostty.App.swift b/macos/Sources/Ghostty/Ghostty.App.swift
-index 2f0644b..9beda05 100644
+index 2f0644b..000bcdb 100644
 --- a/macos/Sources/Ghostty/Ghostty.App.swift
 +++ b/macos/Sources/Ghostty/Ghostty.App.swift
 @@ -549,7 +549,12 @@ extension Ghostty {
@@ -12985,13 +13033,16 @@ index 2f0644b..9beda05 100644
          ) -> Bool {
              let action = Ghostty.Action.OpenURL(c: v)
  
-@@ -718,6 +724,12 @@ extension Ghostty {
+@@ -718,6 +724,15 @@ extension Ghostty {
                  url = URL(filePath: expandedPath)
              }
  
-+            // Ghostty Dock: a file the viewer shows opens beside the terminal.
++            // Ghostty Dock: a file the viewer shows, or a web page, opens beside the terminal.
 +            if let target, target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface,
-+               MainActor.assumeIsolated({ DockViewer.open(url, from: surfaceView(from: surface)) }) {
++               MainActor.assumeIsolated({
++                   let view = surfaceView(from: surface)
++                   return DockBrowser.open(url, from: view) || DockViewer.open(url, from: view)
++               }) {
 +                return true
 +            }
 +
@@ -13015,7 +13066,7 @@ index 160894b..0853534 100644
  
              // TODO: we'd probably do some config loading here... for now we'd
 diff --git a/macos/Sources/Ghostty/Surface View/SurfaceView.swift b/macos/Sources/Ghostty/Surface View/SurfaceView.swift
-index 47503dc..efb5f22 100644
+index 47503dc..3070afa 100644
 --- a/macos/Sources/Ghostty/Surface View/SurfaceView.swift	
 +++ b/macos/Sources/Ghostty/Surface View/SurfaceView.swift	
 @@ -218,7 +218,11 @@ extension Ghostty {
@@ -13030,7 +13081,7 @@ index 47503dc..efb5f22 100644
                  }
  
                  // If we're part of a split view and don't have focus, we put a semi-transparent
-@@ -724,12 +728,23 @@ extension Ghostty {
+@@ -724,12 +728,25 @@ extension Ghostty {
              return try workingDirectory.withCString { cWorkingDir in
                  config.working_directory = cWorkingDir
  
@@ -13049,6 +13100,8 @@ index 47503dc..efb5f22 100644
 +                        var environmentVariables = environmentVariables
 +#if os(macOS)
 +                        environmentVariables[DockSessions.surfaceEnv] = view.id.uuidString
++                        // and web links Claude Code opens go to the browser beside it.
++                        if let browse = DockBrowser.browseCommand { environmentVariables["BROWSER"] = browse }
 +#endif
 +
                          // Convert dictionary to arrays for easier processing

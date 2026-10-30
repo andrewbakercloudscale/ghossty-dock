@@ -103,14 +103,14 @@ function main() {
 function install_scripts() {
     mkdir -p "$BIN_DIR" || return 1
     local f
-    for f in ghostty-dock ghostty-dock-open ghostty-dock-hook ghostty-dock-context ghostty-dock-browser-mcp; do
+    for f in ghostty-dock ghostty-dock-open ghostty-dock-hook ghostty-dock-context ghostty-dock-browser-mcp ghostty-dock-browse; do
         install -m 0755 "$ROOT/bin/$f" "$BIN_DIR/$f" || { print_error "could not install $f"; return 1; }
     done
     install -m 0755 "$ROOT/scripts/move-to-dock.sh" "$BIN_DIR/ghostty-dock-move" ||
         { print_error "could not install ghostty-dock-move"; return 1; }
     install -m 0755 "$ROOT/scripts/restart-dock.sh" "$BIN_DIR/ghostty-dock-restart" ||
         { print_error "could not install ghostty-dock-restart"; return 1; }
-    print_success "ghostty-dock, ghostty-dock-open, ghostty-dock-hook, ghostty-dock-context, ghostty-dock-browser-mcp, ghostty-dock-move, ghostty-dock-restart"
+    print_success "ghostty-dock, ghostty-dock-open, ghostty-dock-hook, ghostty-dock-context, ghostty-dock-browser-mcp, ghostty-dock-browse, ghostty-dock-move, ghostty-dock-restart"
 }
 
 function install_hooks() {
@@ -309,7 +309,7 @@ function uninstall_all() {
     pkill -x GhosttyDock 2>/dev/null
     rm -rf "$APP"
     rm -f "$BIN_DIR/ghostty-dock" "$BIN_DIR/ghostty-dock-open" "$BIN_DIR/ghostty-dock-hook" "$BIN_DIR/ghostty-dock-move" "$BIN_DIR/ghostty-dock-restart" \
-        "$BIN_DIR/ghostty-dock-context" "$BIN_DIR/ghostty-dock-browser-mcp"
+        "$BIN_DIR/ghostty-dock-context" "$BIN_DIR/ghostty-dock-browser-mcp" "$BIN_DIR/ghostty-dock-browse"
     command -v claude >/dev/null 2>&1 && claude mcp remove --scope user "$MCP_NAME" >/dev/null 2>&1
     if [ -f "$SETTINGS" ] && jq -e . "$SETTINGS" >/dev/null 2>&1; then
         local tmp="$SETTINGS.ghostty-dock.tmp"

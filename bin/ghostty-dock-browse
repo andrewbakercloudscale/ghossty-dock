@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+
+# $BROWSER in Ghostty Dock's terminals: a web page Claude Code (or gh, or
+# Python's webbrowser) opens goes to the browser beside the terminal it runs
+# in. Anything else, or with the app not answering, opens as it would have.
+
+GHOSTTY_DOCK="${GHOSTTY_DOCK_BIN:-$HOME/.local/bin}/ghostty-dock"
+
+function usage() {
+    echo "usage: $(basename "$0") <url>..." >&2
+    exit 1
+}
+
+[ $# -gt 0 ] || usage
+status=0
+for url in "$@"; do
+    case $url in
+    http://* | https://*)
+        "$GHOSTTY_DOCK" url "$url" >/dev/null 2>&1 && continue ;;
+    esac
+    open "$url" || status=1
+done
+exit $status
