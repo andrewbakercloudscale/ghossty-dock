@@ -12130,10 +12130,10 @@ index 0000000..ecd048f
 +}
 diff --git a/macos/Sources/Features/Dock/DockViewer.swift b/macos/Sources/Features/Dock/DockViewer.swift
 new file mode 100644
-index 0000000..1c92b24
+index 0000000..d4b0ede
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockViewer.swift
-@@ -0,0 +1,345 @@
+@@ -0,0 +1,346 @@
 +import AppKit
 +import UniformTypeIdentifiers
 +import WebKit
@@ -12187,8 +12187,9 @@ index 0000000..1c92b24
 +
 +    /// A link ⌘-clicked in `surface`: opens it in the viewer beside it when
 +    /// it is a file the viewer shows. False leaves it to the usual app.
-+    static func open(_ url: URL, from surface: Ghostty.SurfaceView?) -> Bool {
++    static func open(_ clicked: URL, from surface: Ghostty.SurfaceView?) -> Bool {
 +        guard let controller = surface?.window?.windowController as? TerminalController else { return false }
++        let url = DockViewerPath.located(clicked, in: surface?.pwd)
 +        guard viewable(url) else {
 +            // A name Claude Code broke across lines comes here cut short.
 +            if url.isFileURL {
@@ -12477,6 +12478,34 @@ index 0000000..1c92b24
 +private final class DockViewerLog: NSObject, WKScriptMessageHandler {
 +    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
 +        DockLog.files.error("viewer page: \(String(describing: message.body), privacy: .public)")
++    }
++}
+diff --git a/macos/Sources/Features/Dock/DockViewerPath.swift b/macos/Sources/Features/Dock/DockViewerPath.swift
+new file mode 100644
+index 0000000..25ab0f9
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockViewerPath.swift
+@@ -0,0 +1,22 @@
++import Foundation
++
++/// Where a ⌘-clicked file name really is. Ghostty keeps the full stop that
++/// ends a sentence in a path ("see plans/plan.md."), and passes a relative
++/// name it could not find on as it is, which then reads as one under "/".
++enum DockViewerPath {
++    private static let trailing: Set<Character> = [".", ",", ":", ";", "!", "?", ")", "'", "\"", "`"]
++
++    /// The file `url` names, with what ended the sentence dropped and a
++    /// relative name looked for in `folder` (the terminal's). `url` as it
++    /// was when that finds nothing either.
++    static func located(_ url: URL, in folder: String?) -> URL {
++        let files = FileManager.default
++        guard url.isFileURL, !files.fileExists(atPath: url.path) else { return url }
++        let relative = url.baseURL != nil
++        var name = relative ? url.relativePath : url.path
++        while let last = name.last, trailing.contains(last) { name.removeLast() }
++        let candidates = relative ? [folder.map { ($0 as NSString).appendingPathComponent(name) }, "/" + name] : [name]
++        guard let found = candidates.compactMap({ $0 }).first(where: { files.fileExists(atPath: $0) }) else { return url }
++        return URL(filePath: found)
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockViewerScheme.swift b/macos/Sources/Features/Dock/DockViewerScheme.swift
