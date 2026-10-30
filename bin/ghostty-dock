@@ -2,8 +2,8 @@
 
 # Drives Ghostty Dock from a script or another agent: list the sessions,
 # go to one, type into it, press keys, read its screen, wait for text on it,
-# post a notification, open a new tab, start the browser beside a tab, show
-# a file in the viewer beside it.
+# post a notification, open a new tab, start the browser beside a tab, open
+# a page in it, show a file in the viewer beside it.
 #
 # Talks to the running app through request files in
 # ~/.local/state/ghostty-dock/api (a folder only you can open): the app
@@ -40,6 +40,7 @@ commands:
     open   <folder> [--command <cmd>]    Open a folder as a new tab (a shell, or cmd)
     browser [--show]                     Start the browser beside this tab, for Claude's
                                          dock-browser tools ($BROWSER_URL); --show opens it
+    url    <url>                         Open a web page in the browser beside this tab
     view   <file> [--hidden]             Show a file in the viewer beside this tab: Markdown
                                          rendered, code highlighted (--hidden: load it only)
 
@@ -124,6 +125,16 @@ function cmd_browser() {
         sleep 0.1
     done
     echo "$BROWSER_URL"
+}
+
+# Opens a web page as a new tab of the browser beside this tab, and shows it.
+function cmd_url() {
+    [ $# -eq 1 ] || usage
+    case $1 in
+    http://* | https://*) ;;
+    *) die "not a web link: $1" ;;
+    esac
+    call "$(jq -nc --arg u "$1" --arg s "$(own_surface)" '{op:"url", url:$u, surface:$s}')" | jq -r '.url'
 }
 
 # Opens a file in the viewer beside this tab (DockViewer in the app).
@@ -265,6 +276,9 @@ function main() {
             ;;
         browser)
             cmd_browser "$@"
+            ;;
+        url)
+            cmd_url "$@"
             ;;
         view)
             cmd_view "$@"
