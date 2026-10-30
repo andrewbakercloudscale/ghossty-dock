@@ -20,6 +20,8 @@
 #include <poll.h>
 #include <pwd.h>
 #include <signal.h>
+#include <spawn.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -722,6 +724,27 @@ static int cmd_list(int detached_only, int kill_them) {
     return 0;
 }
 
+// macOS asks the app that started a process before letting it into the
+// Desktop, Documents and the like. A tab's holder outlives the app that
+// started it, so it answers for itself instead: it is signed as the app,
+// and its shell gets the app's permissions before and after a restart.
+extern int responsibility_get_pid_responsible_for_pid(pid_t);
+extern int responsibility_spawnattrs_setdisclaim(posix_spawnattr_t *, bool);
+extern char **environ;
+
+static void disclaim(char **argv) {
+    if (responsibility_get_pid_responsible_for_pid(getpid()) == getpid()) return;
+    char self[PROC_PIDPATHINFO_MAXSIZE];
+    if (proc_pidpath(getpid(), self, sizeof self) <= 0) return;
+    posix_spawnattr_t attr;
+    if (posix_spawnattr_init(&attr) != 0) return;
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETEXEC);
+    responsibility_spawnattrs_setdisclaim(&attr, true);
+    posix_spawn(NULL, self, NULL, &attr, argv, environ);
+    // Only returns if it could not: run on as the app's.
+    posix_spawnattr_destroy(&attr);
+}
+
 static void usage(void) {
     fputs("usage: ghostty-dock-hold new [--login] -- <command> [args...]\n"
           "       ghostty-dock-hold attach <name>\n"
@@ -741,6 +764,7 @@ int main(int argc, char **argv) {
         for (; i < argc && strcmp(argv[i], "--") != 0; i++)
             if (strcmp(argv[i], "--login") == 0) login = 1;
         if (i + 1 >= argc) usage();
+        disclaim(argv);
         unsetenv("GHOSTTY_DOCK_HOLD");
         return cmd_new(login, argv + i + 1);
     }
