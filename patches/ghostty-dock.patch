@@ -9655,10 +9655,10 @@ index 0000000..012d5f4
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..3d0bbff
+index 0000000..8cca5b6
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1544 @@
+@@ -0,0 +1,1547 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -9825,7 +9825,10 @@ index 0000000..3d0bbff
 +                    onUndock: { model.undock(row) },
 +                    onRestart: { model.restart(row) })
 +            // A child terminal is indented under its session.
-+            .padding(.leading, row.parent != nil ? 20 : 0)
++            // A running session steps in from the left, so what's running
++            // stands out down the list.
++            .padding(.leading, (row.parent != nil ? 20 : 0) + (row.status == .running ? 16 : 0))
++            .animation(.easeInOut(duration: 0.25), value: row.status == .running)
 +            .onTapGesture { model.select(row) }
 +            // Raised: a little larger and lifted, drawn above its neighbours.
 +            .scaleEffect(row.selected ? 1.025 : 1)
