@@ -204,6 +204,12 @@ function package_app() {
         codesign --force --options runtime --sign "$DOCK_SIGN_ID" \
             --entitlements "$ROOT/browser/helper.entitlements" "$helper" || exit 1
     done
+    # The holder answers to macOS for its tab's shell once the app that
+    # started it is gone (hold/), so it is signed as the app: the shell gets
+    # the app's permissions (Desktop, Documents, Full Disk Access).
+    codesign --force --options runtime --sign "$DOCK_SIGN_ID" \
+        --identifier "$(defaults read "$app/Contents/Info" CFBundleIdentifier)" \
+        "$app/Contents/MacOS/ghostty-dock-hold" || exit 1
     codesign --force --options runtime --sign "$DOCK_SIGN_ID" \
         --entitlements "$SRC/macos/GhosttyReleaseLocal.entitlements" "$app" || exit 1
     codesign --verify --deep "$app" || exit 1
@@ -221,14 +227,37 @@ function retire_overlay() {
     pkill -TERM -x GhosttyDock 2>/dev/null
 }
 
+# Moves a replaced build aside while anything still runs from it, and
+# deletes the builds nothing runs from any more. macOS checks a program's
+# own bundle before letting what it started into the Desktop or Documents:
+# a running app or holder whose bundle was deleted leaves its tabs' shells
+# with "Operation not permitted".
+function retire() {
+    local old=$1 in_use=$2 dir="$HOME/.local/state/ghostty-dock/retired"
+    if [ -e "$old" ] && $in_use; then
+        mkdir -p "$dir" && mv "$old" "$dir/$(date +%Y%m%d-%H%M%S).app" || rm -rf "$old"
+    else
+        rm -rf "$old"
+    fi
+    # A moved program keeps its arguments but not its path: what each one
+    # runs is asked of lsof.
+    local b txt
+    txt=$(lsof -nP -d txt 2>/dev/null)
+    for b in "$dir"/*.app; do
+        [ -e "$b" ] && ! grep -qF "$b/" <<<"$txt" && rm -rf "$b"
+    done
+}
+
 function install_app() {
     # A running copy keeps running the old build until restarted, but still
     # reads files from the bundle (a new tab's nibs, shell integration). An
     # rm -rf then a copy left it without them for the length of the copy, and
     # a tab opened then killed the app (and the tabs' programs with it), so the
     # new bundle is copied beside it and swapped in with renames.
-    local running=false
+    local running=false in_use=false
     ps -axo command= | grep -qxF "$DEST/Contents/MacOS/ghostty" && running=true
+    # The app, or a holder keeping a tab running (hold/).
+    ps -axo command= | grep -qF "$DEST/Contents/" && in_use=true
     retire_overlay
     mkdir -p "$HOME/Applications" || exit 1
     rm -rf "$DEST.new" "$DEST.old"
@@ -240,7 +269,7 @@ function install_app() {
         [ -e "$DEST.old" ] && mv "$DEST.old" "$DEST"
         exit 1
     fi
-    rm -rf "$DEST.old"
+    retire "$DEST.old" $in_use
     echo "== installed: $DEST"
     if $running; then
         echo "== it is running the old build: scripts/restart-dock.sh restarts it and resumes its sessions"
