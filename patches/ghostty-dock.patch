@@ -9652,7 +9652,7 @@ index 0000000..012d5f4
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..afaa051
+index 0000000..3d0bbff
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
 @@ -0,0 +1,1544 @@
@@ -9986,7 +9986,7 @@ index 0000000..afaa051
 +            }
 +        }
 +        .padding(.horizontal, 6)
-+        .padding(.vertical, 2.5)
++        .padding(.vertical, 4)
 +        .background(Capsule().fill(DockPalette.base))
 +        .overlay(Capsule().strokeBorder(searching ? DockPalette.blue : DockPalette.grey.opacity(0.35),
 +                                        lineWidth: searching ? 1.5 : 1))
