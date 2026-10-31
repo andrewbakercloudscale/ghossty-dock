@@ -7238,6 +7238,112 @@ index 0000000..430e17d
 +        window?.makeKeyAndOrderFront(nil)
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockRemotePlan.swift b/macos/Sources/Features/Dock/DockRemotePlan.swift
+new file mode 100644
+index 0000000..cb34c0e
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockRemotePlan.swift
+@@ -0,0 +1,100 @@
++import Foundation
++
++/// Decides what to type into a session so it is on Remote Control, titled
++/// after its repo. Only needs Foundation; DockSessions does the typing.
++enum DockRemotePlan {
++    /// What Claude Code records about a running session, in
++    /// ~/.claude/sessions/<pid>.json.
++    struct Session: Equatable {
++        var sessionId: String
++        var cwd: String
++        /// A new one means a new title on the phone.
++        var bridgeId: String?
++    }
++
++    static func session(json: Data) -> Session? {
++        guard let o = try? JSONSerialization.jsonObject(with: json) as? [String: Any],
++              let sid = o["sessionId"] as? String, let cwd = o["cwd"] as? String
++        else { return nil }
++        return Session(sessionId: sid, cwd: cwd, bridgeId: o["bridgeSessionId"] as? String)
++    }
++
++    /// The repo a folder belongs to, the main one for a worktree: `commonDir`
++    /// is git's absolute --git-common-dir. Else the folder's own name.
++    static func repoName(cwd: String, commonDir: String?) -> String {
++        guard let commonDir, !commonDir.isEmpty else { return (cwd as NSString).lastPathComponent }
++        return ((commonDir as NSString).deletingLastPathComponent as NSString).lastPathComponent
++    }
++
++    private static func lastLines(_ screen: String, _ count: Int) -> [Substring] {
++        Array(screen.split(separator: "\n").filter { $0.contains { !$0.isWhitespace } }.suffix(count))
++    }
++
++    /// Claude Code's input box, on the screen and with nothing typed in it.
++    /// The rule above it tells it from a shell whose prompt is also ❯; a
++    /// menu's "❯ 1. Yes" is not empty. Anything drawn beside it is after a │.
++    static func promptEmpty(_ screen: String) -> Bool {
++        let lines = lastLines(screen, 12)
++        guard let i = lines.lastIndex(where: { $0.hasPrefix("❯") }), i > 0,
++              lines[i - 1].contains("─")
++        else { return false }
++        let typed = lines[i].dropFirst().prefix { $0 != "│" }
++        return typed.allSatisfy(\.isWhitespace)
++    }
++
++    /// The menu /remote-control shows when the session is already connected.
++    /// It opens on Continue, and Esc leaves it connected.
++    static func connectedMenu(_ screen: String) -> Bool {
++        let tail = lastLines(screen, 12).joined(separator: "\n")
++        return tail.contains("Disconnect this session") && tail.contains("Esc to continue")
++    }
++
++    enum Action: Equatable {
++        case wait
++        case type(String)
++        case escape
++    }
++
++    /// One session's way through: connect, then rename twice, as renaming to
++    /// the name it already has sends no title.
++    struct Progress: Equatable {
++        enum Stage: Equatable { case start, connecting, renaming, done }
++        var stage = Stage.start
++        var at = Date.distantPast
++        var bridgeId: String?
++        var runs = 0
++    }
++
++    /// A session given a new bridge again and again is left alone after this.
++    static let maxRuns = 5
++
++    /// `ready`: at its empty prompt, and nobody is about to type in it.
++    static func next(_ p: Progress, repo: String, bridgeId: String?, ready: Bool, menu: Bool,
++                     now: Date) -> (Progress, Action) {
++        var p = p
++        func advance(_ stage: Progress.Stage) { p.stage = stage; p.at = now }
++        switch p.stage {
++        case .start:
++            guard ready else { return (p, .wait) }
++            advance(.connecting)
++            p.runs += 1
++            return (p, .type("/remote-control \(repo)"))
++        case .connecting:
++            guard now.timeIntervalSince(p.at) >= 4 else { return (p, .wait) }
++            if menu { return (p, .escape) }
++            guard ready else { return (p, .wait) }
++            advance(.renaming)
++            return (p, .type("/rename \(repo)-x"))
++        case .renaming:
++            guard now.timeIntervalSince(p.at) >= 3, ready else { return (p, .wait) }
++            advance(.done)
++            p.bridgeId = bridgeId
++            return (p, .type("/rename \(repo)"))
++        case .done:
++            guard bridgeId != p.bridgeId, p.runs < maxRuns, ready else { return (p, .wait) }
++            advance(.connecting)
++            p.runs += 1
++            return (p, .type("/remote-control \(repo)"))
++        }
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockSearch.swift b/macos/Sources/Features/Dock/DockSearch.swift
 new file mode 100644
 index 0000000..2b66815
@@ -7476,10 +7582,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..9748798
+index 0000000..d973b6a
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1620 @@
+@@ -0,0 +1,1704 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -7594,6 +7700,13 @@ index 0000000..9748798
 +    /// Row key to its folder's git branch, pull request and ports.
 +    @Published private(set) var workspaces: [String: DockWorkspace] = [:]
 +    private let workspaceMeter = DockWorkspaces()
++    private var remoteTimer: Timer?
++    private let remoteStarted = Date()
++    private var remoteLooking = false
++    /// Folder to repo name.
++    private var remoteRepos: [String: String] = [:]
++    /// Kept in memory only, so a restart of the app repairs every title again.
++    private var remoteProgress: [String: DockRemotePlan.Progress] = [:]
 +    /// Sessions sent /compact-async a moment ago.
 +    @Published private(set) var compacting: Set<String> = []
 +    @Published private(set) var meta: [String: Meta] = [:]
@@ -7807,6 +7920,9 @@ index 0000000..9748798
 +        costTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in self?.refreshCosts() }
 +        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.refreshCosts() }
 +        agentTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.refreshAgentsRunning() }
++        remoteTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
++            MainActor.assumeIsolated { self?.refreshRemoteNames() }
++        }
 +        NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil,
 +                                               queue: .main) { [weak self] _ in self?.applySettings() }
 +        NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil,
@@ -7961,6 +8077,80 @@ index 0000000..9748798
 +    /// prompt, as typing into a busy or asking session would queue or answer.
 +    func canCompact(_ row: Row) -> Bool {
 +        row.sessionId != nil && (row.status == .idle || row.status == .unread)
++    }
++
++    /// With the setting on: each session in a tab is put on Remote Control and
++    /// its title set to its repo's, once each time the app starts and again
++    /// if it gets a new bridge (a new one starts with a generated title). The
++    /// title is kept with the bridge and can't be read here, so it is set
++    /// rather than checked. One command a tick, and only at an empty prompt.
++    @MainActor private func refreshRemoteNames() {
++        guard DockSettings.remoteEverySession, !remoteLooking,
++              Date().timeIntervalSince(remoteStarted) > 20
++        else { return }
++        remoteLooking = true
++        let known = remoteRepos
++        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/sessions")
++        DispatchQueue.global(qos: .utility).async { [weak self] in
++            let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
++            let sessions = files.filter { $0.pathExtension == "json" }
++                .compactMap { (try? Data(contentsOf: $0)).flatMap(DockRemotePlan.session(json:)) }
++            var repos = known
++            for cwd in Set(sessions.map(\.cwd)) where repos[cwd] == nil {
++                let git = DockProcess.run("/usr/bin/git", ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
++                                          timeout: 10, quiet: [128], log: DockLog.sessions)
++                let dir = git?.status == 0 ? git?.text.trimmingCharacters(in: .whitespacesAndNewlines) : nil
++                repos[cwd] = DockRemotePlan.repoName(cwd: cwd, commonDir: dir)
++            }
++            DispatchQueue.main.async {
++                MainActor.assumeIsolated {
++                    guard let self else { return }
++                    self.remoteLooking = false
++                    self.remoteRepos = repos
++                    self.stepRemoteNames(sessions, repos: repos)
++                }
++            }
++        }
++    }
++
++    @MainActor private func stepRemoteNames(_ sessions: [DockRemotePlan.Session], repos: [String: String]) {
++        let bySession = Dictionary(sessions.map { ($0.sessionId, $0) }, uniquingKeysWith: { _, new in new })
++        let now = Date()
++        for row in rows {
++            guard let sid = row.sessionId, let session = bySession[sid], let repo = repos[session.cwd],
++                  let controller = row.controller
++            else { continue }
++            // The terminal claude is in: a tab may have a shell split too.
++            var terminal: Ghostty.SurfaceView?
++            var empty = false
++            var menu = false
++            for view in controller.surfaceTree {
++                let screen = view.cachedVisibleContents.get()
++                empty = DockRemotePlan.promptEmpty(screen)
++                menu = DockRemotePlan.connectedMenu(screen)
++                if empty || menu { terminal = view; break }
++            }
++            guard let surface = terminal?.surfaceModel else { continue }
++            // Nobody's typing is ever joined: not the tab in front of them.
++            let quiet = row.status == .idle || row.status == .unread
++            let ready = empty && quiet && !(row.selected && NSApp.isActive)
++            let (progress, action) = DockRemotePlan.next(remoteProgress[sid] ?? .init(), repo: repo,
++                                                         bridgeId: session.bridgeId, ready: ready, menu: menu, now: now)
++            remoteProgress[sid] = progress
++            switch action {
++            case .wait:
++                continue
++            case .type(let text):
++                DockLog.sessions.notice("remote names: \(row.name, privacy: .public): \(text, privacy: .public)")
++                surface.sendText(text)
++                surface.sendKeyEvent(Ghostty.Input.KeyEvent(key: .enter, action: .press, mods: []))
++                surface.sendKeyEvent(Ghostty.Input.KeyEvent(key: .enter, action: .release, mods: []))
++            case .escape:
++                surface.sendKeyEvent(Ghostty.Input.KeyEvent(key: .escape, action: .press, mods: []))
++                surface.sendKeyEvent(Ghostty.Input.KeyEvent(key: .escape, action: .release, mods: []))
++            }
++            return
++        }
 +    }
 +
 +    /// Types /compact-async into the session, so Claude Burst summarises it
@@ -9102,10 +9292,10 @@ index 0000000..9748798
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..33852cd
+index 0000000..e24e299
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,444 @@
+@@ -0,0 +1,450 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -9120,6 +9310,7 @@ index 0000000..33852cd
 +    static let dockBadgeKey = "dock.dockBadge"
 +    static let sidebarWidthKey = "dock.sidebarWidth"
 +    static let restoreSessionsKey = "dock.restoreSessions"
++    static let remoteEverySessionKey = "dock.remoteEverySession"
 +    static let holdSessionsKey = "dock.holdSessions"
 +    static let themeKey = "dock.theme"
 +    static let groupingKey = "dock.grouping"
@@ -9190,6 +9381,7 @@ index 0000000..33852cd
 +    static var jumpHotKey: Bool { UserDefaults.standard.bool(forKey: jumpHotKeyKey) }
 +    static var dockBadge: Bool { UserDefaults.standard.bool(forKey: dockBadgeKey) }
 +    static var restoreSessions: Bool { UserDefaults.standard.bool(forKey: restoreSessionsKey) }
++    static var remoteEverySession: Bool { UserDefaults.standard.bool(forKey: remoteEverySessionKey) }
 +    static var holdSessions: Bool { UserDefaults.standard.bool(forKey: holdSessionsKey) }
 +    static var bellKeep: Int { max(10, UserDefaults.standard.integer(forKey: bellKeepKey)) }
 +    static var bellWaiting: Bool { UserDefaults.standard.bool(forKey: bellWaitingKey) }
@@ -9205,6 +9397,7 @@ index 0000000..33852cd
 +    @AppStorage(DockSettings.jumpHotKeyKey) private var jumpHotKey = true
 +    @AppStorage(DockSettings.dockBadgeKey) private var dockBadge = true
 +    @AppStorage(DockSettings.restoreSessionsKey) private var restoreSessions = true
++    @AppStorage(DockSettings.remoteEverySessionKey) private var remoteEverySession = false
 +    @AppStorage(DockSettings.holdSessionsKey) private var holdSessions = true
 +    @AppStorage(DockSettings.themeKey) private var theme = ""
 +    @AppStorage(DockSettings.groupingKey) private var grouping = DockSettings.Grouping.none
@@ -9414,6 +9607,9 @@ index 0000000..33852cd
 +                    .font(.callout)
 +                Toggle("Keep tabs running when Ghostty Dock quits", isOn: $holdSessions)
 +                Text("Each tab runs in a small holder outside the app, so a quit, crash or restart does not stop it. Shells, dev servers and Claude sessions carry on, and come back as tabs with their scrollback. Applies to tabs opened after you change it.")
++                    .font(.callout)
++                Toggle("Put every session on Remote Control, named after its repo", isOn: $remoteEverySession)
++                Text("Types /remote-control and /rename into each tab when it is idle with nothing typed, once each time Ghostty Dock starts and whenever a session gets a new connection. A session you disconnect comes back at the next start.")
 +                    .font(.callout)
 +                Toggle("Open Ghostty Dock at login", isOn: $startAtLogin)
 +                    .onChange(of: startAtLogin) { on in setLogin(on) }
