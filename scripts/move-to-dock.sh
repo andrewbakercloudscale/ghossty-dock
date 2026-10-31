@@ -302,6 +302,17 @@ function remove_hidden_setting() {
     perl -0pi -e 's/\n?# ghostty-dock: one Dock icon[^\n]*\nmacos-hidden = always\n//' "$cfg"
 }
 
+# Whether Ghostty Dock would take a new tab, asked before claude is stopped.
+# macOS refuses Apple events to a running copy of the app whose files have
+# been deleted (-1743), and the opener would then fall back to a separate
+# Ghostty: the session leaves the dock. Not running is fine, the opener starts it.
+function dock_answers() {
+    [ -e "$STATE_DIR/disabled" ] && return 0
+    local app='application id "consulting.cloudscale.ghosttydock"'
+    [ "$(osascript -e "$app is running" 2>/dev/null)" = "true" ] || return 0
+    osascript -e "tell $app to count windows" >/dev/null 2>&1
+}
+
 function main() {
     # Sessions we start must not inherit a Claude Code parent marker
     # (CLAUDE_CODE_CHILD_SESSION turns off their transcript saving), nor the
@@ -367,6 +378,11 @@ function main() {
             /bin/bash "$SELF" "${args[@]}" >/dev/null 2>&1 </dev/null &
         echo "moving in the background; log: $LOG"
         exit 0
+    fi
+
+    if ! $dry && [ -z "$undock_id" ] && ! dock_answers; then
+        log "Ghostty Dock is refusing new tabs: left every session where it is. Restart Ghostty Dock, then try again."
+        exit 3
     fi
 
     local job=all
