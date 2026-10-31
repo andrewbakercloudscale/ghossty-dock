@@ -5550,10 +5550,10 @@ index 0000000..6d9cbd4
 +}
 diff --git a/macos/Sources/Features/Dock/DockLogin.swift b/macos/Sources/Features/Dock/DockLogin.swift
 new file mode 100644
-index 0000000..3e1c5d0
+index 0000000..532f7df
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockLogin.swift
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,216 @@
 +import AppKit
 +import Combine
 +
@@ -5755,9 +5755,11 @@ index 0000000..3e1c5d0
 +        case .alertSecondButtonReturn where !busy.isEmpty: chosen = rows
 +        default: return
 +        }
-+        for (i, row) in chosen.enumerated() {
-+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 1.5) {
-+                DockSessions.shared.restart(row)
++        DockSessions.shared.whenTabsOpen {
++            for (i, row) in chosen.enumerated() {
++                DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 1.5) {
++                    DockSessions.shared.restart(row)
++                }
 +            }
 +        }
 +    }
@@ -7474,10 +7476,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..381a73f
+index 0000000..9748798
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1595 @@
+@@ -0,0 +1,1620 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -7909,8 +7911,11 @@ index 0000000..381a73f
 +    /// Moves one session from its own Ghostty app into a tab here at once:
 +    /// claude is stopped and resumed, busy or not.
 +    func dock(_ u: Undocked) {
-+        if let i = undocked.firstIndex(of: u) { undocked[i].moving = true }
-+        runMover(["--now", "--pid", String(u.pid)])
++        whenTabsOpen { [weak self] in
++            guard let self else { return }
++            if let i = self.undocked.firstIndex(of: u) { self.undocked[i].moving = true }
++            self.runMover(["--now", "--pid", String(u.pid)])
++        }
 +    }
 +
 +    /// Moves a tab's session out into a Ghostty app of its own, at once.
@@ -7919,6 +7924,28 @@ index 0000000..381a73f
 +        undocking.insert(sid)
 +        closeWhenEmpty[row.id] = Date()
 +        runMover(["--now", "--undock", sid])
++    }
++
++    /// Runs `move` if this app will take a new tab. macOS refuses Apple events
++    /// to a running copy of the app whose files were deleted (-1743), and a
++    /// session stopped then would come back in a separate Ghostty, so ask before
++    /// anything is stopped. The mover makes the same check; this is what the
++    /// user gets to see.
++    func whenTabsOpen(_ move: @escaping () -> Void) {
++        DispatchQueue.global(qos: .userInitiated).async {
++            let script = "tell application id \"\(Bundle.main.bundleIdentifier ?? "")\" to count windows"
++            let answer = DockProcess.run("/usr/bin/osascript", ["-e", script], timeout: 10, log: DockLog.sessions)
++            DispatchQueue.main.async {
++                if answer?.status == 0 { move(); return }
++                let alert = NSAlert()
++                alert.messageText = "Ghostty Dock can't open new tabs"
++                alert.informativeText = """
++                    No session was stopped. macOS is refusing this copy of the app, usually because \
++                    it was replaced by an update while running. Restart Ghostty Dock, then try again.
++                    """
++                alert.runModalNearPointer()
++            }
++        }
 +    }
 +
 +    /// Stops a tab's session and resumes it in a new tab, at once; the old
@@ -9525,10 +9552,10 @@ index 0000000..33852cd
 +}
 diff --git a/macos/Sources/Features/Dock/DockShortcuts.swift b/macos/Sources/Features/Dock/DockShortcuts.swift
 new file mode 100644
-index 0000000..012d5f4
+index 0000000..ea8091f
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockShortcuts.swift
-@@ -0,0 +1,124 @@
+@@ -0,0 +1,127 @@
 +import AppKit
 +import Carbon
 +
@@ -9589,7 +9616,10 @@ index 0000000..012d5f4
 +            Shortcut(keys: "⌘⇧J", title: "Next Session That Needs You", keyCode: kVK_ANSI_J,
 +                     modifiers: [.command, .shift]) { model.jumpToNextWaiting() },
 +            Shortcut(keys: "⌘⇧R", title: "Restart Session", keyCode: kVK_ANSI_R,
-+                     modifiers: [.command, .shift]) { current.map(model.restart) ?? NSSound.beep() },
++                     modifiers: [.command, .shift]) {
++                guard let row = current else { NSSound.beep(); return }
++                model.whenTabsOpen { model.restart(row) }
++            },
 +            Shortcut(keys: "⌘⇧U", title: "Undock Session", keyCode: kVK_ANSI_U,
 +                     modifiers: [.command, .shift]) { current.map(model.undock) ?? NSSound.beep() },
 +            Shortcut(keys: "⌘⇧S", title: "Show or Hide the Sidebar", keyCode: kVK_ANSI_S,
@@ -9655,10 +9685,10 @@ index 0000000..012d5f4
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..8cca5b6
+index 0000000..7362443
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1547 @@
+@@ -0,0 +1,1549 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -9823,7 +9853,7 @@ index 0000000..8cca5b6
 +                    onCompact: { model.compact(row) },
 +                    onClose: { model.closeTab(row) },
 +                    onUndock: { model.undock(row) },
-+                    onRestart: { model.restart(row) })
++                    onRestart: { model.whenTabsOpen { model.restart(row) } })
 +            // A child terminal is indented under its session.
 +            // A running session steps in from the left, so what's running
 +            // stands out down the list.
@@ -10022,7 +10052,8 @@ index 0000000..8cca5b6
 +            }
 +            if !model.undocked.isEmpty {
 +                DockCounter(symbol: "macwindow", count: model.undocked.count, color: DockPalette.grey)
-+                    .help("\(model.undocked.count) undocked")
++                    .fixedSize()
++                    .help("\(model.undocked.count) undocked: sessions in their own Ghostty, listed under Undocked")
 +            }
 +            Spacer(minLength: 0)
 +        }
@@ -10310,6 +10341,7 @@ index 0000000..8cca5b6
 +        HStack(spacing: 2.5) {
 +            Image(systemName: symbol).font(.system(size: 9.5, weight: .bold))
 +            Text("\(count)").font(.system(size: 10.5, weight: .bold)).monospacedDigit()
++                .fixedSize()
 +        }
 +        .foregroundStyle(color)
 +        .padding(.horizontal, 5)
