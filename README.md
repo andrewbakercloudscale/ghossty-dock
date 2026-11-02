@@ -228,9 +228,11 @@ reports each session's status.
   started before still use the old account (Remote Control goes quiet).
   The sidebar says how many; **Resume Them…** resumes each in a fresh tab
   with its flags, so `--remote-control` keeps its name.
-- **Remote Control names** (Settings, off by default): puts every session in
-  a tab on Remote Control and titles it after its repo on the phone, once each
-  time the app starts and whenever a session gets a new connection.
+- **Remote Control names** (Settings, off by default): a session in a tab
+  started without `--remote-control` is resumed with `--remote-control <repo>`,
+  which titles it after its repo on the phone. It waits for five minutes idle
+  with nothing typed, nothing running in the background and you away from the
+  keys. Its tab is replaced, and tabs with a split are left alone.
 
 ## Agents: getting started
 

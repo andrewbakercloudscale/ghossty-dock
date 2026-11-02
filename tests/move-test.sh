@@ -77,6 +77,40 @@ STUB
     grep -q "refusing new tabs" "$tmp/home/.local/state/ghostty-dock/move-to-dock.log"
     check "undocking needs no tab here" 1 $?
 
+    # A stand-in dock with a stand-in claude under it.
+    local mac="$tmp/home/Applications/Ghostty Dock.app/Contents/MacOS" cwd="$tmp/work" rest
+    mkdir -p "$mac" "$cwd" "$tmp/bin"
+    # Compiled, as the mover finds them by their command lines.
+    echo 'int main(void) { for (;;) pause(); }' | cc -include unistd.h -x c -o "$tmp/bin/claude" -
+    echo 'int main(int c, char **v) { if (!fork()) execv(v[1], v + 1); wait(0); return 0; }' |
+        cc -include unistd.h -include sys/wait.h -x c -o "$mac/ghostty" -
+    function relaunch() {
+        local flags="$1"
+        rm -f "$tmp/opened"
+        (cd "$cwd" && exec "$mac/ghostty" "$tmp/bin/claude" --resume "$sid" $flags) >/dev/null 2>&1 &
+        local dock=$! i
+        for ((i = 0; i < 20; i++)); do ps -axo command= | grep -qF "$tmp/bin/claude --resume $sid" && [ -n "$(pgrep -P "$dock")" ] && ps -o command= -p "$(pgrep -P "$dock")" | grep -q "^$tmp/bin/claude" && break; /bin/sleep 0.1; done
+        HOME="$tmp/home" PATH="$tmp/stub:$PATH" RUNNING=false ANSWER=0 \
+            bash "$ROOT/scripts/move-to-dock.sh" --restart "$sid" --remote-name "my repo" >/dev/null 2>&1
+        pkill -f -- "claude --resume $sid" 2>/dev/null
+        kill "$dock" 2>/dev/null
+        wait "$dock" 2>/dev/null
+        cat "$tmp/opened" 2>/dev/null
+    }
+    local transcript
+    transcript="$tmp/home/.claude/projects/$(cd "$cwd" && pwd -P | sed 's/[^A-Za-z0-9]/-/g')/$sid.jsonl"
+    rest=$(relaunch "")
+    check "no transcript: nothing to resume, left alone" "" "$rest"
+    mkdir -p "$(dirname "$transcript")"
+    touch -t 202001010000 "$transcript" 2>/dev/null || { : >"$transcript"; touch -t 202001010000 "$transcript"; }
+    rest=$(relaunch "")
+    [[ "$rest" == *"--resume $sid --remote-control 'my repo'"* ]]
+    check "no flag: resumes with its repo's name" 0 $?
+    touch -t 202001010000 "$transcript"
+    rest=$(relaunch "--remote-control other")
+    [[ "$rest" == *"--remote-control other"* && "$rest" != *"my repo"* ]]
+    check "has the flag: keeps its own" 0 $?
+
     echo "$PASSED passed, $FAILED failed"
     [ "$FAILED" -eq 0 ]
 }

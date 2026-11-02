@@ -24,6 +24,7 @@ DOCK_BIN="$HOME/Applications/Ghostty Dock.app/Contents/MacOS/ghostty"
 QUIET_SECS=60
 # --now: move at once, interrupting a busy session.
 NOW=false
+REMOTE_NAME=""
 GIVE_UP_SECS=$((12 * 3600))
 
 function usage() {
@@ -37,6 +38,7 @@ options:
     --pid <pid>        Dock only the session in this Ghostty app (default: all)
     --undock <id>      Move this session out of Ghostty Dock into its own Ghostty
     --restart <id>     Stop this Ghostty Dock session and resume it in a new tab
+    --remote-name <n>  With --restart: add --remote-control <n> if it has none
     --now              Do not wait for a busy session to go quiet (interrupts it)
     --detach           Run in the background and return at once
     --dry-run          Only list what would move
@@ -260,6 +262,16 @@ function docked_claude() {
     done
 }
 
+# Flags plus --remote-control <name>, unless they ask for Remote Control already.
+function with_remote_name() {
+    local flags="$1" name="$2"
+    if [ -z "$name" ] || [[ " $flags " =~ [[:space:]]--(remote-control|rc)[=[:space:]] ]]; then
+        echo "$flags"
+    else
+        echo "${flags:+$flags }--remote-control $(shell_quote "$name")"
+    fi
+}
+
 # Moves session <id> out of Ghostty Dock into a stock Ghostty of its own, or
 # with "restart" resumes it in a new Ghostty Dock tab.
 function undock() {
@@ -271,6 +283,12 @@ function undock() {
     [ -n "$cpid" ] || { log "$sid: not running in Ghostty Dock"; return 1; }
     local cwd flags started
     IFS=$'\t' read -r _ cwd flags <<<"$(session_of "$cpid")"
+    flags=$(with_remote_name "$flags" "$REMOTE_NAME")
+    if [ -n "$REMOTE_NAME" ] && [ ! -f "$(transcript_for "$cwd" "$sid")" ]; then
+        # Nothing said yet, so --resume would find nothing to come back to.
+        log "$(basename "$cwd"): no transcript yet, left alone"
+        return 0
+    fi
     started=$(date +%s)
     while ! $NOW && [ "$(quiet_for "$(transcript_for "$cwd" "$sid")")" -lt "$QUIET_SECS" ]; do
         log "$(basename "$cwd"): busy, ${mode}ing once quiet"
@@ -341,6 +359,11 @@ function main() {
             shift
             restart_id="$1"
             args+=(--restart "$1")
+            ;;
+        --remote-name)
+            shift
+            REMOTE_NAME="$1"
+            args+=(--remote-name "$1")
             ;;
         --now)
             NOW=true
