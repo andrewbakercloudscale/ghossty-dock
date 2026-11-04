@@ -7556,10 +7556,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..332066b
+index 0000000..fda9526
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1743 @@
+@@ -0,0 +1,1799 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -7783,6 +7783,13 @@ index 0000000..332066b
 +    /// survives; the tab and surface do not) to its parent's key.
 +    private lazy var savedChildren: [String: String] = Self.loadChildren()
 +    private var holdNamesAt: Date?
++    /// The tab that was selected when the app last ran, put back once a
++    /// restart has reopened the tabs: until then the last tab opened won.
++    private lazy var selectionToRestore: [String: Any]? = DockSessions.loadSelection()
++    private let launchedAt = Date()
++    private var tabCount = 0
++    private var tabCountSince = Date()
++    private var savedSelection: String?
 +    private var holdNames: [String: String] = [:]
 +    private var moveTimer: Timer?
 +    private var watcher: DispatchSourceFileSystemObject?
@@ -8662,6 +8669,7 @@ index 0000000..332066b
 +        for i in grouped.indices { if let name = groupNames[grouped[i].id] { grouped[i].title = name } }
 +        children = children.filter { id, _ in built.contains { $0.id == id } }
 +        saveChildren(built)
++        restoreOrSaveSelection(built)
 +        grouped = Self.underParents(grouped)
 +        let flat = grouped.flatMap(\.items)
 +        noticeClosed(flat)
@@ -8813,6 +8821,54 @@ index 0000000..332066b
 +            if !surface.isEmpty { names[surface] = f.deletingPathExtension().lastPathComponent }
 +        }
 +        holdNames = names
++    }
++
++    private static let selectionFile = FileManager.default.homeDirectoryForCurrentUser
++        .appendingPathComponent(".local/state/ghostty-dock/selected.json")
++
++    private static func loadSelection() -> [String: Any]? {
++        (try? Data(contentsOf: selectionFile)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
++    }
++
++    private func holders(_ row: Row) -> [String] {
++        (row.controller.map { Array($0.surfaceTree) } ?? []).compactMap { holdNames[$0.id.uuidString] }
++    }
++
++    /// After a start: once no new tab has opened for three seconds, selects
++    /// the tab that was selected before (by holder, else session), without
++    /// bringing the app forward. After that, records the selection.
++    private func restoreOrSaveSelection(_ rows: [Row]) {
++        if rows.count != tabCount { tabCount = rows.count; tabCountSince = Date() }
++        if let want = selectionToRestore {
++            let waited = Date().timeIntervalSince(launchedAt)
++            guard waited < 180 else { selectionToRestore = nil; return }
++            guard Date().timeIntervalSince(tabCountSince) >= 3, !rows.isEmpty else { return }
++            let names = Set(want["holders"] as? [String] ?? [])
++            let sid = want["session"] as? String
++            let match = rows.first { !names.isDisjoint(with: holders($0)) }
++                ?? rows.first { sid != nil && $0.sessionId == sid }
++            if let match {
++                selectionToRestore = nil
++                if !match.selected, let controller = match.controller, let window = controller.window {
++                    DockLog.sessions.notice("selecting \(match.name, privacy: .public) again, as before the restart")
++                    window.makeKeyAndOrderFront(nil)
++                    if let surface = controller.focusedSurface ?? controller.surfaceTree.first {
++                        window.makeFirstResponder(surface)
++                    }
++                    DispatchQueue.main.async { [weak self] in self?.refresh() }
++                }
++            } else if waited > 60 {
++                selectionToRestore = nil
++            }
++            return
++        }
++        guard let row = rows.first(where: \.selected) else { return }
++        var info: [String: Any] = ["holders": holders(row)]
++        if let sid = row.sessionId { info["session"] = sid }
++        guard let data = try? JSONSerialization.data(withJSONObject: info, options: [.sortedKeys]),
++              let text = String(data: data, encoding: .utf8), text != savedSelection else { return }
++        savedSelection = text
++        _ = DockLog.write(data, to: Self.selectionFile)
 +    }
 +
 +    /// Writes the children by holder name when that has changed. Held
