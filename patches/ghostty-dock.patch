@@ -9132,10 +9132,10 @@ index 0000000..d3ce644
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..058f021
+index 0000000..a260a08
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,450 @@
+@@ -0,0 +1,453 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -9341,8 +9341,11 @@ index 0000000..058f021
 +            Section {
 +                Picker("Theme", selection: $theme) {
 +                    Text("As in the Ghostty config (\(DockTheme.configTheme ?? "Ghostty's default"))").tag("")
-+                    Divider()
-+                    ForEach(DockTheme.choices, id: \.self) { Text($0).tag($0) }
++                    ForEach(DockTheme.groups, id: \.title) { group in
++                        Section(group.title) {
++                            ForEach(group.names, id: \.self) { Text($0).tag($0) }
++                        }
++                    }
 +                }
 +                .onChange(of: theme) { _ in DockTheme.apply() }
 +                DockThemeSwatch(name: theme.isEmpty ? (DockTheme.configTheme ?? "Catppuccin Mocha") : theme)
@@ -11388,10 +11391,10 @@ index 0000000..f0b8d41
 +}
 diff --git a/macos/Sources/Features/Dock/DockTheme.swift b/macos/Sources/Features/Dock/DockTheme.swift
 new file mode 100644
-index 0000000..cf53b7e
+index 0000000..9f9b28a
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockTheme.swift
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,207 @@
 +import AppKit
 +import SwiftUI
 +
@@ -11400,16 +11403,28 @@ index 0000000..cf53b7e
 +/// choice lives in Ghostty Dock's settings, so stock Ghostty's config is
 +/// never touched; Ghostty Dock loads it after that config (see Ghostty.Config).
 +enum DockTheme {
-+    /// Twenty that look good with the sidebar, dark first. Each is a Ghostty
-+    /// theme of exactly this name.
-+    static let choices: [String] = [
-+        "Catppuccin Mocha", "Catppuccin Macchiato", "Catppuccin Frappe",
-+        "TokyoNight Storm", "TokyoNight Night", "Dracula", "Nord", "Gruvbox Dark",
-+        "Rose Pine", "Kanagawa Wave", "Everforest Dark Hard", "One Half Dark",
-+        "GitHub Dark Default", "Monokai Pro",
-+        "Catppuccin Latte", "GitHub Light Default", "Rose Pine Dawn",
-+        "iTerm2 Solarized Light", "Gruvbox Light", "TokyoNight Day",
++    /// Ones that look good with the sidebar, in groups for the picker. Each
++    /// is a Ghostty theme of exactly this name.
++    static let groups: [(title: String, names: [String])] = [
++        ("Dark", [
++            "Catppuccin Mocha", "Catppuccin Macchiato", "Catppuccin Frappe",
++            "TokyoNight Storm", "TokyoNight Night", "Dracula", "Dracula+", "Nord", "Gruvbox Dark",
++            "Rose Pine", "Rose Pine Moon", "Kanagawa Wave", "Everforest Dark Hard", "One Half Dark",
++            "GitHub Dark Default", "Monokai Pro", "Ayu Mirage", "Material Ocean",
++        ]),
++        ("Electric", [
++            "Synthwave", "SynthWave Alpha", "Synthwave Everything", "Cyberpunk", "Shades Of Purple",
++            "Laser", "Neon", "Electron Highlighter", "Cobalt Neon", "Andromeda", "Poimandres",
++            "Night Owl", "Fairyfloss", "Matrix", "Red Planet", "Hot Dog Stand",
++        ]),
++        ("Light", [
++            "Catppuccin Latte", "GitHub Light Default", "Rose Pine Dawn",
++            "iTerm2 Solarized Light", "Gruvbox Light", "TokyoNight Day",
++            "Ayu Light", "Flexoki Light", "Everforest Light Med",
++        ]),
 +    ]
++
++    static var choices: [String] { groups.flatMap(\.names) }
 +
 +    /// "" means whatever the Ghostty config says.
 +    static var selected: String { UserDefaults.standard.string(forKey: DockSettings.themeKey) ?? "" }
