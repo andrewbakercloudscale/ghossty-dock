@@ -152,6 +152,17 @@ static int app_quitting(pid_t app) {
     return atoi(buf) == app;
 }
 
+// The app writes hold/letgo/<surface> for each terminal of a window it is
+// closing with its sessions kept: that terminal lets go of its holder, the
+// holder keeps running, and the app reattaches it in another window.
+static int let_go(void) {
+    const char *surface = getenv("GHOSTTY_DOCK_SURFACE");
+    if (!surface || !*surface || strchr(surface, '/')) return 0;
+    char path[700];
+    snprintf(path, sizeof path, "%s/letgo/%s", hold_dir, surface);
+    return unlink(path) == 0;
+}
+
 // ---- master ----------------------------------------------------------------
 
 static char *ring;
@@ -604,7 +615,7 @@ static int client(const char *name) {
         }
     }
     // The terminal went away: the tab was closed, or the app is going.
-    send_pkt(fd, !alive(app) || app_quitting(app) ? PKT_DETACH : PKT_CLOSE, NULL, 0);
+    send_pkt(fd, !alive(app) || app_quitting(app) || let_go() ? PKT_DETACH : PKT_CLOSE, NULL, 0);
     close(fd);
     return 0;
 }
