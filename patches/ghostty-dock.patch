@@ -7238,89 +7238,6 @@ index 0000000..430e17d
 +        window?.makeKeyAndOrderFront(nil)
 +    }
 +}
-diff --git a/macos/Sources/Features/Dock/DockRemotePlan.swift b/macos/Sources/Features/Dock/DockRemotePlan.swift
-new file mode 100644
-index 0000000..b74417b
---- /dev/null
-+++ b/macos/Sources/Features/Dock/DockRemotePlan.swift
-@@ -0,0 +1,77 @@
-+import Foundation
-+
-+/// Decides when to relaunch a session with --remote-control <repo>. A launch
-+/// is what titles it on the phone: a rename from the Mac is dropped once the
-+/// phone or server has retitled the session. Only needs Foundation; DockSessions does the rest.
-+enum DockRemotePlan {
-+    /// What Claude Code records about a running session, in
-+    /// ~/.claude/sessions/<pid>.json.
-+    struct Session: Equatable {
-+        var sessionId: String
-+        var cwd: String
-+        var pid: Int
-+    }
-+
-+    static func session(json: Data) -> Session? {
-+        guard let o = try? JSONSerialization.jsonObject(with: json) as? [String: Any],
-+              let sid = o["sessionId"] as? String, let cwd = o["cwd"] as? String,
-+              let pid = o["pid"] as? Int
-+        else { return nil }
-+        return Session(sessionId: sid, cwd: cwd, pid: pid)
-+    }
-+
-+    /// The repo a folder belongs to, the main one for a worktree: `commonDir`
-+    /// is git's absolute --git-common-dir. Else the folder's own name.
-+    static func repoName(cwd: String, commonDir: String?) -> String {
-+        guard let commonDir, !commonDir.isEmpty else { return (cwd as NSString).lastPathComponent }
-+        return ((commonDir as NSString).deletingLastPathComponent as NSString).lastPathComponent
-+    }
-+
-+    private static func lastLines(_ screen: String, _ count: Int) -> [Substring] {
-+        Array(screen.split(separator: "\n").filter { $0.contains { !$0.isWhitespace } }.suffix(count))
-+    }
-+
-+    /// Claude Code's input box, on the screen and with nothing typed in it.
-+    /// The rule above it tells it from a shell whose prompt is also ❯; a
-+    /// menu's "❯ 1. Yes" is not empty. Anything drawn beside it is after a │.
-+    static func promptEmpty(_ screen: String) -> Bool {
-+        let lines = lastLines(screen, 12)
-+        guard let i = lines.lastIndex(where: { $0.hasPrefix("❯") }), i > 0,
-+              lines[i - 1].contains("─")
-+        else { return false }
-+        let typed = lines[i].dropFirst().prefix { $0 != "│" }
-+        return typed.allSatisfy(\.isWhitespace)
-+    }
-+
-+    /// Whether the footer under the input box counts background work, as in
-+    /// "auto mode on · 1 shell". Stopping claude would stop that too.
-+    static func backgroundWork(_ screen: String) -> Bool {
-+        let lines = lastLines(screen, 12)
-+        guard let i = lines.lastIndex(where: { $0.hasPrefix("❯") }) else { return false }
-+        return lines[(i + 1)...].contains { $0.range(of: #"· \d+ "#, options: .regularExpression) != nil }
-+    }
-+
-+    /// How long a session must stay ready before it is stopped.
-+    static let settle: TimeInterval = 300
-+
-+    struct Progress: Equatable {
-+        var readySince: Date?
-+        var relaunched = false
-+    }
-+
-+    /// `ready`: at an empty prompt, with nothing running and nobody at the keys.
-+    static func next(_ p: Progress, ready: Bool, now: Date) -> (Progress, relaunch: Bool) {
-+        var p = p
-+        guard !p.relaunched, ready else {
-+            p.readySince = nil
-+            return (p, false)
-+        }
-+        guard let since = p.readySince else {
-+            p.readySince = now
-+            return (p, false)
-+        }
-+        guard now.timeIntervalSince(since) >= settle else { return (p, false) }
-+        p.relaunched = true
-+        return (p, true)
-+    }
-+}
 diff --git a/macos/Sources/Features/Dock/DockSearch.swift b/macos/Sources/Features/Dock/DockSearch.swift
 new file mode 100644
 index 0000000..2b66815
@@ -7559,10 +7476,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..de4ebe4
+index 0000000..d3ce644
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1691 @@
+@@ -0,0 +1,1650 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -7678,11 +7595,7 @@ index 0000000..de4ebe4
 +    @Published private(set) var workspaces: [String: DockWorkspace] = [:]
 +    private let workspaceMeter = DockWorkspaces()
 +    private var remoteTimer: Timer?
-+    private let remoteStarted = Date()
 +    private var remoteLooking = false
-+    /// Folder to repo name.
-+    private var remoteRepos: [String: String] = [:]
-+    private var remoteProgress: [String: DockRemotePlan.Progress] = [:]
 +    /// Sessions sent /compact-async a moment ago.
 +    @Published private(set) var compacting: Set<String> = []
 +    @Published private(set) var meta: [String: Meta] = [:]
@@ -7899,9 +7812,10 @@ index 0000000..de4ebe4
 +        costTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in self?.refreshCosts() }
 +        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.refreshCosts() }
 +        agentTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.refreshAgentsRunning() }
-+        remoteTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
-+            MainActor.assumeIsolated { self?.refreshRemoteNames() }
++        remoteTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
++            self?.refreshRemoteNames()
 +        }
++        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.refreshRemoteNames() }
 +        NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil,
 +                                               queue: .main) { [weak self] _ in self?.applySettings() }
 +        NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil,
@@ -8058,62 +7972,24 @@ index 0000000..de4ebe4
 +        row.sessionId != nil && (row.status == .idle || row.status == .unread)
 +    }
 +
-+    /// With the setting on: every session in a tab is resumed with
-+    /// --remote-control <repo>, as only a launch titles it on the phone (a
-+    /// rename from here is dropped once the phone or server has retitled it).
-+    /// It waits until the session has been at an empty prompt with nothing
-+    /// running for five minutes and nobody is at the keys, since its tab is
-+    /// replaced and the new one comes to the front. Once per app start.
-+    @MainActor private func refreshRemoteNames() {
++    /// With the setting on: every running session's Remote Control title is
++    /// set to its repo, on the server, as the phone shows that title and a
++    /// rename or --remote-control from the Mac doesn't change one it already
++    /// has. ghostty-dock-rc-titles does it; it also undoes the phone's own
++    /// retitling, every five minutes.
++    private func refreshRemoteNames() {
++        let titler = FileManager.default.homeDirectoryForCurrentUser
++            .appendingPathComponent(".local/bin/ghostty-dock-rc-titles").path
 +        guard DockSettings.remoteEverySession, !remoteLooking,
-+              Date().timeIntervalSince(remoteStarted) > 20
++              FileManager.default.isExecutableFile(atPath: titler)
 +        else { return }
 +        remoteLooking = true
-+        let known = remoteRepos
-+        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/sessions")
 +        DispatchQueue.global(qos: .utility).async { [weak self] in
-+            let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
-+            let sessions = files.filter { $0.pathExtension == "json" }
-+                .compactMap { (try? Data(contentsOf: $0)).flatMap(DockRemotePlan.session(json:)) }
-+            var repos = known
-+            for cwd in Set(sessions.map(\.cwd)) where repos[cwd] == nil {
-+                let git = DockProcess.run("/usr/bin/git", ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
-+                                          timeout: 10, quiet: [128], log: DockLog.sessions)
-+                let dir = git?.status == 0 ? git?.text.trimmingCharacters(in: .whitespacesAndNewlines) : nil
-+                repos[cwd] = DockRemotePlan.repoName(cwd: cwd, commonDir: dir)
++            if let r = DockProcess.run("/usr/bin/python3", [titler], timeout: 120, log: DockLog.sessions),
++               !r.text.isEmpty {
++                DockLog.sessions.notice("remote titles: \(r.text, privacy: .public)")
 +            }
-+            DispatchQueue.main.async {
-+                MainActor.assumeIsolated {
-+                    guard let self else { return }
-+                    self.remoteLooking = false
-+                    self.remoteRepos = repos
-+                    self.stepRemoteNames(sessions, repos: repos)
-+                }
-+            }
-+        }
-+    }
-+
-+    @MainActor private func stepRemoteNames(_ sessions: [DockRemotePlan.Session], repos: [String: String]) {
-+        let bySession = Dictionary(sessions.map { ($0.sessionId, $0) }, uniquingKeysWith: { _, new in new })
-+        let now = Date()
-+        let away = Self.inputIdleSecs >= 120
-+        for row in rows {
-+            guard let sid = row.sessionId, let session = bySession[sid], let repo = repos[session.cwd],
-+                  let controller = row.controller
-+            else { continue }
-+            // Its tab closes with claude: never one with a shell split in it.
-+            let views = Array(controller.surfaceTree)
-+            let screen = views.count == 1 ? views[0].cachedVisibleContents.get() : ""
-+            let quiet = row.status == .idle || row.status == .unread
-+            let ready = away && quiet && DockRemotePlan.promptEmpty(screen) && !DockRemotePlan.backgroundWork(screen)
-+            let (progress, relaunch) = DockRemotePlan.next(remoteProgress[sid] ?? .init(), ready: ready, now: now)
-+            remoteProgress[sid] = progress
-+            if relaunch {
-+                restarting.insert(sid)
-+                closeWhenEmpty[row.id] = now
-+                runMover(["--restart", sid, "--remote-name", repo])
-+                return
-+            }
++            DispatchQueue.main.async { self?.remoteLooking = false }
 +        }
 +    }
 +
@@ -9256,7 +9132,7 @@ index 0000000..de4ebe4
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..c4baa92
+index 0000000..058f021
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
 @@ -0,0 +1,450 @@
@@ -9572,8 +9448,8 @@ index 0000000..c4baa92
 +                Toggle("Keep tabs running when Ghostty Dock quits", isOn: $holdSessions)
 +                Text("Each tab runs in a small holder outside the app, so a quit, crash or restart does not stop it. Shells, dev servers and Claude sessions carry on, and come back as tabs with their scrollback. Applies to tabs opened after you change it.")
 +                    .font(.callout)
-+                Toggle("Put every session on Remote Control, named after its repo", isOn: $remoteEverySession)
-+                Text("After each start, every session is resumed once with its repo as the Remote Control name, in a new tab, after five minutes idle with nothing typed, nothing running in the background and you away from the keys. The new tab comes to the front.")
++                Toggle("Name every Remote Control session after its repo", isOn: $remoteEverySession)
++                Text("Every five minutes, each running session's title on the phone is set to its repo, using your Claude login, so the phone's own titles are undone. Sessions are not restarted. The grey line under the title is the phone's and can't be changed.")
 +                    .font(.callout)
 +                Toggle("Open Ghostty Dock at login", isOn: $startAtLogin)
 +                    .onChange(of: startAtLogin) { on in setLogin(on) }
