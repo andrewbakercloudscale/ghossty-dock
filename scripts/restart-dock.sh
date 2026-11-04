@@ -56,6 +56,8 @@ options:
     --save         Record the open sessions (for --restore) and stop
     --restore      Reopen the sessions recorded by --save that are not
                    running anywhere, then stop
+    --reattach     Open a tab for each terminal left running without
+                   one (a window closed with its sessions kept), then stop
     --reopen-missing
                    Reopen the sessions a restart or restore could not
                    bring back (listed in missing-sessions.tsv), then stop
@@ -321,6 +323,17 @@ function restore() {
     rm -f "$SAVED"
     log "restore: $(conditions)"
     reopen_all "$sessions" "$(open_sessions $(holder_pids) | cut -f2)" "$held"
+}
+
+# Opens a tab for each terminal left running without one, as when a window
+# is closed with its sessions kept; nothing else is reopened.
+function reattach() {
+    restarting && { log "reattach: skipped, a restart is reopening the sessions"; return 0; }
+    local held
+    held=$(held_items)
+    [ -z "$held" ] && return 0
+    log "reattaching $(grep -c . <<<"$held") terminal(s) from a closed window"
+    open_items "$LAYOUT" <<<"$held"
 }
 
 # Prints "<surface>\t<folder>\t<command>" reattaching every holder left
@@ -606,6 +619,12 @@ function main() {
             mkdir -p "$STATE_DIR" || exit 1
             [ -x "$OPENER" ] || { echo "Error: $OPENER missing, run install.sh" >&2; exit 1; }
             reopen_missing
+            exit 0
+            ;;
+        --reattach)
+            mkdir -p "$STATE_DIR" || exit 1
+            [ -x "$OPENER" ] || { echo "Error: $OPENER missing, run install.sh" >&2; exit 1; }
+            reattach
             exit 0
             ;;
         --restore)

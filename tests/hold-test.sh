@@ -99,6 +99,21 @@ pid, fd = spawn(["attach", lst().split("\t")[0]])
 check("a wrapped program redraws on reattach", read(fd, 1.5).count(b"redraw") > before)
 os.kill(pid, signal.SIGHUP); time.sleep(1.5); fake.kill()
 
+# A window closed with its sessions kept: the app marks the terminal first.
+fake = app(); env["GHOSTTY_DOCK_SURFACE"] = "S4"
+pid, fd = spawn(["new", "--", "/bin/sh", "-c", "echo kept; cat"])
+read(fd)
+os.makedirs(st + "/hold/letgo", exist_ok=True); open(st + "/hold/letgo/S4", "w").close()
+os.kill(pid, signal.SIGHUP); os.waitpid(pid, 0); time.sleep(1.5)
+check("a let-go tab leaves its program running", "\t0\t" in lst("--detached")
+      and not os.path.exists(st + "/hold/letgo/S4"))
+name = lst().split("\t")[0]
+pid, fd = spawn(["attach", name])
+check("and it reattaches", b"kept" in read(fd))
+os.kill(pid, signal.SIGHUP); time.sleep(1.5)
+check("closing it then ends it", lst() == "")
+fake.kill()
+
 pid, fd = spawn(["new", "--", "/nonexistent/prog"])
 read(fd); os.waitpid(pid, 0)
 check("a program that cannot start leaves no holder", lst() == "")

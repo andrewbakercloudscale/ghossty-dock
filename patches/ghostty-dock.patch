@@ -7567,10 +7567,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..84efbc3
+index 0000000..5f4c83f
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1700 @@
+@@ -0,0 +1,1703 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -7892,7 +7892,10 @@ index 0000000..84efbc3
 +    func start() {
 +        guard timer == nil else { return }
 +        try? FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
-+        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.refresh() }
++        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
++            self?.refresh()
++            DockWindowClose.reattachIfWindow()
++        }
 +        moveTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refreshMovable() }
 +        refreshMovable()
 +        DockHousekeeping.run()
@@ -9862,10 +9865,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..7362443
+index 0000000..725f267
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1549 @@
+@@ -0,0 +1,1550 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -10033,9 +10036,10 @@ index 0000000..7362443
 +                    onRestart: { model.whenTabsOpen { model.restart(row) } })
 +            // A child terminal is indented under its session.
 +            // A running session steps in from the left, so what's running
-+            // stands out down the list.
-+            .padding(.leading, (row.parent != nil ? 20 : 0) + (row.status == .running ? 16 : 0))
++            // stands out down the list; the selected one steps in further.
++            .padding(.leading, (row.parent != nil ? 20 : 0) + (row.selected ? 30 : row.status == .running ? 16 : 0))
 +            .animation(.easeInOut(duration: 0.25), value: row.status == .running)
++            .animation(.easeInOut(duration: 0.2), value: row.selected)
 +            .onTapGesture { model.select(row) }
 +            // Raised: a little larger and lifted, drawn above its neighbours.
 +            .scaleEffect(row.selected ? 1.025 : 1)
@@ -12930,6 +12934,87 @@ index 0000000..d5e7c01
 +        }
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockWindowClose.swift b/macos/Sources/Features/Dock/DockWindowClose.swift
+new file mode 100644
+index 0000000..f5fa6d7
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockWindowClose.swift
+@@ -0,0 +1,75 @@
++import AppKit
++
++/// Ghostty Dock: closing a window of several tabs asks first. Keep Running
++/// lets go of each terminal's holder (hold/letgo/<surface>), so its session
++/// goes on, and opens it again as a tab in another window, or in the next
++/// window when none is left. End Sessions closes them as Ghostty would.
++/// Closing a single tab still ends its session.
++enum DockWindowClose {
++    /// Terminals let go with no window to put them in yet.
++    private(set) static var pending = false
++
++    private static var letGoDir: URL { DockHold.holdDir.appendingPathComponent("letgo") }
++
++    private static var restarter: String {
++        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/ghostty-dock-restart").path
++    }
++
++    /// Asks what to do with the window's tabs, then closes it unless
++    /// cancelled. False when the dock has no say (one tab, or no holders),
++    /// and the caller closes the window its usual way.
++    static func ask(_ windows: [NSWindow], sheetOn window: NSWindow, close: @escaping () -> Void) -> Bool {
++        guard windows.count > 1, DockSettings.holdSessions,
++              FileManager.default.isExecutableFile(atPath: DockHold.binary) else { return false }
++        let surfaces = windows.compactMap { $0.windowController as? TerminalController }
++            .flatMap { Array($0.surfaceTree) }
++        guard !surfaces.isEmpty else { return false }
++        let alert = NSAlert()
++        alert.messageText = "Close \(windows.count) Tabs?"
++        alert.informativeText = "Keep Running moves them to another window, or to the next one you open, "
++            + "with what runs in them still running. End Sessions stops them all."
++        alert.addButton(withTitle: "Keep Running")
++        alert.addButton(withTitle: "End Sessions")
++        alert.addButton(withTitle: "Cancel")
++        alert.beginSheetModal(for: window) { response in
++            switch response {
++            case .alertFirstButtonReturn:
++                letGo(surfaces.map { $0.id.uuidString })
++                close()
++                pending = true
++                // The terminals tell their holders as they close.
++                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { reattachIfWindow() }
++            case .alertSecondButtonReturn:
++                close()
++            default:
++                break
++            }
++        }
++        return true
++    }
++
++    /// Opens the let-go terminals as tabs once a terminal window is up.
++    static func reattachIfWindow() {
++        guard pending, NSApp.windows.contains(where: { $0.isVisible && $0.windowController is TerminalController })
++        else { return }
++        pending = false
++        let restarter = restarter
++        guard FileManager.default.isExecutableFile(atPath: restarter) else {
++            DockLog.restart.error("ghostty-dock-restart is not installed: the kept tabs were not reopened")
++            return
++        }
++        DispatchQueue.global(qos: .userInitiated).async {
++            _ = DockProcess.run("/bin/bash", [restarter, "--reattach"], timeout: 120, log: DockLog.restart)
++        }
++    }
++
++    private static func letGo(_ surfaces: [String]) {
++        let fm = FileManager.default
++        try? fm.createDirectory(at: letGoDir, withIntermediateDirectories: true)
++        // A marker left by a terminal that never closed is stale.
++        for old in (try? fm.contentsOfDirectory(at: letGoDir, includingPropertiesForKeys: nil)) ?? [] {
++            try? fm.removeItem(at: old)
++        }
++        for s in surfaces { fm.createFile(atPath: letGoDir.appendingPathComponent(s).path, contents: nil) }
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockWorkspace.swift b/macos/Sources/Features/Dock/DockWorkspace.swift
 new file mode 100644
 index 0000000..9be71a4
@@ -13144,6 +13229,51 @@ index d4b0ac0..4ec0c1d 100644
          // If when we become key our first responder is the window itself, then we
          // want to move focus to our focused terminal surface. This works around
          // various weirdness with moving surfaces around.
+diff --git a/macos/Sources/Features/Terminal/TerminalController.swift b/macos/Sources/Features/Terminal/TerminalController.swift
+index 56b0b40..06f4e0a 100644
+--- a/macos/Sources/Features/Terminal/TerminalController.swift
++++ b/macos/Sources/Features/Terminal/TerminalController.swift
+@@ -1132,7 +1132,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
+             case .tab: closeTab(nil)
+             case .window:
+                 guard self.window?.isFirstWindowInTabGroup ?? false else { return }
+-                closeWindow(nil)
++                closeWindowAskingDock()
+             }
+         }
+ 
+@@ -1316,8 +1316,22 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
+         defaultSize.apply(to: window)
+     }
+ 
++    /// Ghostty Dock: a window of several tabs asks whether to keep their
++    /// sessions running (DockWindowClose); closing its last tab does not.
++    private func closeWindowAskingDock() {
++        guard let window else { return }
++        if DockWindowClose.ask(window.tabGroup?.windows ?? [window], sheetOn: window,
++                               close: { [weak self] in self?.closeWindowImmediately() }) { return }
++        closeWindow(nil)
++    }
++
+     @IBAction override func closeWindow(_ sender: Any?) {
+         guard let window = window else { return }
++        // The menu's Close Window: the whole window, not its last tab.
++        if sender is NSMenuItem {
++            closeWindowAskingDock()
++            return
++        }
+ 
+         // We need to check all the windows in our tab group for confirmation
+         // if we're closing the window. If we don't have a tabgroup for any
+@@ -1521,7 +1535,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
+     @objc private func onCloseWindow(notification: SwiftUI.Notification) {
+         guard let target = notification.object as? Ghostty.SurfaceView else { return }
+         guard surfaceTree.contains(target) else { return }
+-        closeWindow(self)
++        closeWindowAskingDock()
+     }
+ 
+     @objc private func onResetWindowSize(notification: SwiftUI.Notification) {
 diff --git a/macos/Sources/Features/Terminal/TerminalRestorable.swift b/macos/Sources/Features/Terminal/TerminalRestorable.swift
 index aab51f6..b96bbf4 100644
 --- a/macos/Sources/Features/Terminal/TerminalRestorable.swift
