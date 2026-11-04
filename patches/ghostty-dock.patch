@@ -9835,10 +9835,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..725f267
+index 0000000..5b3d218
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1550 @@
+@@ -0,0 +1,1552 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -10212,8 +10212,27 @@ index 0000000..725f267
 +
 +    private var headerButtons: some View {
 +        HStack(spacing: 2) {
-+            Text("Sessions").font(.system(size: 12, weight: .semibold)).foregroundStyle(DockPalette.text)
++            Text("\(model.rows.count) Session\(model.rows.count == 1 ? "" : "s")")
++                .font(.system(size: 12, weight: .semibold)).foregroundStyle(DockPalette.text)
 +                .lineLimit(1).fixedSize()
++                .padding(.trailing, 4)
++            DockHeaderButton(symbol: "calendar", size: 11, color: DockPalette.teal,
++                             tip: "Daily Recap: today's spend, work, files and commits (⌘⇧Y)",
++                             shownTip: $headerTip, tipColor: $headerTipColor) {
++                DockRecapWindow.shared.show(near: NSEvent.mouseLocation)
++            }
++            DockHeaderButton(symbol: "paintpalette.fill", color: selectedTag.map(DockPalette.color) ?? DockPalette.color(DockTag.pink),
++                             tip: "Colour this session, its row and its terminal", shownTip: $headerTip,
++                             tipColor: $headerTipColor) {
++                showColours.toggle()
++            }
++            .popover(isPresented: $showColours, arrowEdge: .bottom) {
++                if let row = model.rows.first(where: \.selected) {
++                    DockColourPicker(row: row) { showColours = false }
++                } else {
++                    Text("Click a session first").padding(14)
++                }
++            }
 +            Spacer(minLength: 4)
 +            // Always there; green and filled when a newer build is installed.
 +            if updates.state != .installing {
@@ -10276,11 +10295,6 @@ index 0000000..725f267
 +                             shownTip: $headerTip, tipColor: $headerTipColor) {
 +                DockAgentsWindow.shared.show(near: NSEvent.mouseLocation)
 +            }
-+            DockHeaderButton(symbol: "calendar", size: 11, color: DockPalette.teal,
-+                             tip: "Daily Recap: today's spend, work, files and commits (⌘⇧Y)",
-+                             shownTip: $headerTip, tipColor: $headerTipColor) {
-+                DockRecapWindow.shared.show(near: NSEvent.mouseLocation)
-+            }
 +            if showBell {
 +            DockHeaderButton(symbol: notices.unread > 0 ? "bell.badge.fill" : "bell",
 +                             color: DockPalette.color(DockTag.orange),
@@ -10294,18 +10308,6 @@ index 0000000..725f267
 +            }
 +            DockHeaderButton(symbol: "apple.terminal", size: 11, color: DockPalette.green, tip: "New tab (⌘T)",
 +                             shownTip: $headerTip, tipColor: $headerTipColor, action: onNewTab)
-+            DockHeaderButton(symbol: "paintpalette.fill", color: selectedTag.map(DockPalette.color) ?? DockPalette.color(DockTag.pink),
-+                             tip: "Colour this session, its row and its terminal", shownTip: $headerTip,
-+                             tipColor: $headerTipColor) {
-+                showColours.toggle()
-+            }
-+            .popover(isPresented: $showColours, arrowEdge: .bottom) {
-+                if let row = model.rows.first(where: \.selected) {
-+                    DockColourPicker(row: row) { showColours = false }
-+                } else {
-+                    Text("Click a session first").padding(14)
-+                }
-+            }
 +            // About is Settings' last tab; with an update out the gear turns
 +            // green, flashes and opens there.
 +            DockHeaderButton(symbol: "gearshape.fill",
