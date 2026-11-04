@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Titles every running Claude session on the phone after its repo.
+
+The Remote Control title lives on Anthropic's server: --remote-control <name>
+only names a new phone entry, and a /rename from the Mac is dropped once the
+phone or server has retitled it. So this sets it there, with the same call
+Claude Code makes (PUT /v1/code/sessions/<id>) and your Claude login.
+
+Ghostty Dock runs it every few minutes while its Remote Control names
+setting is on. It reads ~/.claude/sessions/<pid>.json for each live session
+and changes only titles that differ. Prints one line per change.
+
+  ghostty-dock-rc-titles [--dry-run]
+
+Overrides for tests: GHOSTTY_DOCK_API (base URL), GHOSTTY_DOCK_TOKEN.
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+HOME = os.path.expanduser("~")
+API = os.environ.get("GHOSTTY_DOCK_API", "https://api.anthropic.com")
+LOG = os.path.join(HOME, ".local/state/ghostty-dock/rc-titles.log")
+DRY = "--dry-run" in sys.argv[1:]
+
+
+def log(msg):
+    line = time.strftime("%Y-%m-%d %H:%M:%S ") + msg
+    print(msg)
+    try:
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
+        with open(LOG, "a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def token():
+    if os.environ.get("GHOSTTY_DOCK_TOKEN"):
+        return os.environ["GHOSTTY_DOCK_TOKEN"]
+    r = subprocess.run(["/usr/bin/security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+                       capture_output=True, text=True, timeout=20)
+    if r.returncode != 0:
+        return None
+    try:
+        oauth = json.loads(r.stdout)["claudeAiOauth"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    if oauth.get("expiresAt") and oauth["expiresAt"] / 1000 < time.time():
+        return None  # claude refreshes it the next time it calls out
+    return oauth.get("accessToken")
+
+
+def call(tok, method, cid, body=None):
+    req = urllib.request.Request(
+        f"{API}/v1/code/sessions/{cid}", method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json",
+                 "anthropic-version": "2023-06-01", "User-Agent": "ghostty-dock"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = r.read()
+            return r.status, json.loads(data) if data else {}
+    except urllib.error.HTTPError as e:
+        return e.code, None
+    except (urllib.error.URLError, OSError, ValueError):
+        return 0, None
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def repo_name(cwd):
+    r = subprocess.run(["/usr/bin/git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                       capture_output=True, text=True, timeout=10)
+    common = r.stdout.strip() if r.returncode == 0 else ""
+    # The main repo's name for a worktree, else the folder's.
+    return os.path.basename(os.path.dirname(common)) if common else os.path.basename(cwd.rstrip("/"))
+
+
+def sessions():
+    d = os.path.join(HOME, ".claude/sessions")
+    found = {}
+    for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        if not f.endswith(".json"):
+            continue
+        try:
+            o = json.load(open(os.path.join(d, f)))
+        except (OSError, ValueError):
+            continue
+        bridge, cwd, pid = o.get("bridgeSessionId") or "", o.get("cwd"), o.get("pid")
+        if not (bridge and cwd and isinstance(pid, int) and alive(pid)):
+            continue
+        cid = "cse_" + bridge.split("_", 1)[1] if "_" in bridge else bridge
+        found[cid] = cwd
+    return found
+
+
+def main():
+    live = sessions()
+    if not live:
+        return 0
+    tok = token()
+    if not tok:
+        log("no usable Claude login in the Keychain; titles left alone")
+        return 1
+    for cid, cwd in live.items():
+        want = repo_name(cwd)
+        st, d = call(tok, "GET", cid)
+        if st != 200 or not isinstance(d, dict):
+            log(f"{cid} ({want}): could not read it (HTTP {st})")
+            continue
+        have = (d.get("response_shape") or d).get("title")
+        if have == want:
+            continue
+        if DRY:
+            print(f"{cid}: {have!r} -> {want!r} (dry run)")
+            continue
+        st, _ = call(tok, "PUT", cid, {"title": want})
+        log(f"{cid}: {have!r} -> {want!r}" + ("" if st == 200 else f" failed (HTTP {st})"))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

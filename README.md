@@ -228,121 +228,14 @@ reports each session's status.
   started before still use the old account (Remote Control goes quiet).
   The sidebar says how many; **Resume Them…** resumes each in a fresh tab
   with its flags, so `--remote-control` keeps its name.
-- **Remote Control names** (Settings, off by default): after each start of
-  Ghostty Dock, every session in a tab is resumed once with
-  `--remote-control <repo>`, which titles it after its repo on the phone (a
-  rename from the Mac doesn't reach a session the phone has retitled). It
-  waits for five minutes idle with nothing typed, nothing running in the
-  background and you away from the keys. Its tab is replaced, and tabs with a
-  split are left alone.
-
-## Agents: getting started
-
-An agent is a helper with its own instructions that a Claude session can hand
-work to. The Agents window (⌘⇧A, or 👥 at the top of the sidebar) has three
-tabs: **Activity** shows what agents are doing and what they cost, **Set Up**
-shows the agents you have, and **Find Agents** has 647 ready-made ones.
-
-1. **Find one.** Open Agents → **Find Agents**. Type what you need (reviewer,
-   react, security, sql…) or choose a kind from **All kinds**. Click a row to
-   read what the agent does, whether it can run commands, and its full
-   instructions.
-2. **Install it.** Tick the agents you want. Under **Install to**, choose
-   **Every project** (`~/.claude/agents`) or one open project
-   (`<project>/.claude/agents`), then press **Install** (or Return). Installed
-   rows get a green tick.
-3. **Use it.** In any session, ask for it by name, for example *"Use the
-   code-reviewer agent to review my last commit"*. The agent's detail shows
-   that line with a **Copy** button. Or use **Start a Session as It** to
-   open a new tab running `claude --agent <name>`, where the whole session is
-   that agent.
-4. **Watch it.** **Activity** lists each agent as it runs: what it is doing,
-   its model, tool calls, tokens and cost. Click a row to go to its session.
-   While agents run, the 👥 button turns green and shows a count.
-5. **Change it.** In **Set Up**, pick an agent to edit its description (which
-   Claude uses to decide when to call it), model, colour, tools and
-   instructions. **Duplicate as Mine** copies a plugin's agent so you can
-   change it. **+** makes a new one, and **Move to Trash** removes one.
-
-Sessions start in the folder they were opened in, so an agent installed for
-one project is only offered there. Agents for every project are offered
-everywhere. Installed files are as their authors wrote them, so read the
-instructions before you install, especially when the agent is flagged as able
-to run commands.
-
-## Keyboard shortcuts
-
-| Keys | Does |
-|---|---|
-| ⌘1 – ⌘8, ⌘9 | Go to that session in the sidebar, or the last one |
-| ⌃⇥ / ⌃⇧⇥, ⌘⇧] / ⌘⇧[ | Next / previous session, in the sidebar's order |
-| ⌘⇧J (⌃⌥J from any app) | Next session that needs you, then finished ones |
-| ⌘⇧R | Restart this session |
-| ⌘⇧U | Undock this session to its own window |
-| ⌘⇧S | Show or hide the sidebar |
-| ⌘P | Find a session by name, folder or question |
-| ⌘⇧A | Agents across all sessions |
-| ⌘⇧O | Overview: every session on one screen |
-| ⌘⇧Y | Daily recap |
-| ⌘⇧T | Reopen the last closed session |
-| ⌘⇧B | Show or hide this tab's browser |
-| ⌘⇧E | Show or hide this tab's file viewer |
-| ⌘-click a file name | Open it in the file viewer (web links open as before) |
-
-While the sidebar is hidden, ⌘1–9 and the next/previous keys are Ghostty's
-own again (tab order). Everything else in Ghostty (⌘T, ⌘W, splits) is unchanged.
-Double-clicking the title bar zooms the window; ⌥-double-click a tab to rename
-it, or use its right-click menu.
-
-**In Finder:** right-click a folder → **Quick Actions** → **Launch Claude Code
-in Ghostty** or **Continue last Claude Code session in Ghostty** opens it as a
-tab. `install.sh` adds both if they are missing. Settings → Shortcuts → In
-Finder gives each a key (**Add Shortcut**, **Remove Shortcut**), with a picture
-of the menu.
-
-## Browser
-
-⌘⇧B opens a Chromium browser beside the tab's terminal, for watching the app
-a session is building. Each terminal tab has its own, with tabs of its own:
-**+** for a new one, × on a tab to close it, and links that open a new tab or
-window open as one. Drag its left edge to resize it.
-
-Web links open there too, as a new tab with the browser shown: a link you
-⌘-click in the terminal, one you click in Claude Code, a web link in a file
-in the viewer, and a page a program opens, such as Claude Code's `/login`.
-Ghostty Dock sets `$BROWSER` in its terminals to `ghostty-dock-browse`,
-which Claude Code, `gh` and Python's `webbrowser` follow; it falls back to
-your usual browser when the app does not answer. A `$BROWSER` Ghostty Dock
-was started with is kept. `ghostty-dock url <url>` opens a page from a
-script.
-
-⌘⇧B again hides it, and its pages keep running out of sight. The × at the end
-of the address bar closes the browser and all its tabs. Chromium starts the
-first time a browser opens, and its shared helpers run until Ghostty Dock
-quits.
-
-Every Claude Code session in a Ghostty Dock tab knows it is there and can
-drive it. `install.sh` adds the **dock-browser** tools for every Claude Code
-(`claude mcp add --scope user dock-browser`), which run `chrome-devtools-mcp`
-against the browser's debugging port, `127.0.0.1:9223` (not Chrome's usual
-9222, which a Chrome of your own may hold). They start the browser beside
-the session's tab the first time Claude uses them, so a session that never
-needs a browser does not start one. And a `SessionStart` hook
-(`ghostty-dock-context`) tells each session in a dock tab about the browser
-and its tools; elsewhere it says nothing. They need Node.js.
-
-Clicks and screenshots work on tabs you are not looking at, and while the
-browser is hidden. A page Claude opens (`new_page`) appears as a tab in its
-own terminal tab's browser; one it closes loses only its tab. Pages never
-take the keyboard from the terminal when they load: only clicking in a page
-does. Claude sees the pages of every terminal tab's browser on the one port,
-and is told to keep to its own.
-
-## File viewer
-
-⌘-click a file name in a terminal, such as the `plan.md` Claude Code just
-wrote, and it opens beside the terminal, left of the browser:
-
+- **Remote Control names** (Settings, off by default): every five minutes,
+  each running session's title on the phone is set to its repo, so the
+  phone's AI titles are undone. The title lives on Anthropic's server, and
+  neither `--remote-control <name>` nor a rename from the Mac changes one the
+  phone already has, so `ghostty-dock-rc-titles` sets it there with the call
+  Claude Code itself makes, using your Claude login from the Keychain. It is
+  an internal API and may change. Sessions are not restarted; the grey line
+  under each title is the phone app's.
 - Markdown is rendered, with tables, task lists and highlighted code blocks.
 - Source and text files show with line numbers and highlighting, and are
   never run: a ⌘-clicked `.sh` used to offer to run it in Terminal.
