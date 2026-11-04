@@ -7556,10 +7556,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..f359ba6
+index 0000000..332066b
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1681 @@
+@@ -0,0 +1,1743 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -7779,6 +7779,11 @@ index 0000000..f359ba6
 +    /// Child terminals (a plain shell opened from a session's menu), and the
 +    /// key of the row each sits under.
 +    private var children: [ObjectIdentifier: String] = [:]
++    /// The same, kept across a restart: a held terminal's holder name (it
++    /// survives; the tab and surface do not) to its parent's key.
++    private lazy var savedChildren: [String: String] = Self.loadChildren()
++    private var holdNamesAt: Date?
++    private var holdNames: [String: String] = [:]
 +    private var moveTimer: Timer?
 +    private var watcher: DispatchSourceFileSystemObject?
 +    private var jumpKey: DockHotKey?
@@ -8526,10 +8531,16 @@ index 0000000..f359ba6
 +        // left no row selected: the frontmost terminal window stands in.
 +        let anyMain = TerminalController.all.contains { $0.window?.isKeyWindow == true || $0.window?.isMainWindow == true }
 +        let front = anyMain ? nil : NSApp.orderedWindows.first { $0.isVisible && $0.windowController is TerminalController }
++        refreshHoldNames()
 +        for controller in TerminalController.all {
 +            guard let window = controller.window else { continue }
 +            let id = ObjectIdentifier(controller)
 +            if !order.contains(id) { order.append(id) }
++            if children[id] == nil,
++               let parent = controller.surfaceTree.lazy
++                   .compactMap({ self.holdNames[$0.id.uuidString].flatMap { self.savedChildren[$0] } }).first {
++                children[id] = parent
++            }
 +            let isSelectedTab = window.tabGroup?.selectedWindow.map { $0 === window } ?? true
 +            let selected = isSelectedTab && (window.isKeyWindow || window.isMainWindow || window === front)
 +            let onScreen = appActive && selected
@@ -8650,6 +8661,7 @@ index 0000000..f359ba6
 +                                           tag: \.tag)
 +        for i in grouped.indices { if let name = groupNames[grouped[i].id] { grouped[i].title = name } }
 +        children = children.filter { id, _ in built.contains { $0.id == id } }
++        saveChildren(built)
 +        grouped = Self.underParents(grouped)
 +        let flat = grouped.flatMap(\.items)
 +        noticeClosed(flat)
@@ -8775,6 +8787,56 @@ index 0000000..f359ba6
 +        else { return nil }
 +        let root = out.text.trimmingCharacters(in: .whitespacesAndNewlines)
 +        return root.isEmpty ? nil : root
++    }
++
++    private static let childrenFile = FileManager.default.homeDirectoryForCurrentUser
++        .appendingPathComponent(".local/state/ghostty-dock/children.json")
++    private static let holdDir = FileManager.default.homeDirectoryForCurrentUser
++        .appendingPathComponent(".local/state/ghostty-dock/hold")
++
++    private static func loadChildren() -> [String: String] {
++        (try? Data(contentsOf: childrenFile))
++            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] } ?? [:]
++    }
++
++    /// Surface id to holder name, from hold/<name>.surface, which a holder
++    /// rewrites when a tab attaches to it. Read again when the folder changes.
++    private func refreshHoldNames() {
++        let changed = (try? FileManager.default.attributesOfItem(atPath: Self.holdDir.path))?[.modificationDate] as? Date
++        guard changed != holdNamesAt || changed == nil else { return }
++        holdNamesAt = changed
++        let files = (try? FileManager.default.contentsOfDirectory(at: Self.holdDir, includingPropertiesForKeys: nil)) ?? []
++        var names: [String: String] = [:]
++        for f in files where f.pathExtension == "surface" {
++            guard let text = try? String(contentsOf: f, encoding: .utf8) else { continue }
++            let surface = text.trimmingCharacters(in: .whitespacesAndNewlines)
++            if !surface.isEmpty { names[surface] = f.deletingPathExtension().lastPathComponent }
++        }
++        holdNames = names
++    }
++
++    /// Writes the children by holder name when that has changed. Held
++    /// children whose tab is still opening keep their entry.
++    private func saveChildren(_ rows: [Row]) {
++        var saved: [String: String] = [:]
++        var seen: Set<String> = []
++        for row in rows {
++            for surface in row.controller.map({ Array($0.surfaceTree) }) ?? [] {
++                guard let name = holdNames[surface.id.uuidString] else { continue }
++                seen.insert(name)
++                if let parent = children[row.id] { saved[name] = parent }
++            }
++        }
++        // A holder still running but not yet back in a tab keeps its parent.
++        let live = Set(holdNames.values)
++        for (name, parent) in savedChildren where live.contains(name) && !seen.contains(name) {
++            saved[name] = parent
++        }
++        guard saved != savedChildren else { return }
++        savedChildren = saved
++        if let data = try? JSONSerialization.data(withJSONObject: saved, options: [.sortedKeys]) {
++            _ = DockLog.write(data, to: Self.childrenFile)
++        }
 +    }
 +
 +    /// Moves each child terminal to just under its parent, whatever the sort
