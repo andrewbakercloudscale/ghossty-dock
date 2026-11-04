@@ -7240,15 +7240,15 @@ index 0000000..430e17d
 +}
 diff --git a/macos/Sources/Features/Dock/DockRemotePlan.swift b/macos/Sources/Features/Dock/DockRemotePlan.swift
 new file mode 100644
-index 0000000..d1401dc
+index 0000000..b74417b
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockRemotePlan.swift
-@@ -0,0 +1,85 @@
+@@ -0,0 +1,77 @@
 +import Foundation
 +
-+/// Decides when to relaunch a session with --remote-control <repo>. That flag
-+/// is what titles it on the phone: /rename changed only the local name for a
-+/// session started without it. Only needs Foundation; DockSessions does the rest.
++/// Decides when to relaunch a session with --remote-control <repo>. A launch
++/// is what titles it on the phone: a rename from the Mac is dropped once the
++/// phone or server has retitled the session. Only needs Foundation; DockSessions does the rest.
 +enum DockRemotePlan {
 +    /// What Claude Code records about a running session, in
 +    /// ~/.claude/sessions/<pid>.json.
@@ -7271,14 +7271,6 @@ index 0000000..d1401dc
 +    static func repoName(cwd: String, commonDir: String?) -> String {
 +        guard let commonDir, !commonDir.isEmpty else { return (cwd as NSString).lastPathComponent }
 +        return ((commonDir as NSString).deletingLastPathComponent as NSString).lastPathComponent
-+    }
-+
-+    /// Whether a claude command line already asks for Remote Control.
-+    static func hasRemoteFlag(command: String) -> Bool {
-+        command.split(separator: " ").contains {
-+            $0 == "--remote-control" || $0 == "--rc"
-+                || $0.hasPrefix("--remote-control=") || $0.hasPrefix("--rc=")
-+        }
 +    }
 +
 +    private static func lastLines(_ screen: String, _ count: Int) -> [Substring] {
@@ -7567,10 +7559,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..5f4c83f
+index 0000000..de4ebe4
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1703 @@
+@@ -0,0 +1,1691 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -7690,8 +7682,6 @@ index 0000000..5f4c83f
 +    private var remoteLooking = false
 +    /// Folder to repo name.
 +    private var remoteRepos: [String: String] = [:]
-+    /// Claude pid to whether it was started with --remote-control.
-+    private var remoteFlags: [Int: Bool] = [:]
 +    private var remoteProgress: [String: DockRemotePlan.Progress] = [:]
 +    /// Sessions sent /compact-async a moment ago.
 +    @Published private(set) var compacting: Set<String> = []
@@ -8068,18 +8058,18 @@ index 0000000..5f4c83f
 +        row.sessionId != nil && (row.status == .idle || row.status == .unread)
 +    }
 +
-+    /// With the setting on: a session in a tab started without --remote-control
-+    /// is resumed with --remote-control <repo>, as only that flag titles it on
-+    /// the phone. It waits until the session has been at an empty prompt with
-+    /// nothing running for five minutes and nobody is at the keys, since its
-+    /// tab is replaced and the new one comes to the front. Once per app start.
++    /// With the setting on: every session in a tab is resumed with
++    /// --remote-control <repo>, as only a launch titles it on the phone (a
++    /// rename from here is dropped once the phone or server has retitled it).
++    /// It waits until the session has been at an empty prompt with nothing
++    /// running for five minutes and nobody is at the keys, since its tab is
++    /// replaced and the new one comes to the front. Once per app start.
 +    @MainActor private func refreshRemoteNames() {
 +        guard DockSettings.remoteEverySession, !remoteLooking,
 +              Date().timeIntervalSince(remoteStarted) > 20
 +        else { return }
 +        remoteLooking = true
 +        let known = remoteRepos
-+        let knownFlags = remoteFlags
 +        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/sessions")
 +        DispatchQueue.global(qos: .utility).async { [weak self] in
 +            let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
@@ -8092,34 +8082,24 @@ index 0000000..5f4c83f
 +                let dir = git?.status == 0 ? git?.text.trimmingCharacters(in: .whitespacesAndNewlines) : nil
 +                repos[cwd] = DockRemotePlan.repoName(cwd: cwd, commonDir: dir)
 +            }
-+            var flags = knownFlags.filter { pid, _ in sessions.contains { $0.pid == pid } }
-+            for session in sessions where flags[session.pid] == nil {
-+                guard let ps = DockProcess.run("/bin/ps", ["-o", "command=", "-p", String(session.pid)],
-+                                               timeout: 10, quiet: [1], log: DockLog.sessions),
-+                      ps.status == 0
-+                else { continue }
-+                flags[session.pid] = DockRemotePlan.hasRemoteFlag(command: ps.text)
-+            }
 +            DispatchQueue.main.async {
 +                MainActor.assumeIsolated {
 +                    guard let self else { return }
 +                    self.remoteLooking = false
 +                    self.remoteRepos = repos
-+                    self.remoteFlags = flags
-+                    self.stepRemoteNames(sessions, repos: repos, flags: flags)
++                    self.stepRemoteNames(sessions, repos: repos)
 +                }
 +            }
 +        }
 +    }
 +
-+    @MainActor private func stepRemoteNames(_ sessions: [DockRemotePlan.Session], repos: [String: String],
-+                                            flags: [Int: Bool]) {
++    @MainActor private func stepRemoteNames(_ sessions: [DockRemotePlan.Session], repos: [String: String]) {
 +        let bySession = Dictionary(sessions.map { ($0.sessionId, $0) }, uniquingKeysWith: { _, new in new })
 +        let now = Date()
 +        let away = Self.inputIdleSecs >= 120
 +        for row in rows {
 +            guard let sid = row.sessionId, let session = bySession[sid], let repo = repos[session.cwd],
-+                  flags[session.pid] == false, let controller = row.controller
++                  let controller = row.controller
 +            else { continue }
 +            // Its tab closes with claude: never one with a shell split in it.
 +            let views = Array(controller.surfaceTree)
@@ -9276,7 +9256,7 @@ index 0000000..5f4c83f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..8fc149b
+index 0000000..c4baa92
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
 @@ -0,0 +1,450 @@
@@ -9593,7 +9573,7 @@ index 0000000..8fc149b
 +                Text("Each tab runs in a small holder outside the app, so a quit, crash or restart does not stop it. Shells, dev servers and Claude sessions carry on, and come back as tabs with their scrollback. Applies to tabs opened after you change it.")
 +                    .font(.callout)
 +                Toggle("Put every session on Remote Control, named after its repo", isOn: $remoteEverySession)
-+                Text("A session started without Remote Control is resumed with it, in a new tab, after five minutes idle with nothing typed, nothing running in the background and you away from the keys. The new tab comes to the front.")
++                Text("After each start, every session is resumed once with its repo as the Remote Control name, in a new tab, after five minutes idle with nothing typed, nothing running in the background and you away from the keys. The new tab comes to the front.")
 +                    .font(.callout)
 +                Toggle("Open Ghostty Dock at login", isOn: $startAtLogin)
 +                    .onChange(of: startAtLogin) { on in setLogin(on) }

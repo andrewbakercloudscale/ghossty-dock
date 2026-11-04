@@ -228,11 +228,13 @@ reports each session's status.
   started before still use the old account (Remote Control goes quiet).
   The sidebar says how many; **Resume Them…** resumes each in a fresh tab
   with its flags, so `--remote-control` keeps its name.
-- **Remote Control names** (Settings, off by default): a session in a tab
-  started without `--remote-control` is resumed with `--remote-control <repo>`,
-  which titles it after its repo on the phone. It waits for five minutes idle
-  with nothing typed, nothing running in the background and you away from the
-  keys. Its tab is replaced, and tabs with a split are left alone.
+- **Remote Control names** (Settings, off by default): after each start of
+  Ghostty Dock, every session in a tab is resumed once with
+  `--remote-control <repo>`, which titles it after its repo on the phone (a
+  rename from the Mac doesn't reach a session the phone has retitled). It
+  waits for five minutes idle with nothing typed, nothing running in the
+  background and you away from the keys. Its tab is replaced, and tabs with a
+  split are left alone.
 
 ## Agents: getting started
 
