@@ -121,6 +121,8 @@ reports each session's status.
   last 3 months; click one to reopen it. Its search matches names, folders
   and, from three letters, what was said in them, with the line it was said
   in. Open sessions it was said in show under "Open now"; click to go there.
+  ⇅ beside the search flips it to oldest first. A click anywhere else folds
+  it away.
 - **Cost**: each row ends with what the session has cost so far, subagents
   included, priced like the Cost Sidebar below. Off in Settings.
 - **Branch, pull request and ports**: a line under each row like
@@ -193,8 +195,9 @@ reports each session's status.
   commits, then one card per repo (sessions in its subfolders and worktrees
   count toward it), most spent first: each session by its first prompt (click
   to go to it, or reopen it if closed), the files Claude edited, and your
-  commits that day on any branch. ‹ › step back through earlier days. Read
-  from the transcripts and git when it opens; nothing is tracked.
+  commits that day on any branch. ‹ › step back through earlier days, and the
+  PDF button saves the day as A4 pages and opens them. Read from the
+  transcripts and git when it opens; nothing is tracked.
 - **Reopen closed (⌘⇧T)**: within a few seconds Ghostty brings the tab back as
   it was; after that, the session is resumed in a new tab with its old flags.
 - **Right-click a row** to rename it, pin it to the top or give it a colour.

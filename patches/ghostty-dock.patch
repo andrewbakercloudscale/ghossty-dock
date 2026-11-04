@@ -4583,10 +4583,10 @@ index 0000000..fee8caa
 +}
 diff --git a/macos/Sources/Features/Dock/DockHistory.swift b/macos/Sources/Features/Dock/DockHistory.swift
 new file mode 100644
-index 0000000..3cb8d8e
+index 0000000..1a3f9cd
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockHistory.swift
-@@ -0,0 +1,440 @@
+@@ -0,0 +1,470 @@
 +import AppKit
 +import SwiftUI
 +
@@ -4830,12 +4830,17 @@ index 0000000..3cb8d8e
 +    @ObservedObject private var model = DockSessions.shared
 +    @AppStorage("dock.history.open") private var open = false
 +    @AppStorage("dock.history.height") private var height = 280.0
++    @AppStorage("dock.history.oldestFirst") private var oldestFirst = false
 +    @State private var query = ""
 +    @State private var dragStart: Double?
 +    @State private var pending: DispatchWorkItem?
++    /// Whether the pointer is over the panel, so a click elsewhere closes it.
++    @State private var inside = false
++    @State private var clickMonitor: Any?
 +
 +    var body: some View {
-+        let shown = history.shown(query, open: Set(model.rows.compactMap(\.sessionId)))
++        let newest = history.shown(query, open: Set(model.rows.compactMap(\.sessionId)))
++        let shown = oldestFirst ? Array(newest.reversed()) : newest
 +        // Open sessions in which it was said: a click goes to the tab.
 +        let openNow = query.isEmpty ? [] : model.rows.filter { $0.sessionId.map { history.said[$0] != nil } == true }
 +        VStack(spacing: 0) {
@@ -4854,6 +4859,13 @@ index 0000000..3cb8d8e
 +                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
 +                            .buttonStyle(.plain).foregroundStyle(DockPalette.grey)
 +                    }
++                    Button { oldestFirst.toggle() } label: {
++                        Image(systemName: "arrow.up.arrow.down")
++                            .font(.system(size: 11, weight: .semibold))
++                            .foregroundStyle(oldestFirst ? DockPalette.teal : DockPalette.grey)
++                    }
++                    .buttonStyle(.plain)
++                    .dockTip(oldestFirst ? "Oldest first: click for newest first" : "Newest first: click for oldest first")
 +                }
 +                .padding(.horizontal, 8).padding(.vertical, 5)
 +                .background(RoundedRectangle(cornerRadius: 6).fill(DockPalette.base))
@@ -4863,6 +4875,24 @@ index 0000000..3cb8d8e
 +        }
 +        .background(DockPalette.mantle)
 +        .overlay(alignment: .top) { Rectangle().fill(DockPalette.greyLine).frame(height: 1) }
++        .onHover { inside = $0 }
++        .onAppear { watchClicks() }
++        .onDisappear {
++            if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
++            clickMonitor = nil
++        }
++    }
++
++    /// A click anywhere else in the window (a tab, the terminal) folds the
++    /// list away, as a popover would.
++    private func watchClicks() {
++        guard clickMonitor == nil else { return }
++        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { e in
++            if open, !inside, e.window?.isKeyWindow == true || e.window?.isMainWindow == true {
++                withAnimation(.easeOut(duration: 0.15)) { open = false }
++            }
++            return e
++        }
 +    }
 +
 +    private func bar(count: Int) -> some View {
@@ -6798,12 +6828,13 @@ index 0000000..9b29fc8
 +}
 diff --git a/macos/Sources/Features/Dock/DockRecap.swift b/macos/Sources/Features/Dock/DockRecap.swift
 new file mode 100644
-index 0000000..430e17d
+index 0000000..ea97919
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockRecap.swift
-@@ -0,0 +1,436 @@
+@@ -0,0 +1,486 @@
 +import AppKit
 +import SwiftUI
++import UniformTypeIdentifiers
 +
 +/// Ghostty Dock: what a day's Claude Code sessions did, per repo: spend,
 +/// prompts, how long Claude worked, the files it changed and the commits
@@ -7110,12 +7141,61 @@ index 0000000..430e17d
 +                .help("The day after")
 +            Spacer()
 +            if model.loading && model.day != nil { ProgressView().controlSize(.small) }
++            Button { savePDF() } label: { Image(systemName: "doc.richtext") }
++                .disabled(model.day?.projects.isEmpty != false)
++                .help("Save this day's recap as a PDF")
 +            Button { model.load() } label: { Image(systemName: "arrow.clockwise") }
 +                .help("Read the sessions again")
 +        }
 +        .buttonStyle(.borderless)
 +        .padding(.horizontal, 16)
 +        .padding(.vertical, 10)
++    }
++
++    /// The recap as A4 pages: the title, the totals and every project, cut
++    /// across pages where it runs over. Saved where you choose, then opened.
++    @MainActor private func savePDF() {
++        guard let day = model.day else { return }
++        let page = CGSize(width: 595, height: 842), margin: CGFloat = 36
++        let width = page.width - 2 * margin
++        let content = VStack(alignment: .leading, spacing: 14) {
++            Text("Daily Recap · \(title)").font(.title3.weight(.semibold)).foregroundStyle(DockPalette.text)
++            totals(day)
++            ForEach(day.projects) { project($0) }
++        }
++        .frame(width: width, alignment: .leading)
++        .background(DockPalette.base)
++        .environment(\.colorScheme, DockPalette.scheme)
++
++        let day8601 = ISO8601DateFormatter()
++        day8601.formatOptions = [.withFullDate]
++        let panel = NSSavePanel()
++        panel.allowedContentTypes = [.pdf]
++        panel.nameFieldStringValue = "Daily Recap \(day8601.string(from: model.start)).pdf"
++        guard panel.runModal() == .OK, let url = panel.url else { return }
++
++        let renderer = ImageRenderer(content: content)
++        renderer.proposedSize = ProposedViewSize(width: width, height: nil)
++        var box = CGRect(origin: .zero, size: page)
++        guard let ctx = CGContext(url as CFURL, mediaBox: &box, nil) else { NSSound.beep(); return }
++        renderer.render { size, draw in
++            let usable = page.height - 2 * margin
++            let pages = max(1, Int((size.height / usable).rounded(.up)))
++            for i in 0..<pages {
++                ctx.beginPDFPage(nil)
++                ctx.setFillColor(NSColor(DockPalette.base).cgColor)
++                ctx.fill(CGRect(origin: .zero, size: page))
++                ctx.saveGState()
++                ctx.clip(to: CGRect(x: margin, y: margin, width: width, height: usable))
++                // PDF space runs upward: page i shows the slice i * usable from the top.
++                ctx.translateBy(x: margin, y: page.height - margin - size.height + CGFloat(i) * usable)
++                draw(ctx)
++                ctx.restoreGState()
++                ctx.endPDFPage()
++            }
++        }
++        ctx.closePDF()
++        NSWorkspace.shared.open(url)
 +    }
 +
 +    private var title: String {
