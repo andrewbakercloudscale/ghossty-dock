@@ -277,10 +277,13 @@ the start of its name. Requests go through files in
 
 ## Themes
 
-Settings → Theme picks one of 20 (Catppuccin Mocha, Macchiato, Frappe and
-Latte; TokyoNight Storm, Night and Day; Dracula; Nord; Gruvbox Dark and Light;
-Rose Pine and Rose Pine Dawn; Kanagawa Wave; Everforest Dark Hard; One Half
-Dark; GitHub Dark and Light; Monokai Pro; Solarized Light). The terminal and
+Settings → Theme picks one of 43, in three groups: **Dark** (Catppuccin,
+TokyoNight, Dracula, Nord, Gruvbox, Rose Pine, Kanagawa, Everforest, One Half,
+GitHub, Monokai Pro, Ayu Mirage, Material Ocean), **Electric** (Synthwave,
+Cyberpunk, Shades Of Purple, Laser, Neon, Electron Highlighter, Cobalt Neon,
+Andromeda, Poimandres, Night Owl, Fairyfloss, Matrix, Red Planet, Hot Dog
+Stand) and **Light** (Catppuccin Latte, GitHub, Rose Pine Dawn, Solarized,
+Gruvbox, TokyoNight Day, Ayu, Flexoki, Everforest). The terminal and
 the sidebar change together, in every window. The default follows the `theme`
 in your Ghostty config. Your Ghostty config is never edited: the choice is
 written to `~/.local/state/ghostty-dock/theme.conf`, which only Ghostty Dock
