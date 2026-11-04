@@ -38,7 +38,7 @@ options:
     --pid <pid>        Dock only the session in this Ghostty app (default: all)
     --undock <id>      Move this session out of Ghostty Dock into its own Ghostty
     --restart <id>     Stop this Ghostty Dock session and resume it in a new tab
-    --remote-name <n>  With --restart: add --remote-control <n> if it has none
+    --remote-name <n>  With --restart: resume with --remote-control <n>
     --now              Do not wait for a busy session to go quiet (interrupts it)
     --detach           Run in the background and return at once
     --dry-run          Only list what would move
@@ -262,14 +262,24 @@ function docked_claude() {
     done
 }
 
-# Flags plus --remote-control <name>, unless they ask for Remote Control already.
+# Flags with --remote-control <name> in place of any Remote Control flag they
+# have: only a launch names a session on the phone.
 function with_remote_name() {
     local flags="$1" name="$2"
-    if [ -z "$name" ] || [[ " $flags " =~ [[:space:]]--(remote-control|rc)[=[:space:]] ]]; then
-        echo "$flags"
-    else
-        echo "${flags:+$flags }--remote-control $(shell_quote "$name")"
-    fi
+    [ -z "$name" ] && { echo "$flags"; return; }
+    python3 -c '
+import shlex, sys
+words, out, i = shlex.split(sys.argv[1]), [], 0
+while i < len(words):
+    w = words[i]
+    i += 1
+    if w in ("--remote-control", "--rc"):
+        if i < len(words) and not words[i].startswith("-"):
+            i += 1
+    elif not w.startswith(("--remote-control=", "--rc=")):
+        out.append(w)
+print(" ".join([shlex.quote(w) for w in out] + ["--remote-control", shlex.quote(sys.argv[2])]))
+' "$flags" "$name"
 }
 
 # Moves session <id> out of Ghostty Dock into a stock Ghostty of its own, or

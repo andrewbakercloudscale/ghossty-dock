@@ -37,12 +37,6 @@ final class RemotePlanTests: XCTestCase {
         XCTAssertFalse(DockRemotePlan.backgroundWork("done · 3 files\n\(rule)\n❯ \n\(rule)\n  status"), "above the box")
     }
 
-    func testRemoteFlag() {
-        XCTAssertTrue(DockRemotePlan.hasRemoteFlag(command: "claude --resume x --remote-control repo"))
-        XCTAssertTrue(DockRemotePlan.hasRemoteFlag(command: "claude --rc=repo"))
-        XCTAssertFalse(DockRemotePlan.hasRemoteFlag(command: "claude --resume x"))
-    }
-
     func testRelaunchesOnceAfterSettling() {
         var p = DockRemotePlan.Progress()
         var go: Bool

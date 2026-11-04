@@ -107,9 +107,9 @@ STUB
     [[ "$rest" == *"--resume $sid --remote-control 'my repo'"* ]]
     check "no flag: resumes with its repo's name" 0 $?
     touch -t 202001010000 "$transcript"
-    rest=$(relaunch "--remote-control other")
-    [[ "$rest" == *"--remote-control other"* && "$rest" != *"my repo"* ]]
-    check "has the flag: keeps its own" 0 $?
+    rest=$(relaunch "--dangerously-skip-permissions --remote-control other")
+    [[ "$rest" == *"--resume $sid --dangerously-skip-permissions --remote-control 'my repo'"* && "$rest" != *other* ]]
+    check "has the flag: its name becomes the repo's" 0 $?
 
     echo "$PASSED passed, $FAILED failed"
     [ "$FAILED" -eq 0 ]
