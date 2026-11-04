@@ -7556,10 +7556,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..d3ce644
+index 0000000..0ebc99d
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1650 @@
+@@ -0,0 +1,1654 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -8495,12 +8495,16 @@ index 0000000..d3ce644
 +        var busyNow: [String: Int] = [:]
 +        var doneNow: Set<String> = []
 +        defer { busy = busyNow; done = doneNow }
++        // With the app in the background no window is key or main, which
++        // left no row selected: the frontmost terminal window stands in.
++        let anyMain = TerminalController.all.contains { $0.window?.isKeyWindow == true || $0.window?.isMainWindow == true }
++        let front = anyMain ? nil : NSApp.orderedWindows.first { $0.isVisible && $0.windowController is TerminalController }
 +        for controller in TerminalController.all {
 +            guard let window = controller.window else { continue }
 +            let id = ObjectIdentifier(controller)
 +            if !order.contains(id) { order.append(id) }
 +            let isSelectedTab = window.tabGroup?.selectedWindow.map { $0 === window } ?? true
-+            let selected = isSelectedTab && (window.isKeyWindow || window.isMainWindow)
++            let selected = isSelectedTab && (window.isKeyWindow || window.isMainWindow || window === front)
 +            let onScreen = appActive && selected
 +
 +            // A tab with splits is one row: its most urgent session.
