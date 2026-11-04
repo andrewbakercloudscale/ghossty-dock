@@ -231,6 +231,11 @@ reports each session's status.
   started before still use the old account (Remote Control goes quiet).
   The sidebar says how many; **Resume Them…** resumes each in a fresh tab
   with its flags, so `--remote-control` keeps its name.
+- **After a logout or login window crash**, the tabs come back but what runs
+  in them is still in the ended login (no network lookups, Keychain,
+  clipboard or opening apps). Each Claude session there is resumed in the
+  current login, once it has been quiet for a while, with its flags and
+  conversation; checked every minute. Plain shells are left as they are.
 - **Remote Control names** (Settings, off by default): every five minutes,
   each running session's title on the phone is set to its repo, so the
   phone's AI titles are undone. The title lives on Anthropic's server, and

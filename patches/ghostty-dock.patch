@@ -7556,10 +7556,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..0ebc99d
+index 0000000..f359ba6
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1654 @@
+@@ -0,0 +1,1681 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -7675,6 +7675,9 @@ index 0000000..0ebc99d
 +    @Published private(set) var workspaces: [String: DockWorkspace] = [:]
 +    private let workspaceMeter = DockWorkspaces()
 +    private var remoteTimer: Timer?
++    private var staleTimer: Timer?
++    /// Sessions already resumed out of an ended login, once each.
++    private var staleResumed: Set<String> = []
 +    private var remoteLooking = false
 +    /// Sessions sent /compact-async a moment ago.
 +    @Published private(set) var compacting: Set<String> = []
@@ -7896,6 +7899,9 @@ index 0000000..0ebc99d
 +            self?.refreshRemoteNames()
 +        }
 +        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.refreshRemoteNames() }
++        staleTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
++            self?.resumeStaleLogins()
++        }
 +        NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil,
 +                                               queue: .main) { [weak self] _ in self?.applySettings() }
 +        NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil,
@@ -8044,6 +8050,27 @@ index 0000000..0ebc99d
 +        restarting.insert(sid)
 +        closeWhenEmpty[row.id] = Date()
 +        runMover(["--now", "--restart", sid])
++    }
++
++    /// After a logout or login window crash, the tabs that came back still
++    /// run in the ended login: no network lookups, Keychain, clipboard or
++    /// opening apps. Each such session is resumed here, in this login, once
++    /// it is quiet (the mover waits), with its flags and conversation.
++    private func resumeStaleLogins() {
++        guard let loginAt = DockStaleLogin.loginAt() else { return }
++        let candidates = rows.compactMap { row -> (sid: String, started: Date)? in
++            guard let sid = row.sessionId, let pid = row.pid, !staleResumed.contains(sid),
++                  !restarting.contains(sid), let started = DockStaleLogin.started(pid) else { return nil }
++            return (sid, started)
++        }
++        for sid in DockStaleLogin.stale(candidates, loginAt: loginAt) {
++            guard let row = rows.first(where: { $0.sessionId == sid }) else { continue }
++            DockLog.sessions.notice("\(row.name, privacy: .public) is from an ended login; resuming it")
++            staleResumed.insert(sid)
++            restarting.insert(sid)
++            closeWhenEmpty[row.id] = Date()
++            runMover(["--restart", sid])
++        }
 +    }
 +
 +    /// Whether a row can be compacted now: only while claude sits at its
@@ -11360,6 +11387,58 @@ index 0000000..725f267
 +        }
 +
 +        func updateNSView(_ view: DockSidebarSlot, context: Context) {}
++    }
++}
+diff --git a/macos/Sources/Features/Dock/DockStaleLogin.swift b/macos/Sources/Features/Dock/DockStaleLogin.swift
+new file mode 100644
+index 0000000..1930311
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockStaleLogin.swift
+@@ -0,0 +1,46 @@
++import Darwin
++import Foundation
++
++/// Sessions left behind by a login that has ended. A tab's holder outlives
++/// a logout or a login window crash, and Ghostty Dock reattaches it after
++/// the next login, but what runs in it is still in the old login session:
++/// it can't look up hosts, read the Keychain, use the clipboard or open
++/// apps. Resuming the session from the app puts it in the current login.
++/// Only needs Foundation; DockSessions does the resuming.
++enum DockStaleLogin {
++    /// The sessions whose claude started before `loginAt`.
++    static func stale(_ sessions: [(sid: String, started: Date)], loginAt: Date) -> [String] {
++        sessions.filter { $0.started < loginAt.addingTimeInterval(-5) }.map(\.sid)
++    }
++
++    /// When a process started.
++    static func started(_ pid: pid_t) -> Date? {
++        var kp = kinfo_proc()
++        var len = MemoryLayout<kinfo_proc>.stride
++        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
++        guard sysctl(&mib, 4, &kp, &len, nil, 0) == 0, len > 0 else { return nil }
++        let t = kp.kp_proc.p_un.__p_starttime
++        return Date(timeIntervalSince1970: Double(t.tv_sec) + Double(t.tv_usec) / 1e6)
++    }
++
++    /// When this login began: the start of this user's newest loginwindow,
++    /// which macOS starts afresh for every login.
++    static func loginAt() -> Date? {
++        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_UID, Int32(getuid())]
++        var len = 0
++        guard sysctl(&mib, 4, nil, &len, nil, 0) == 0, len > 0 else { return nil }
++        var procs = [kinfo_proc](repeating: kinfo_proc(), count: len / MemoryLayout<kinfo_proc>.stride + 16)
++        len = procs.count * MemoryLayout<kinfo_proc>.stride
++        guard sysctl(&mib, 4, &procs, &len, nil, 0) == 0 else { return nil }
++        let count = len / MemoryLayout<kinfo_proc>.stride
++        var newest: Date?
++        for var p in procs.prefix(count) {
++            let name = withUnsafeBytes(of: &p.kp_proc.p_comm) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
++            guard name == "loginwindow" else { continue }
++            let t = p.kp_proc.p_un.__p_starttime
++            let at = Date(timeIntervalSince1970: Double(t.tv_sec) + Double(t.tv_usec) / 1e6)
++            if newest.map({ at > $0 }) ?? true { newest = at }
++        }
++        return newest
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockSurfaceError.swift b/macos/Sources/Features/Dock/DockSurfaceError.swift
