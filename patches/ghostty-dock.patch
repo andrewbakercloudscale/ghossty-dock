@@ -9835,10 +9835,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..5b3d218
+index 0000000..8b96233
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1552 @@
+@@ -0,0 +1,1590 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -9933,7 +9933,11 @@ index 0000000..5b3d218
 +                            }
 +                        }
 +                        if !model.folded(group) {
-+                            ForEach(model.shown(group.items)) { row in rowView(row) }
++                            let shown = model.shown(group.items)
++                            ForEach(Array(shown.enumerated()), id: \.element.id) { i, row in
++                                rowView(row, moreBelow: row.parent != nil && i + 1 < shown.count
++                                            && shown[i + 1].parent == row.parent)
++                            }
 +                        }
 +                    }
 +                    // Drop here to move a row to the end.
@@ -9991,7 +9995,7 @@ index 0000000..5b3d218
 +              + "Reopen resumes each in a tab. Log: ~/.local/state/ghostty-dock/restart-dock.log")
 +    }
 +
-+    private func rowView(_ row: DockSessions.Row) -> some View {
++    private func rowView(_ row: DockSessions.Row, moreBelow: Bool = false) -> some View {
 +        DockRowView(row: row,
 +                    cost: showCost ? row.sessionId.flatMap { model.costs[$0] } : nil,
 +                    undocking: row.sessionId.map(model.undocking.contains) ?? false,
@@ -10007,7 +10011,11 @@ index 0000000..5b3d218
 +            // A child terminal is indented under its session.
 +            // A running session steps in from the left, so what's running
 +            // stands out down the list; the selected one steps in further.
-+            .padding(.leading, (row.parent != nil ? 20 : 0) + (row.selected ? 30 : row.status == .running ? 16 : 0))
++            .padding(.leading, Self.indent(row))
++            // A dotted elbow from the session above to each of its terminals.
++            .background(alignment: .leading) {
++                if row.parent != nil { DockChildLine(width: Self.indent(row), moreBelow: moreBelow) }
++            }
 +            .animation(.easeInOut(duration: 0.25), value: row.status == .running)
 +            .animation(.easeInOut(duration: 0.2), value: row.selected)
 +            .onTapGesture { model.select(row) }
@@ -10019,6 +10027,13 @@ index 0000000..5b3d218
 +            .onDrag { NSItemProvider(object: row.key as NSString) }
 +            .onDrop(of: [.text], delegate: DockRowDrop(target: row.key, hovered: $dropTarget))
 +            .overlay(alignment: .top) { dropLine(dropTarget == row.key).offset(y: -2) }
++    }
++
++    /// A child terminal sits a little in under its session; a running
++    /// row steps in from the left and the selected one further.
++    static func indent(_ row: DockSessions.Row) -> CGFloat {
++        row.parent != nil ? 14 + (row.selected ? 10 : row.status == .running ? 6 : 0)
++            : row.selected ? 30 : row.status == .running ? 16 : 0
 +    }
 +
 +    /// Where a dragged row will land.
@@ -11389,6 +11404,29 @@ index 0000000..5b3d218
 +        }
 +
 +        func updateNSView(_ view: DockSidebarSlot, context: Context) {}
++    }
++}
++
++/// The dotted line joining a child terminal to its session: down the gutter
++/// from the row above, then across to the row. It runs on down past a row
++/// with another child under it.
++struct DockChildLine: View {
++    var width: CGFloat
++    var moreBelow: Bool
++
++    var body: some View {
++        GeometryReader { g in
++            Path { p in
++                let x: CGFloat = 7, mid = g.size.height / 2
++                p.move(to: CGPoint(x: x, y: -3))
++                p.addLine(to: CGPoint(x: x, y: moreBelow ? g.size.height + 3 : mid))
++                p.move(to: CGPoint(x: x, y: mid))
++                p.addLine(to: CGPoint(x: width + 2, y: mid))
++            }
++            .stroke(DockPalette.grey.opacity(0.8), style: StrokeStyle(lineWidth: 1.2, lineCap: .round, dash: [1.5, 3]))
++        }
++        .frame(width: width + 2)
++        .allowsHitTesting(false)
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockStaleLogin.swift b/macos/Sources/Features/Dock/DockStaleLogin.swift
