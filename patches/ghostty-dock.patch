@@ -9953,10 +9953,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..5f18a1f
+index 0000000..9db3d67
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1590 @@
+@@ -0,0 +1,1602 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -10129,10 +10129,13 @@ index 0000000..5f18a1f
 +            // A child terminal is indented under its session.
 +            // A running session steps in from the left, so what's running
 +            // stands out down the list; the selected one steps in further.
-+            .padding(.leading, Self.indent(row))
-+            // A dotted elbow from the session above to each of its terminals.
++            .padding(.leading, indent(row))
++            // A dotted elbow from the session above to each of its terminals,
++            // starting under the session wherever it has stepped in to.
 +            .background(alignment: .leading) {
-+                if row.parent != nil { DockChildLine(width: Self.indent(row), moreBelow: moreBelow) }
++                if row.parent != nil {
++                    DockChildLine(start: parentIndent(row), width: indent(row), moreBelow: moreBelow)
++                }
 +            }
 +            .animation(.easeInOut(duration: 0.25), value: row.status == .running)
 +            .animation(.easeInOut(duration: 0.2), value: row.selected)
@@ -10149,10 +10152,18 @@ index 0000000..5f18a1f
 +
 +    /// A child terminal sits a little in under its session; a running
 +    /// row steps in from the left and the selected one further.
++    /// A child moves with its session: when the session steps in, so does it.
 +    static func indent(_ row: DockSessions.Row) -> CGFloat {
 +        row.parent != nil ? 14 + (row.selected ? 10 : row.status == .running ? 6 : 0)
 +            : row.selected ? 30 : row.status == .running ? 16 : 0
 +    }
++
++    private func parentIndent(_ row: DockSessions.Row) -> CGFloat {
++        guard let key = row.parent, let parent = model.visibleRows.first(where: { $0.key == key }) else { return 0 }
++        return Self.indent(parent)
++    }
++
++    private func indent(_ row: DockSessions.Row) -> CGFloat { parentIndent(row) + Self.indent(row) }
 +
 +    /// Where a dragged row will land.
 +    private func dropLine(_ shown: Bool) -> some View {
@@ -11529,13 +11540,14 @@ index 0000000..5f18a1f
 +/// from the row above, then across to the row. It runs on down past a row
 +/// with another child under it.
 +struct DockChildLine: View {
++    var start: CGFloat = 0
 +    var width: CGFloat
 +    var moreBelow: Bool
 +
 +    var body: some View {
 +        GeometryReader { g in
 +            Path { p in
-+                let x: CGFloat = 7, mid = g.size.height / 2
++                let x: CGFloat = start + 7, mid = g.size.height / 2
 +                p.move(to: CGPoint(x: x, y: -3))
 +                p.addLine(to: CGPoint(x: x, y: moreBelow ? g.size.height + 3 : mid))
 +                p.move(to: CGPoint(x: x, y: mid))
