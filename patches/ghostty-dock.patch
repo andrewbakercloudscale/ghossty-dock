@@ -9953,7 +9953,7 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..8b96233
+index 0000000..5f18a1f
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
 @@ -0,0 +1,1590 @@
@@ -10839,31 +10839,31 @@ index 0000000..8b96233
 +            .compactMap { $0 }.joined(separator: "\n"))
 +        .contextMenu {
 +            let model = DockSessions.shared
-+            Button("Rename…") { model.rename(row) }
-+            Button(row.pinned ? "Unpin" : "Pin to the Top") { model.togglePinned(row) }
++            Button { model.rename(row) } label: { Label("Rename…", systemImage: "pencil") }
++            Button { model.togglePinned(row) } label: { Label(row.pinned ? "Unpin" : "Pin to the Top", systemImage: row.pinned ? "pin.slash" : "pin") }
 +            if row.status == .unread {
-+                Button("Mark as Read") { model.markRead(row) }
++                Button { model.markRead(row) } label: { Label("Mark as Read", systemImage: "envelope.open") }
 +            } else if row.sessionId != nil && (row.status == .idle) {
-+                Button("Mark as Unread") { model.markUnread(row) }
++                Button { model.markUnread(row) } label: { Label("Mark as Unread", systemImage: "envelope.badge") }
 +            }
 +            if let url = workspace?.pr?.url.flatMap(URL.init(string:)) {
-+                Button("Open Pull Request #\(workspace!.pr!.number)") { NSWorkspace.shared.open(url) }
++                Button { NSWorkspace.shared.open(url) } label: { Label("Open Pull Request #\(workspace!.pr!.number)", systemImage: "arrow.triangle.pull") }
 +            }
 +            ForEach(workspace?.ports.prefix(3).map { $0 } ?? [], id: \.self) { port in
-+                Button("Open localhost:\(port)") {
++                Button {
 +                    NSWorkspace.shared.open(URL(string: "http://localhost:\(port)")!)
-+                }
++                } label: { Label("Open localhost:\(port)", systemImage: "globe") }
 +            }
-+            Button("View Diff") { viewDiff() }.disabled(folder.isEmpty)
-+            Button("View Prompts") { DockPromptsWindow.shared.show(sessionId: row.sessionId, name: row.name) }
++            Button { viewDiff() } label: { Label("View Diff", systemImage: "plusminus") }.disabled(folder.isEmpty)
++            Button { DockPromptsWindow.shared.show(sessionId: row.sessionId, name: row.name) } label: { Label("View Prompts", systemImage: "text.bubble") }
 +                .disabled(row.sessionId == nil)
-+            Button("New Session in a Worktree…") { model.newWorktreeSession(row) }.disabled(folder.isEmpty)
-+            Button("Child Terminal Here…") { model.childTerminal(row) }
-+            Button("Move Up") { model.move(row, by: -1) }
++            Button { model.newWorktreeSession(row) } label: { Label("New Session in a Worktree…", systemImage: "arrow.triangle.branch") }.disabled(folder.isEmpty)
++            Button { model.childTerminal(row) } label: { Label("Child Terminal Here…", systemImage: "terminal") }
++            Button { model.move(row, by: -1) } label: { Label("Move Up", systemImage: "arrow.up") }
 +                .disabled(model.visibleRows.first?.key == row.key)
-+            Button("Move Down") { model.move(row, by: 1) }
++            Button { model.move(row, by: 1) } label: { Label("Move Down", systemImage: "arrow.down") }
 +                .disabled(model.visibleRows.last?.key == row.key)
-+            Menu("Colourise") {
++            Menu {
 +                ForEach(DockTag.offered + (row.tag.map { DockTag.offered.contains($0) ? [] : [$0] } ?? []), id: \.self) { tag in
 +                    if tag == .blue || tag == .blaze || !DockTag.offered.contains(tag) { Divider() }
 +                    Button { model.setTag(row, tag) } label: {
@@ -10880,23 +10880,23 @@ index 0000000..8b96233
 +                }
 +                .disabled(row.tag == nil)
 +                Button("None") { model.setTag(row, nil) }.disabled(row.tag == nil)
-+            }
++            } label: { Label("Colourise", systemImage: "paintpalette") }
 +            Divider()
 +            if row.sessionId != nil {
 +                if DockSessions.burstInstalled {
-+                    Button("Compact (Pauseless)", action: onCompact).disabled(!canCompact || compacting)
++                    Button(action: onCompact) { Label("Compact (Pauseless)", systemImage: "arrow.down.right.and.arrow.up.left") }.disabled(!canCompact || compacting)
 +                } else {
-+                    Button("Compact (Pauseless)… needs Claude Burst", action: onCompact)
++                    Button(action: onCompact) { Label("Compact (Pauseless)… needs Claude Burst", systemImage: "arrow.down.right.and.arrow.up.left") }
 +                }
-+                Button("Restart Session", action: onRestart).disabled(restarting)
-+                Button("Undock to Its Own Window", action: onUndock).disabled(undocking)
++                Button(action: onRestart) { Label("Restart Session", systemImage: "arrow.clockwise") }.disabled(restarting)
++                Button(action: onUndock) { Label("Undock to Its Own Window", systemImage: "arrow.up.right.square") }.disabled(undocking)
 +            }
 +            if row.failed {
-+                Button("Try Again") {
++                Button {
 +                    row.controller?.surfaceTree.filter { $0.error != nil }.forEach(DockSurfaceRetry.retry)
-+                }
++                } label: { Label("Try Again", systemImage: "arrow.counterclockwise") }
 +            }
-+            Button("Close Tab", action: onClose)
++            Button(action: onClose) { Label("Close Tab", systemImage: "xmark") }
 +        }
 +    }
 +
