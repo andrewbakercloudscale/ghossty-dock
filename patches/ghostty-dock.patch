@@ -9953,10 +9953,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..5b11be0
+index 0000000..49001a7
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1633 @@
+@@ -0,0 +1,1649 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -10881,29 +10881,29 @@ index 0000000..5b11be0
 +            .compactMap { $0 }.joined(separator: "\n"))
 +        .contextMenu {
 +            let model = DockSessions.shared
-+            Button { model.rename(row) } label: { Label("Rename…", systemImage: "pencil") }
-+            Button { model.togglePinned(row) } label: { Label(row.pinned ? "Unpin" : "Pin to the Top", systemImage: row.pinned ? "pin.slash" : "pin") }
++            Button { model.rename(row) } label: { Self.item("Rename…", "pencil", .systemOrange) }
++            Button { model.togglePinned(row) } label: { Self.item(row.pinned ? "Unpin" : "Pin to the Top", row.pinned ? "pin.slash" : "pin", .systemRed) }
 +            if row.status == .unread {
-+                Button { model.markRead(row) } label: { Label("Mark as Read", systemImage: "envelope.open") }
++                Button { model.markRead(row) } label: { Self.item("Mark as Read", "envelope.open", .systemBlue) }
 +            } else if row.sessionId != nil && (row.status == .idle) {
-+                Button { model.markUnread(row) } label: { Label("Mark as Unread", systemImage: "envelope.badge") }
++                Button { model.markUnread(row) } label: { Self.item("Mark as Unread", "envelope.badge", .systemBlue) }
 +            }
 +            if let url = workspace?.pr?.url.flatMap(URL.init(string:)) {
-+                Button { NSWorkspace.shared.open(url) } label: { Label("Open Pull Request #\(workspace!.pr!.number)", systemImage: "arrow.triangle.pull") }
++                Button { NSWorkspace.shared.open(url) } label: { Self.item("Open Pull Request #\(workspace!.pr!.number)", "arrow.triangle.pull", .systemPurple) }
 +            }
 +            ForEach(workspace?.ports.prefix(3).map { $0 } ?? [], id: \.self) { port in
 +                Button {
 +                    NSWorkspace.shared.open(URL(string: "http://localhost:\(port)")!)
-+                } label: { Label("Open localhost:\(port)", systemImage: "globe") }
++                } label: { Self.item("Open localhost:\(port)", "globe", .systemTeal) }
 +            }
-+            Button { viewDiff() } label: { Label("View Diff", systemImage: "plusminus") }.disabled(folder.isEmpty)
-+            Button { DockPromptsWindow.shared.show(sessionId: row.sessionId, name: row.name) } label: { Label("View Prompts", systemImage: "text.bubble") }
++            Button { viewDiff() } label: { Self.item("View Diff", "plusminus", .systemGreen) }.disabled(folder.isEmpty)
++            Button { DockPromptsWindow.shared.show(sessionId: row.sessionId, name: row.name) } label: { Self.item("View Prompts", "text.bubble", .systemBlue) }
 +                .disabled(row.sessionId == nil)
-+            Button { model.newWorktreeSession(row) } label: { Label("New Session in a Worktree…", systemImage: "arrow.triangle.branch") }.disabled(folder.isEmpty)
-+            Button { model.childTerminal(row) } label: { Label("Child Terminal Here…", systemImage: "terminal") }
-+            Button { model.move(row, by: -1) } label: { Label("Move Up", systemImage: "arrow.up") }
++            Button { model.newWorktreeSession(row) } label: { Self.item("New Session in a Worktree…", "arrow.triangle.branch", .systemPurple) }.disabled(folder.isEmpty)
++            Button { model.childTerminal(row) } label: { Self.item("Child Terminal Here…", "terminal", .systemTeal) }
++            Button { model.move(row, by: -1) } label: { Self.item("Move Up", "arrow.up", .systemIndigo) }
 +                .disabled(model.visibleRows.first?.key == row.key)
-+            Button { model.move(row, by: 1) } label: { Label("Move Down", systemImage: "arrow.down") }
++            Button { model.move(row, by: 1) } label: { Self.item("Move Down", "arrow.down", .systemIndigo) }
 +                .disabled(model.visibleRows.last?.key == row.key)
 +            Menu {
 +                ForEach(DockTag.offered + (row.tag.map { DockTag.offered.contains($0) ? [] : [$0] } ?? []), id: \.self) { tag in
@@ -10922,24 +10922,40 @@ index 0000000..5b11be0
 +                }
 +                .disabled(row.tag == nil)
 +                Button("None") { model.setTag(row, nil) }.disabled(row.tag == nil)
-+            } label: { Label("Colourise", systemImage: "paintpalette") }
++            } label: { Self.item("Colourise", "paintpalette", .systemPink) }
 +            Divider()
 +            if row.sessionId != nil {
 +                if DockSessions.burstInstalled {
-+                    Button(action: onCompact) { Label("Compact (Pauseless)", systemImage: "arrow.down.right.and.arrow.up.left") }.disabled(!canCompact || compacting)
++                    Button(action: onCompact) { Self.item("Compact (Pauseless)", "arrow.down.right.and.arrow.up.left", .systemOrange) }.disabled(!canCompact || compacting)
 +                } else {
-+                    Button(action: onCompact) { Label("Compact (Pauseless)… needs Claude Burst", systemImage: "arrow.down.right.and.arrow.up.left") }
++                    Button(action: onCompact) { Self.item("Compact (Pauseless)… needs Claude Burst", "arrow.down.right.and.arrow.up.left", .systemOrange) }
 +                }
-+                Button(action: onRestart) { Label("Restart Session", systemImage: "arrow.clockwise") }.disabled(restarting)
-+                Button(action: onUndock) { Label("Undock to Its Own Window", systemImage: "arrow.up.right.square") }.disabled(undocking)
++                Button(action: onRestart) { Self.item("Restart Session", "arrow.clockwise", .systemGreen) }.disabled(restarting)
++                Button(action: onUndock) { Self.item("Undock to Its Own Window", "arrow.up.right.square", .systemBlue) }.disabled(undocking)
 +            }
 +            if row.failed {
 +                Button {
 +                    row.controller?.surfaceTree.filter { $0.error != nil }.forEach(DockSurfaceRetry.retry)
-+                } label: { Label("Try Again", systemImage: "arrow.counterclockwise") }
++                } label: { Self.item("Try Again", "arrow.counterclockwise", .systemOrange) }
 +            }
-+            Button(action: onClose) { Label("Close Tab", systemImage: "xmark") }
++            Button(action: onClose) { Self.item("Close Tab", "xmark", .systemRed) }
 +        }
++    }
++
++    /// A menu item with its icon in colour: menus tint symbol images, so
++    /// the symbol is drawn into a plain image first.
++    static func item(_ title: String, _ symbol: String, _ color: NSColor) -> some View {
++        Label { Text(title) } icon: { Image(nsImage: icon(symbol, color)) }
++    }
++
++    static func icon(_ symbol: String, _ color: NSColor) -> NSImage {
++        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
++            .applying(.init(paletteColors: [color]))
++        guard let sym = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
++            .withSymbolConfiguration(config) else { return NSImage() }
++        let img = NSImage(size: sym.size, flipped: false) { r in sym.draw(in: r); return true }
++        img.isTemplate = false
++        return img
 +    }
 +
 +    /// A dot of the tag's colour for the menu: menus tint symbol images,
