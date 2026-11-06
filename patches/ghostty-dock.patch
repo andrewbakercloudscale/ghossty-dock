@@ -9953,10 +9953,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..d0c46cd
+index 0000000..5b11be0
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1609 @@
+@@ -0,0 +1,1633 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -10641,9 +10641,33 @@ index 0000000..d0c46cd
 +
 +    private var solid: Bool { loud && count > 0 }
 +
++    /// The icon turning clockwise, in white, in Core Animation so it costs
++    /// the app nothing while it spins.
++    static func spinner(_ symbol: String) -> some View {
++        DockLayerAnimation(key: "spin-\(symbol)") { root, b, scale in
++            let config = NSImage.SymbolConfiguration(pointSize: 9.5, weight: .bold)
++                .applying(.init(paletteColors: [.white]))
++            guard let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
++                .withSymbolConfiguration(config) else { return }
++            let l = CALayer()
++            l.bounds = CGRect(origin: .zero, size: img.size)
++            l.position = CGPoint(x: b.midX, y: b.midY)
++            l.contents = img.layerContents(forContentsScale: scale)
++            l.contentsScale = scale
++            l.contentsGravity = .resizeAspect
++            l.add(DockLayerAnimation.repeating("transform.rotation.z", from: 0, to: -2 * Double.pi, seconds: 1.6),
++                  forKey: "spin")
++            root.addSublayer(l)
++        }
++    }
++
 +    var body: some View {
 +        HStack(spacing: 2.5) {
-+            Image(systemName: symbol).font(.system(size: 9.5, weight: .bold))
++            if solid {
++                Self.spinner(symbol).frame(width: 12, height: 12)
++            } else {
++                Image(systemName: symbol).font(.system(size: 9.5, weight: .bold))
++            }
 +            Text("\(count)").font(.system(size: 10.5, weight: .bold)).monospacedDigit()
 +                .fixedSize()
 +        }
