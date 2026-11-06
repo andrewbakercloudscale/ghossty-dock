@@ -9953,10 +9953,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..9db3d67
+index 0000000..d0c46cd
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1602 @@
+@@ -0,0 +1,1609 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -9979,6 +9979,8 @@ index 0000000..9db3d67
 +    /// Only for sessions outside the Dock, so they read as not part of it.
 +    static var grey: Color { theme.grey }
 +    static var greyLine: Color { theme.greyLine }
++    /// A red that reads on every theme, for a count that wants attention.
++    static let alert = Color(red: 0.88, green: 0.16, blue: 0.2)
 +    static var scheme: ColorScheme { theme.dark ? .dark : .light }
 +
 +    static func color(_ s: DockSessions.Status) -> Color {
@@ -10338,8 +10340,9 @@ index 0000000..9db3d67
 +                let n = model.rows.filter { $0.status == status }.count
 +                let on = model.statusFilter == status
 +                Button { withAnimation(.easeOut(duration: 0.15)) { model.toggleFilter(status) } } label: {
-+                    DockCounter(symbol: DockStatusDot.symbol(status), count: n, color: DockPalette.color(status),
-+                                selected: on, dimmed: model.statusFilter != nil && !on)
++                    DockCounter(symbol: DockStatusDot.symbol(status), count: n,
++                                color: status == .running ? DockPalette.alert : DockPalette.color(status),
++                                selected: on, dimmed: model.statusFilter != nil && !on, loud: status == .running)
 +                }
 +                .buttonStyle(.plain)
 +                .help(on ? "Showing only \(DockPalette.label(status).lowercased()); click to show all"
@@ -10633,6 +10636,10 @@ index 0000000..9db3d67
 +    var selected = false
 +    /// Another counter is the filter.
 +    var dimmed = false
++    /// Solid and white-on-colour while above 0, to catch the eye.
++    var loud = false
++
++    private var solid: Bool { loud && count > 0 }
 +
 +    var body: some View {
 +        HStack(spacing: 2.5) {
@@ -10640,11 +10647,11 @@ index 0000000..9db3d67
 +            Text("\(count)").font(.system(size: 10.5, weight: .bold)).monospacedDigit()
 +                .fixedSize()
 +        }
-+        .foregroundStyle(color)
++        .foregroundStyle(solid ? .white : color)
 +        .padding(.horizontal, 5)
 +        .padding(.vertical, 2)
-+        .background(Capsule().fill(color.opacity(selected ? 0.32 : 0.16)))
-+        .overlay(Capsule().strokeBorder(color, lineWidth: selected ? 1.5 : 0))
++        .background(Capsule().fill(solid ? color : color.opacity(selected ? 0.32 : 0.16)))
++        .overlay(Capsule().strokeBorder(solid ? .white.opacity(0.9) : color, lineWidth: selected ? 1.5 : 0))
 +        .opacity(selected ? 1 : dimmed ? 0.35 : count == 0 ? 0.4 : 1)
 +    }
 +}
