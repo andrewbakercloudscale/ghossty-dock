@@ -7318,6 +7318,57 @@ index 0000000..ea97919
 +        window?.makeKeyAndOrderFront(nil)
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockScripts.swift b/macos/Sources/Features/Dock/DockScripts.swift
+new file mode 100644
+index 0000000..0abffdd
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockScripts.swift
+@@ -0,0 +1,45 @@
++import Darwin
++import Foundation
++
++/// Commands a Claude session left running in the background: a script it
++/// started with run_in_background and is waiting on. Its turn has ended, so
++/// the session reads as idle, but it will carry on when the script finishes.
++///
++/// Claude runs every Bash command as a direct child,
++/// `/bin/zsh -c source ~/.claude/shell-snapshots/... && eval '...'`; its MCP
++/// servers and caffeinate are children too but never look like that. While
++/// a turn runs that is just the command in front; once the turn is over,
++/// any still alive were left running.
++enum DockScripts {
++    private static var cache: [Int32: (at: Date, count: Int)] = [:]
++
++    /// How many background commands `pid` has, checked at most every 5 s.
++    static func count(_ pid: Int32) -> Int {
++        if let c = cache[pid], Date().timeIntervalSince(c.at) < 5 { return c.count }
++        let n = children(of: pid).filter { isClaudeShell(args($0)) }.count
++        cache[pid] = (Date(), n)
++        return n
++    }
++
++    static func isClaudeShell(_ command: String) -> Bool {
++        command.contains("/.claude/shell-snapshots/")
++    }
++
++    private static func children(of pid: Int32) -> [Int32] {
++        var buf = [pid_t](repeating: 0, count: 256)
++        let n = proc_listchildpids(pid, &buf, Int32(buf.count * MemoryLayout<pid_t>.size))
++        guard n > 0 else { return [] }
++        return Array(buf.prefix(Int(n)))
++    }
++
++    /// The process's arguments, joined by spaces.
++    private static func args(_ pid: Int32) -> String {
++        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
++        var size = 0
++        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 4 else { return "" }
++        var buf = [UInt8](repeating: 0, count: size)
++        guard sysctl(&mib, 3, &buf, &size, nil, 0) == 0 else { return "" }
++        // argc, then the executable path, then NUL-separated arguments.
++        return String(decoding: buf[4..<size].map { $0 == 0 ? 0x20 : $0 }, as: UTF8.self)
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockSearch.swift b/macos/Sources/Features/Dock/DockSearch.swift
 new file mode 100644
 index 0000000..2b66815
@@ -7556,10 +7607,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..fda9526
+index 0000000..a223d30
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1799 @@
+@@ -0,0 +1,1805 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -7612,7 +7663,12 @@ index 0000000..fda9526
 +        var pid: Int32?
 +        /// A child terminal's parent row: it is listed just under it.
 +        var parent: String?
++        /// Commands it left running in the background after its turn ended.
++        var scripts = 0
 +        weak var controller: TerminalController?
++
++        /// Its turn is over but it is waiting on a script it started.
++        var scripting: Bool { scripts > 0 && (status == .idle || status == .unread) }
 +
 +        static func == (a: Row, b: Row) -> Bool {
 +            a.id == b.id && a.key == b.key && a.name == b.name && a.detail == b.detail && a.status == b.status
@@ -7620,7 +7676,7 @@ index 0000000..fda9526
 +                && a.started == b.started && a.project == b.project && a.prompt == b.prompt
 +                && a.ask == b.ask && a.askSurface == b.askSurface
 +                && a.pinned == b.pinned && a.tag == b.tag && a.hatch == b.hatch && a.renamed == b.renamed
-+                && a.failed == b.failed && a.pid == b.pid && a.parent == b.parent
++                && a.failed == b.failed && a.pid == b.pid && a.parent == b.parent && a.scripts == b.scripts
 +        }
 +    }
 +
@@ -8627,6 +8683,7 @@ index 0000000..fda9526
 +                             failed: failed,
 +                             pid: best?.pid,
 +                             parent: children[id],
++                             scripts: (status == .idle || status == .unread) ? best?.pid.map(DockScripts.count) ?? 0 : 0,
 +                             controller: controller))
 +        }
 +        order.removeAll { id in !built.contains { $0.id == id } }
@@ -9953,10 +10010,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..9ee6600
+index 0000000..428cdff
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1651 @@
+@@ -0,0 +1,1661 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -10720,7 +10777,15 @@ index 0000000..9ee6600
 +
 +    var body: some View {
 +        HStack(spacing: 9) {
-+            DockStatusDot(status: row.status).id(row.status)
++            if row.scripting {
++                Image(systemName: "hourglass")
++                    .font(.system(size: 13, weight: .semibold))
++                    .foregroundStyle(DockPalette.teal)
++                    .frame(width: 18, height: 18)
++                    .dockTip("Its turn is over, but it is waiting on a script it started")
++            } else {
++                DockStatusDot(status: row.status).id(row.status)
++            }
 +            VStack(alignment: .leading, spacing: 1) {
 +                HStack(spacing: 4) {
 +                    if row.parent != nil {
@@ -10740,7 +10805,8 @@ index 0000000..9ee6600
 +                TimelineView(.periodic(from: .now, by: 30)) { ctx in
 +                    Text(row.failed ? "Didn't start · see the tab" : subtitle(now: ctx.date))
 +                        .font(.system(size: 10.5))
-+                        .foregroundStyle(row.failed ? DockPalette.color(DockTag.red) : DockPalette.color(row.status))
++                        .foregroundStyle(row.failed ? DockPalette.color(DockTag.red)
++                                         : row.scripting ? DockPalette.teal : DockPalette.color(row.status))
 +                        .lineLimit(1)
 +                }
 +                if let line = workspace?.summary {
@@ -10976,7 +11042,8 @@ index 0000000..9ee6600
 +    private var accent: Color { row.tag.map(DockPalette.color) ?? DockPalette.blue }
 +
 +    private func subtitle(now: Date) -> String {
-+        let label = DockPalette.label(row.status)
++        let label = row.scripting ? (row.scripts == 1 ? "Waiting on a script" : "Waiting on \(row.scripts) scripts")
++            : DockPalette.label(row.status)
 +        var parts = [label]
 +        if let since = row.since { parts.append(elapsed(now.timeIntervalSince(since))) }
 +        // How full its context is: compact before it fills.
