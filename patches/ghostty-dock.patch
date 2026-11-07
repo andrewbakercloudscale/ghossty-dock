@@ -13337,10 +13337,10 @@ index 0000000..f5fa6d7
 +}
 diff --git a/macos/Sources/Features/Dock/DockWorkspace.swift b/macos/Sources/Features/Dock/DockWorkspace.swift
 new file mode 100644
-index 0000000..9be71a4
+index 0000000..f46bdf4
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockWorkspace.swift
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,187 @@
 +import Foundation
 +
 +/// What each row's folder is up to: its git branch, commits not pushed,
@@ -13434,6 +13434,19 @@ index 0000000..9be71a4
 +        return out
 +    }
 +
++    /// `roots` and every process under them.
++    static func descendants(of roots: Set<Int32>, parents: [Int32: Int32]) -> [Int32] {
++        var kids: [Int32: [Int32]] = [:]
++        for (pid, parent) in parents { kids[parent, default: []].append(pid) }
++        var out = Set<Int32>()
++        var queue = Array(roots)
++        while let p = queue.popLast() {
++            guard out.insert(p).inserted else { continue }
++            queue += kids[p] ?? []
++        }
++        return out.sorted()
++    }
++
 +    /// Ports listened on by `root` or anything it started.
 +    static func ports(under root: Int32, listening: [Int32: [Int]], parents: [Int32: Int32]) -> [Int] {
 +        var found = Set<Int>()
@@ -13477,10 +13490,16 @@ index 0000000..9be71a4
 +
 +    /// `folders` maps a row's key to its folder and its claude pid.
 +    func gather(_ folders: [String: (dir: String, pid: Int32?)]) -> [String: DockWorkspace] {
-+        let listening = DockWorkspace.run("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn"])
-+            .map { DockWorkspace.parseListening(String(decoding: $0, as: UTF8.self)) } ?? [:]
-+        let parents = listening.isEmpty ? [:] : DockWorkspace.run("ps", ["-axo", "pid=,ppid="])
++        // lsof over every process costs about 0.3 s of CPU; asked about only
++        // the sessions' own processes it is about 0.02 s.
++        let roots = Set(folders.values.compactMap(\.pid))
++        let parents = roots.isEmpty ? [:] : DockWorkspace.run("ps", ["-axo", "pid=,ppid="])
 +            .map { DockWorkspace.parseParents(String(decoding: $0, as: UTF8.self)) } ?? [:]
++        let mine = DockWorkspace.descendants(of: roots, parents: parents)
++        let listening = mine.isEmpty ? [:]
++            : DockWorkspace.run("lsof", ["-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-Fpn",
++                                         "-p", mine.map(String.init).joined(separator: ",")])
++                .map { DockWorkspace.parseListening(String(decoding: $0, as: UTF8.self)) } ?? [:]
 +        var out: [String: DockWorkspace] = [:]
 +        var byDir: [String: DockWorkspace] = [:]
 +        for (key, f) in folders where !f.dir.isEmpty {

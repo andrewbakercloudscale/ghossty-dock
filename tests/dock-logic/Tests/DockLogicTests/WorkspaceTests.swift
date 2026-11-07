@@ -28,6 +28,12 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertEqual(DockWorkspace.ports(under: 200, listening: listening, parents: parents), [3000])
     }
 
+    func testDescendants() {
+        let parents = DockWorkspace.parseParents("  300   250\n  250   200\n  400     1\n  500   300\n")
+        XCTAssertEqual(DockWorkspace.descendants(of: [200], parents: parents), [200, 250, 300, 500])
+        XCTAssertEqual(DockWorkspace.descendants(of: [], parents: parents), [])
+    }
+
     func testPullRequestAndSummary() {
         let pr = DockWorkspace.parsePullRequest(Data(#"{"number":42,"state":"OPEN","isDraft":true,"url":"u"}"#.utf8))
         XCTAssertEqual(pr?.number, 42)
