@@ -9953,10 +9953,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..49001a7
+index 0000000..9ee6600
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1649 @@
+@@ -0,0 +1,1651 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -9979,8 +9979,10 @@ index 0000000..49001a7
 +    /// Only for sessions outside the Dock, so they read as not part of it.
 +    static var grey: Color { theme.grey }
 +    static var greyLine: Color { theme.greyLine }
-+    /// A red that reads on every theme, for a count that wants attention.
-+    static let alert = Color(red: 0.88, green: 0.16, blue: 0.2)
++    /// An electric green that reads on every theme, for a count that wants attention.
++    static let alert = Color(red: 0.0, green: 0.9, blue: 0.4)
++    /// What goes on top of it: white is too faint on so bright a green.
++    static let alertInk = Color(red: 0.0, green: 0.16, blue: 0.07)
 +    static var scheme: ColorScheme { theme.dark ? .dark : .light }
 +
 +    static func color(_ s: DockSessions.Status) -> Color {
@@ -10636,17 +10638,17 @@ index 0000000..49001a7
 +    var selected = false
 +    /// Another counter is the filter.
 +    var dimmed = false
-+    /// Solid and white-on-colour while above 0, to catch the eye.
++    /// Solid, dark on bright, while above 0, to catch the eye.
 +    var loud = false
 +
 +    private var solid: Bool { loud && count > 0 }
 +
-+    /// The icon turning clockwise, in white, in Core Animation so it costs
++    /// The icon turning clockwise, in the ink colour, in Core Animation so it costs
 +    /// the app nothing while it spins.
 +    static func spinner(_ symbol: String) -> some View {
 +        DockLayerAnimation(key: "spin-\(symbol)") { root, b, scale in
 +            let config = NSImage.SymbolConfiguration(pointSize: 9.5, weight: .bold)
-+                .applying(.init(paletteColors: [.white]))
++                .applying(.init(paletteColors: [NSColor(DockPalette.alertInk)]))
 +            guard let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
 +                .withSymbolConfiguration(config) else { return }
 +            let l = CALayer()
@@ -10671,11 +10673,11 @@ index 0000000..49001a7
 +            Text("\(count)").font(.system(size: 10.5, weight: .bold)).monospacedDigit()
 +                .fixedSize()
 +        }
-+        .foregroundStyle(solid ? .white : color)
++        .foregroundStyle(solid ? DockPalette.alertInk : color)
 +        .padding(.horizontal, 5)
 +        .padding(.vertical, 2)
 +        .background(Capsule().fill(solid ? color : color.opacity(selected ? 0.32 : 0.16)))
-+        .overlay(Capsule().strokeBorder(solid ? .white.opacity(0.9) : color, lineWidth: selected ? 1.5 : 0))
++        .overlay(Capsule().strokeBorder(solid ? DockPalette.alertInk : color, lineWidth: selected ? 1.5 : 0))
 +        .opacity(selected ? 1 : dimmed ? 0.35 : count == 0 ? 0.4 : 1)
 +    }
 +}
