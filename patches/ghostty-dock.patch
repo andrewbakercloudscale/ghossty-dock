@@ -1656,7 +1656,7 @@ index 0000000..bf8c901
 +}
 diff --git a/macos/Sources/Features/Dock/DockAgentFindView.swift b/macos/Sources/Features/Dock/DockAgentFindView.swift
 new file mode 100644
-index 0000000..1a34e7b
+index 0000000..e00725f
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAgentFindView.swift
 @@ -0,0 +1,427 @@
@@ -1886,7 +1886,7 @@ index 0000000..1a34e7b
 +                                    .fixedSize(horizontal: false, vertical: true)
 +                            }
 +                        }
-+                        Text("Claude Code still asks before anything your permission settings don't allow.")
++                        Text(DockBypass.enabled ? "It starts with permissions skipped, like your other sessions." : "Claude Code still asks before anything your permission settings don't allow.")
 +                            .font(.caption).foregroundStyle(DockPalette.grey)
 +                    }
 +                }
@@ -2031,7 +2031,7 @@ index 0000000..1a34e7b
 +            error = "ghostty-dock-open is not installed: run install.sh again."
 +            return
 +        }
-+        _ = DockProcess.launch("/bin/bash", [opener, "--command", "caffeinate -i claude --agent \(a.slug)", folder],
++        _ = DockProcess.launch("/bin/bash", [opener, "--command", "caffeinate -i claude \(DockBypass.flags("--agent \(a.slug)"))", folder],
 +                               log: DockLog.sessions)
 +    }
 +
@@ -3791,6 +3791,38 @@ index 0000000..4d7dd95
 +        .contentShape(Rectangle())
 +        .onTapGesture(perform: select)
 +        .help(tab.url)
++    }
++}
+diff --git a/macos/Sources/Features/Dock/DockBypass.swift b/macos/Sources/Features/Dock/DockBypass.swift
+new file mode 100644
+index 0000000..3987556
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockBypass.swift
+@@ -0,0 +1,26 @@
++import Foundation
++
++/// Every session starts with --dangerously-skip-permissions, as
++/// ghostty-claude-launcher starts them, unless CLAUDE_PANEL_BYPASS_PERMISSIONS
++/// is off in ~/.config/claude-panel/options or the flags already pick a mode.
++enum DockBypass {
++    static func flags(_ flags: String) -> String {
++        guard enabled else { return flags }
++        let words = flags.split(separator: " ")
++        if words.contains(where: { $0 == "--dangerously-skip-permissions" || $0.hasPrefix("--permission-mode") }) {
++            return flags
++        }
++        return flags.isEmpty ? "--dangerously-skip-permissions" : "--dangerously-skip-permissions " + flags
++    }
++
++    static var enabled: Bool {
++        let path = FileManager.default.homeDirectoryForCurrentUser
++            .appendingPathComponent(".config/claude-panel/options").path
++        guard let text = try? String(contentsOfFile: path, encoding: .utf8),
++              let line = text.split(separator: "\n").last(where: { $0.hasPrefix("CLAUDE_PANEL_BYPASS_PERMISSIONS=") })
++        else { return true }
++        let v = line.dropFirst("CLAUDE_PANEL_BYPASS_PERMISSIONS=".count)
++            .filter { !"\"' ".contains($0) }.lowercased()
++        return !["false", "0", "no", "off"].contains(v)
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockCenteredTitle.swift b/macos/Sources/Features/Dock/DockCenteredTitle.swift
@@ -7607,7 +7639,7 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..a223d30
+index 0000000..af63e22
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
 @@ -0,0 +1,1805 @@
@@ -9019,7 +9051,7 @@ index 0000000..a223d30
 +        guard !name.isEmpty else { NSSound.beep(); return }
 +        let opener = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/ghostty-dock-open").path
 +        guard FileManager.default.isExecutableFile(atPath: opener) else { NSSound.beep(); return }
-+        DockProcess.launch("/bin/bash", [opener, "--command", "caffeinate -i claude --worktree \(name)", root],
++        DockProcess.launch("/bin/bash", [opener, "--command", "caffeinate -i claude \(DockBypass.flags("--worktree \(name)"))", root],
 +                           log: DockLog.sessions)
 +    }
 +
@@ -9138,7 +9170,7 @@ index 0000000..a223d30
 +        DockLog.sessions.notice("reopen \(c.name, privacy: .public) (\(c.sessionId, privacy: .public))")
 +        DockHistory.shared.remove(c.sessionId)
 +        return DockProcess.launch("/bin/bash", [opener, "--command",
-+                                                "caffeinate -i claude --resume \(c.sessionId) \(c.flags)", c.folder],
++                                                "caffeinate -i claude --resume \(c.sessionId) \(DockBypass.flags(c.flags))", c.folder],
 +                                  log: DockLog.sessions)
 +    }
 +

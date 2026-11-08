@@ -104,8 +104,15 @@ STUB
     mkdir -p "$(dirname "$transcript")"
     touch -t 202001010000 "$transcript" 2>/dev/null || { : >"$transcript"; touch -t 202001010000 "$transcript"; }
     rest=$(relaunch "")
+    [[ "$rest" == *"--resume $sid --dangerously-skip-permissions --remote-control 'my repo'"* ]]
+    check "no flag: resumes with its repo's name, permissions skipped" 0 $?
+    touch -t 202001010000 "$transcript"
+    mkdir -p "$tmp/home/.config/claude-panel"
+    echo "CLAUDE_PANEL_BYPASS_PERMISSIONS=false" >"$tmp/home/.config/claude-panel/options"
+    rest=$(relaunch "")
+    rm "$tmp/home/.config/claude-panel/options"
     [[ "$rest" == *"--resume $sid --remote-control 'my repo'"* ]]
-    check "no flag: resumes with its repo's name" 0 $?
+    check "bypass turned off: resumes as it was" 0 $?
     touch -t 202001010000 "$transcript"
     rest=$(relaunch "--dangerously-skip-permissions --remote-control other")
     [[ "$rest" == *"--resume $sid --dangerously-skip-permissions --remote-control 'my repo'"* && "$rest" != *other* ]]
