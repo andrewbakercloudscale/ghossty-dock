@@ -152,6 +152,22 @@ print(shlex.join(out))
 PY
 }
 
+# Flags with --dangerously-skip-permissions added, as every new session is
+# started (ghostty-claude-launcher), unless CLAUDE_PANEL_BYPASS_PERMISSIONS is
+# off in ~/.config/claude-panel/options or the flags already pick a mode. A
+# session started some other way otherwise came back asking, or in auto mode.
+function with_bypass() {
+    local flags="$1" opt
+    opt=$(grep -E '^CLAUDE_PANEL_BYPASS_PERMISSIONS=' "$HOME/.config/claude-panel/options" 2>/dev/null | tail -1)
+    opt=$(printf '%s' "${opt#*=}" | tr -d "\"' " | tr '[:upper:]' '[:lower:]')
+    case "$opt" in false|0|no|off) echo "$flags"; return ;; esac
+    if grep -qE -- '(^| )(--dangerously-skip-permissions|--permission-mode)( |=|$)' <<<"$flags"; then
+        echo "$flags"
+    else
+        echo "--dangerously-skip-permissions${flags:+ $flags}"
+    fi
+}
+
 # Prints "<cwd>\t<session id>\t<flags>" for a claude pid; the session id is
 # empty when it cannot be told, and that claude is not resumed. Prints
 # nothing without a folder (a claude that is exiting): read splits on tabs
@@ -180,7 +196,7 @@ function describe() {
         [ -d "$cwd" ] && mkdir -p "$DESCRIBED" && printf '%s\n%s\t%s' "$args" "$cwd" "$flags" >"$cache"
     fi
     [ -d "$cwd" ] || return 0
-    printf '%s\t%s\t%s\n' "$cwd" "$sid" "$flags"
+    printf '%s\t%s\t%s\n' "$cwd" "$sid" "$(with_bypass "$flags")"
 }
 
 # True when the transcript's last turn is over: its last entry is the

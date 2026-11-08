@@ -135,6 +135,22 @@ print(shlex.join(out))
 PY
 }
 
+# Flags with --dangerously-skip-permissions added, as every new session is
+# started (ghostty-claude-launcher), unless CLAUDE_PANEL_BYPASS_PERMISSIONS is
+# off in ~/.config/claude-panel/options or the flags already pick a mode. A
+# session started some other way otherwise came back asking, or in auto mode.
+function with_bypass() {
+    local flags="$1" opt
+    opt=$(grep -E '^CLAUDE_PANEL_BYPASS_PERMISSIONS=' "$HOME/.config/claude-panel/options" 2>/dev/null | tail -1)
+    opt=$(printf '%s' "${opt#*=}" | tr -d "\"' " | tr '[:upper:]' '[:lower:]')
+    case "$opt" in false|0|no|off) echo "$flags"; return ;; esac
+    if grep -qE -- '(^| )(--dangerously-skip-permissions|--permission-mode)( |=|$)' <<<"$flags"; then
+        echo "$flags"
+    else
+        echo "--dangerously-skip-permissions${flags:+ $flags}"
+    fi
+}
+
 # Prints "<session id>\t<cwd>\t<flags>" for a claude pid.
 function session_of() {
     local cpid="$1"
@@ -151,7 +167,7 @@ function session_of() {
     fi
     local quoted
     quoted=$(claude_flags "$cpid") && flags="$quoted"
-    printf '%s\t%s\t%s\n' "$sid" "$cwd" "$flags"
+    printf '%s\t%s\t%s\n' "$sid" "$cwd" "$(with_bypass "$flags")"
 }
 
 # Moves one session; returns 1 while it is still busy.
