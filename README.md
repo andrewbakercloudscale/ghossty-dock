@@ -236,6 +236,10 @@ reports each session's status.
   clipboard or opening apps). Each Claude session there is resumed in the
   current login, once it has been quiet for a while, with its flags and
   conversation; checked every minute. Plain shells are left as they are.
+- **Permissions skipped** (Settings, on by default): new, restarted, moved
+  and reopened sessions start with `--dangerously-skip-permissions`, unless
+  given a `--permission-mode`. Saved as `CLAUDE_PANEL_BYPASS_PERMISSIONS` in
+  `~/.config/claude-panel/options`, which `ghostty-claude-launcher` reads too.
 - **Remote Control names** (Settings, off by default): every five minutes,
   each running session's title on the phone is set to its repo, so the
   phone's AI titles are undone. The title lives on Anthropic's server, and

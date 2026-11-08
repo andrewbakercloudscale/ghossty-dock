@@ -3795,10 +3795,10 @@ index 0000000..4d7dd95
 +}
 diff --git a/macos/Sources/Features/Dock/DockBypass.swift b/macos/Sources/Features/Dock/DockBypass.swift
 new file mode 100644
-index 0000000..3987556
+index 0000000..81d3ee9
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockBypass.swift
-@@ -0,0 +1,26 @@
+@@ -0,0 +1,47 @@
 +import Foundation
 +
 +/// Every session starts with --dangerously-skip-permissions, as
@@ -3814,9 +3814,30 @@ index 0000000..3987556
 +        return flags.isEmpty ? "--dangerously-skip-permissions" : "--dangerously-skip-permissions " + flags
 +    }
 +
++    private static var path: String {
++        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/claude-panel/options").path
++    }
++    private static let key = "CLAUDE_PANEL_BYPASS_PERMISSIONS"
++
++    /// Writes the choice to the options file, which ghostty-claude-launcher
++    /// and the restart scripts read too, replacing any line it had.
++    static func set(_ on: Bool) {
++        let old = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
++        var lines = old.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
++        if lines.last == "" { lines.removeLast() }
++        let line = "\(key)=\(on)"
++        if let i = lines.firstIndex(where: { $0.hasPrefix(key + "=") }) {
++            lines[i] = line
++            lines.removeAll { $0.hasPrefix(key + "=") && $0 != line }
++        } else {
++            lines += ["# \(key): start sessions with --dangerously-skip-permissions", line]
++        }
++        try? FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent,
++                                                 withIntermediateDirectories: true)
++        try? (lines.joined(separator: "\n") + "\n").write(toFile: path, atomically: true, encoding: .utf8)
++    }
++
 +    static var enabled: Bool {
-+        let path = FileManager.default.homeDirectoryForCurrentUser
-+            .appendingPathComponent(".config/claude-panel/options").path
 +        guard let text = try? String(contentsOfFile: path, encoding: .utf8),
 +              let line = text.split(separator: "\n").last(where: { $0.hasPrefix("CLAUDE_PANEL_BYPASS_PERMISSIONS=") })
 +        else { return true }
@@ -9450,10 +9471,10 @@ index 0000000..af63e22
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..a260a08
+index 0000000..d7ceafb
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,453 @@
+@@ -0,0 +1,459 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -9556,6 +9577,7 @@ index 0000000..a260a08
 +    @AppStorage(DockSettings.dockBadgeKey) private var dockBadge = true
 +    @AppStorage(DockSettings.restoreSessionsKey) private var restoreSessions = true
 +    @AppStorage(DockSettings.remoteEverySessionKey) private var remoteEverySession = false
++    @State private var skipPermissions = DockBypass.enabled
 +    @AppStorage(DockSettings.holdSessionsKey) private var holdSessions = true
 +    @AppStorage(DockSettings.themeKey) private var theme = ""
 +    @AppStorage(DockSettings.groupingKey) private var grouping = DockSettings.Grouping.none
@@ -9768,6 +9790,11 @@ index 0000000..a260a08
 +                    .font(.callout)
 +                Toggle("Keep tabs running when Ghostty Dock quits", isOn: $holdSessions)
 +                Text("Each tab runs in a small holder outside the app, so a quit, crash or restart does not stop it. Shells, dev servers and Claude sessions carry on, and come back as tabs with their scrollback. Applies to tabs opened after you change it.")
++                    .font(.callout)
++                Toggle("Start every session with permissions skipped", isOn: Binding(
++                    get: { skipPermissions }, set: { skipPermissions = $0; DockBypass.set($0) }))
++                    .onAppear { skipPermissions = DockBypass.enabled }
++                Text("New, restarted, moved and reopened sessions start with --dangerously-skip-permissions, unless they were given a --permission-mode. A running session changes when it is next restarted. Saved in ~/.config/claude-panel/options, which your launcher reads too.")
 +                    .font(.callout)
 +                Toggle("Name every Remote Control session after its repo", isOn: $remoteEverySession)
 +                Text("Every five minutes, each running session's title on the phone is set to its repo, using your Claude login, so the phone's own titles are undone. Sessions are not restarted. The grey line under the title is the phone's and can't be changed.")
