@@ -37,6 +37,9 @@ usage: ${SCRIPT_NAME} [options]
 options:
     --pid <pid>        Dock only the session in this Ghostty app (default: all)
     --undock <id>      Move this session out of Ghostty Dock into its own Ghostty
+    --shells <pid>     Dock this stock Ghostty with only shells in it: once
+                       what its tabs run has finished, open a shell tab here
+                       in each tab's folder and quit it
     --restart <id>     Stop this Ghostty Dock session and resume it in a new tab
     --remote-name <n>  With --restart: resume with --remote-control <n>
     --now              Do not wait for a busy session to go quiet (interrupts it)
@@ -47,9 +50,9 @@ options:
                        "window<TAB>pid<TAB>busy<TAB>moving<TAB>name<TAB>cwd",
                        "undocking<TAB>id" per session being undocked and
                        "restarting<TAB>id" per session being restarted and
-                       "shell<TAB>pid<TAB>tabs<TAB>programs" per stock Ghostty
-                       with no Claude Code session (programs: what its tabs
-                       run, comma separated, empty when only shells)
+                       "shell<TAB>pid<TAB>tabs<TAB>programs<TAB>moving" per
+                       stock Ghostty with no Claude Code session (programs:
+                       what its tabs run, comma separated, empty when idle)
     -h|--help          Show this help message
 
 EOM
@@ -235,34 +238,83 @@ function movable_pids() {
     done
 }
 
-# Stock Ghostty apps without a Claude Code session: tab count, then what the
-# tabs run in the foreground besides their shell ("bash x.sh" counts as x.sh).
+# A stock Ghostty's tab count, then what its tabs run in the foreground
+# besides their shells, comma separated ("bash x.sh" counts as x.sh).
+function shell_info() {
+    ps -axo pid=,ppid=,stat=,command= | awk -v root="$1" '
+        { pid = $1; parent[pid] = $2; stat[pid] = $3; $1 = $2 = $3 = ""; sub(/^ +/, ""); cmd[pid] = $0 }
+        END {
+            tabs = 0; progs = ""
+            for (p in cmd) if (parent[p] == root) tabs++
+            for (p in cmd) {
+                if (stat[p] !~ /\+/) continue
+                q = p; under = 0
+                while (q > 1) { q = parent[q]; if (q == root) { under = 1; break } }
+                if (!under) continue
+                n = split(cmd[p], w, " ")
+                prog = w[1]; sub(/^-/, "", prog); sub(/.*\//, "", prog)
+                if (prog ~ /^(login|zsh|bash|sh|fish|tcsh|ksh)$/) {
+                    if (n < 2 || w[2] ~ /^-/) continue
+                    prog = w[2]; sub(/.*\//, "", prog)
+                }
+                if (index("," progs ",", "," prog ",")) continue
+                progs = progs (progs == "" ? "" : ",") prog
+            }
+            printf "%d\t%s\n", tabs, progs
+        }'
+}
+
+# Stock Ghostty apps without a Claude Code session, as --list prints them.
 function shell_apps() {
-    local gpid
+    local gpid moving
     for gpid in $(pgrep -f "^$GHOSTTY_BIN"); do
         [ -n "$(claude_under "$gpid")" ] && continue
-        ps -axo pid=,ppid=,stat=,command= | awk -v root="$gpid" '
-            { pid = $1; parent[pid] = $2; stat[pid] = $3; $1 = $2 = $3 = ""; sub(/^ +/, ""); cmd[pid] = $0 }
-            END {
-                tabs = 0; progs = ""
-                for (p in cmd) if (parent[p] == root) tabs++
-                for (p in cmd) {
-                    if (stat[p] !~ /\+/) continue
-                    q = p; under = 0
-                    while (q > 1) { q = parent[q]; if (q == root) { under = 1; break } }
-                    if (!under) continue
-                    n = split(cmd[p], w, " ")
-                    prog = w[1]; sub(/^-/, "", prog); sub(/.*\//, "", prog)
-                    if (prog ~ /^(login|zsh|bash|sh|fish|tcsh|ksh)$/) {
-                        if (n < 2 || w[2] ~ /^-/) continue
-                        prog = w[2]; sub(/.*\//, "", prog)
-                    }
-                    if (index("," progs ",", "," prog ",")) continue
-                    progs = progs (progs == "" ? "" : ",") prog
-                }
-                printf "shell\t%s\t%d\t%s\n", root, tabs, progs
-            }'
+        moving=0
+        job_running "s$gpid" && moving=1
+        printf 'shell\t%s\t%s\t%s\n' "$gpid" "$(shell_info "$gpid")" "$moving"
     done
+}
+
+# The folder each tab of a stock Ghostty is in, oldest tab first: its
+# shell's current directory, else home.
+function shell_folders() {
+    local login sh dir
+    for login in $(ps -axo pid=,ppid= | awk -v root="$1" '$2 == root { print $1 }' | sort -n); do
+        sh=$(ps -axo pid=,ppid= | awk -v p="$login" '$2 == p { print $1; exit }')
+        dir=""
+        [ -n "$sh" ] && dir=$(lsof -a -d cwd -p "$sh" -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+        [ -d "$dir" ] || dir="$HOME"
+        echo "$dir"
+    done
+}
+
+# Docks a stock Ghostty with only shells in it: waits for what its tabs run
+# to finish (a shell's job can't move without stopping), then opens a shell
+# tab here in each tab's folder and quits it.
+function dock_shells() {
+    local gpid="$1" dry="$2" info progs waited=false
+    while :; do
+        kill -0 "$gpid" 2>/dev/null || { log "Ghostty $gpid: closed before it docked"; return; }
+        [ -n "$(claude_under "$gpid")" ] && { log "Ghostty $gpid: has a Claude Code session now, left it"; return; }
+        info=$(shell_info "$gpid")
+        progs=$(cut -f2 <<<"$info")
+        [ -z "$progs" ] && break
+        $dry && { log "Ghostty $gpid: would wait for $progs to finish"; return; }
+        $waited || log "Ghostty $gpid: docks when $progs finishes"
+        waited=true
+        sleep 10
+    done
+    local folders folder
+    folders=$(shell_folders "$gpid")
+    if $dry; then
+        log "Ghostty $gpid: would open shell tabs in: $(xargs <<<"$folders")"
+        return
+    fi
+    while IFS= read -r folder; do
+        "$OPENER" --shell "$folder" >>"$LOG" 2>&1 || { log "Ghostty $gpid: opening a tab in $folder failed, left it open"; return; }
+    done <<<"$folders"
+    log "Ghostty $gpid: docked $(grep -c . <<<"$folders") shell tab(s)"
+    kill -TERM "$gpid" 2>/dev/null
 }
 
 function job_running() {
@@ -401,6 +453,7 @@ function main() {
     local only=""
     local undock_id=""
     local restart_id=""
+    local shells_pid=""
     local args=()
     while [ "$1" != "" ]; do
         case $1 in
@@ -414,6 +467,11 @@ function main() {
             shift
             undock_id="$1"
             args+=(--undock "$1")
+            ;;
+        --shells)
+            shift
+            shells_pid="$1"
+            args+=(--shells "$1")
             ;;
         --restart)
             shift
@@ -472,6 +530,7 @@ function main() {
     [ -n "$only" ] && job="g$only"
     [ -n "$undock_id" ] && job="u$undock_id"
     [ -n "$restart_id" ] && job="r$restart_id"
+    [ -n "$shells_pid" ] && job="s$shells_pid"
     if ! $dry; then
         { job_running "$job" || { [ "$job" != "${job#g}" ] && job_running all; }; } &&
             { echo "already moving; log: $LOG"; exit 0; }
@@ -482,6 +541,8 @@ function main() {
         undock "$undock_id" "$dry"
     elif [ -n "$restart_id" ]; then
         undock "$restart_id" "$dry" restart
+    elif [ -n "$shells_pid" ]; then
+        dock_shells "$shells_pid" "$dry"
     else
         dock_all "$dry" "$only"
     fi

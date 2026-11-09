@@ -7660,10 +7660,10 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..261c589
+index 0000000..dfc0d99
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1818 @@
+@@ -0,0 +1,1819 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -7759,8 +7759,8 @@ index 0000000..261c589
 +    }
 +
 +    /// A Claude Code session running in a stock Ghostty app of its own, or a
-+    /// stock Ghostty with only shells in it (`shell`), which can't be docked:
-+    /// moving a tab would stop what runs in it.
++    /// stock Ghostty with only shells in it (`shell`), which docks as shell
++    /// tabs once what its tabs run has finished.
 +    struct Undocked: Identifiable, Equatable {
 +        var id: Int32 { pid }
 +        let pid: Int32
@@ -8100,10 +8100,10 @@ index 0000000..261c589
 +                let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
 +                if f.count == 6, f[0] == "window", let pid = Int32(f[1]) {
 +                    windows.append(Undocked(pid: pid, name: f[4], cwd: f[5], busy: f[2] == "1", moving: f[3] == "1"))
-+                } else if f.count == 4, f[0] == "shell", let pid = Int32(f[1]) {
++                } else if f.count == 5, f[0] == "shell", let pid = Int32(f[1]) {
 +                    let programs = f[3].split(separator: ",").map(String.init)
 +                    windows.append(Undocked(pid: pid, name: "Ghostty", cwd: "", busy: !programs.isEmpty,
-+                                            moving: false, shell: true, tabs: Int(f[2]) ?? 0, programs: programs))
++                                            moving: f[4] == "1", shell: true, tabs: Int(f[2]) ?? 0, programs: programs))
 +                } else if f.count == 2, f[0] == "undocking" {
 +                    leaving.insert(f[1])
 +                } else if f.count == 2, f[0] == "restarting" {
@@ -8143,7 +8143,8 @@ index 0000000..261c589
 +        whenTabsOpen { [weak self] in
 +            guard let self else { return }
 +            if let i = self.undocked.firstIndex(of: u) { self.undocked[i].moving = true }
-+            self.runMover(["--now", "--pid", String(u.pid)])
++            // A shell-only Ghostty docks once what its tabs run has finished.
++            self.runMover(u.shell ? ["--shells", String(u.pid)] : ["--now", "--pid", String(u.pid)])
 +        }
 +    }
 +
@@ -10082,10 +10083,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..654bdf2
+index 0000000..2ba84b8
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1673 @@
+@@ -0,0 +1,1682 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -11497,11 +11498,8 @@ index 0000000..654bdf2
 +                    .lineLimit(1)
 +            }
 +            Spacer(minLength: 0)
-+            if !session.shell {
-+                DockIconButton(symbol: "arrow.down.left.square", busy: session.moving,
-+                               help: session.moving ? "Docking…" : "Dock into a tab here",
-+                               action: onDock)
-+            }
++            DockIconButton(symbol: "arrow.down.left.square", busy: session.moving,
++                           help: dockHelp, action: onDock)
 +        }
 +        .padding(.horizontal, 8)
 +        .padding(.vertical, 6)
@@ -11513,15 +11511,27 @@ index 0000000..654bdf2
 +        .contentShape(Rectangle())
 +        .onHover { hover = $0 }
 +        .help(session.shell
-+              ? "A Ghostty of its own with no Claude session. Shell tabs stay where they are: moving one would stop what runs in it. Click to show it."
++              ? "A Ghostty of its own with no Claude session. Click to show it."
 +              : session.cwd)
++    }
++
++    private var waitingOn: String { session.programs.joined(separator: ", ") }
++
++    private var dockHelp: String {
++        if session.moving { return session.shell && session.busy ? "Docks when \(waitingOn) finishes" : "Docking…" }
++        if session.shell {
++            return session.busy
++                ? "Dock its tabs here as shells once \(waitingOn) finishes; stopping it now would lose its work"
++                : "Dock its tabs here as shells, in the same folders"
++        }
++        return "Dock into a tab here"
 +    }
 +
 +    private var subtitle: String {
 +        if session.shell {
 +            let tabs = "\(session.tabs) tab\(session.tabs == 1 ? "" : "s")"
-+            return session.programs.isEmpty ? "Shells · \(tabs)"
-+                : "Running \(session.programs.joined(separator: ", ")) · \(tabs)"
++            if session.programs.isEmpty { return session.moving ? "Docking…" : "Shells · \(tabs)" }
++            return session.moving ? "Docks when \(waitingOn) finishes" : "Running \(waitingOn) · \(tabs)"
 +        }
 +        return session.moving ? "Docking…" : session.busy ? "Undocked · busy" : "Undocked"
 +    }
