@@ -46,7 +46,10 @@ options:
     --list             Print a line per session outside Ghostty Dock:
                        "window<TAB>pid<TAB>busy<TAB>moving<TAB>name<TAB>cwd",
                        "undocking<TAB>id" per session being undocked and
-                       "restarting<TAB>id" per session being restarted
+                       "restarting<TAB>id" per session being restarted and
+                       "shell<TAB>pid<TAB>tabs<TAB>programs" per stock Ghostty
+                       with no Claude Code session (programs: what its tabs
+                       run, comma separated, empty when only shells)
     -h|--help          Show this help message
 
 EOM
@@ -232,6 +235,36 @@ function movable_pids() {
     done
 }
 
+# Stock Ghostty apps without a Claude Code session: tab count, then what the
+# tabs run in the foreground besides their shell ("bash x.sh" counts as x.sh).
+function shell_apps() {
+    local gpid
+    for gpid in $(pgrep -f "^$GHOSTTY_BIN"); do
+        [ -n "$(claude_under "$gpid")" ] && continue
+        ps -axo pid=,ppid=,stat=,command= | awk -v root="$gpid" '
+            { pid = $1; parent[pid] = $2; stat[pid] = $3; $1 = $2 = $3 = ""; sub(/^ +/, ""); cmd[pid] = $0 }
+            END {
+                tabs = 0; progs = ""
+                for (p in cmd) if (parent[p] == root) tabs++
+                for (p in cmd) {
+                    if (stat[p] !~ /\+/) continue
+                    q = p; under = 0
+                    while (q > 1) { q = parent[q]; if (q == root) { under = 1; break } }
+                    if (!under) continue
+                    n = split(cmd[p], w, " ")
+                    prog = w[1]; sub(/^-/, "", prog); sub(/.*\//, "", prog)
+                    if (prog ~ /^(login|zsh|bash|sh|fish|tcsh|ksh)$/) {
+                        if (n < 2 || w[2] ~ /^-/) continue
+                        prog = w[2]; sub(/.*\//, "", prog)
+                    }
+                    if (index("," progs ",", "," prog ",")) continue
+                    progs = progs (progs == "" ? "" : ",") prog
+                }
+                printf "shell\t%s\t%d\t%s\n", root, tabs, progs
+            }'
+    done
+}
+
 function job_running() {
     local f="$LOCK_DIR/$1.pid"
     [ -f "$f" ] && kill -0 "$(cat "$f")" 2>/dev/null
@@ -259,6 +292,7 @@ function list_sessions() {
         job=$(basename "$f" .pid)
         job_running "$job" && printf 'restarting\t%s\n' "${job#r}"
     done
+    shell_apps
 }
 
 # The claude in a Ghostty Dock tab running session <id>.

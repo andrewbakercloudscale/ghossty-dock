@@ -104,6 +104,9 @@ reports each session's status.
   under the tabs, grey with a dashed outline. Click one to show its window, or
   its **Dock** icon (↙) to restart it in a tab here at once.
   Same as `ghostty-dock-move --pid <pid>`, `--undock <session id>`, `--detach`.
+  A Ghostty window with only shells in it is listed there too, with what its
+  tabs are running (such as a backup script). It has no Dock icon: moving a
+  shell tab would stop what runs in it. Click it to show the window.
 - ⌘⇧J (Ctrl-Opt-J from any app): jump to the next session that needs you (then finished ones).
 - The window title (the session's name) sits in the middle of the title bar.
 - Dock badge: how many sessions need you.
