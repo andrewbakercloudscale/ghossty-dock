@@ -7424,7 +7424,7 @@ index 0000000..0abffdd
 +}
 diff --git a/macos/Sources/Features/Dock/DockSearch.swift b/macos/Sources/Features/Dock/DockSearch.swift
 new file mode 100644
-index 0000000..2b66815
+index 0000000..764cc07
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSearch.swift
 @@ -0,0 +1,230 @@
@@ -7530,7 +7530,7 @@ index 0000000..2b66815
 +                let fields: [String]
 +                switch h {
 +                case .row(let r): fields = [r.name, r.detail, r.prompt ?? "", r.tag?.label ?? ""]
-+                case .undocked(let u): fields = [u.name, u.cwd]
++                case .undocked(let u): fields = [u.name, u.cwd] + u.programs
 +                case .closed(let c): fields = [c.name, c.folder]
 +                }
 +                let scores = fields.compactMap { Self.score(q, in: $0) }
@@ -7660,10 +7660,10 @@ index 0000000..2b66815
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..af63e22
+index 0000000..261c589
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1805 @@
+@@ -0,0 +1,1818 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -7758,7 +7758,9 @@ index 0000000..af63e22
 +        var flags = ""
 +    }
 +
-+    /// A Claude Code session running in a stock Ghostty app of its own.
++    /// A Claude Code session running in a stock Ghostty app of its own, or a
++    /// stock Ghostty with only shells in it (`shell`), which can't be docked:
++    /// moving a tab would stop what runs in it.
 +    struct Undocked: Identifiable, Equatable {
 +        var id: Int32 { pid }
 +        let pid: Int32
@@ -7766,6 +7768,10 @@ index 0000000..af63e22
 +        var cwd: String
 +        var busy: Bool
 +        var moving: Bool
++        var shell = false
++        var tabs = 0
++        /// What a shell-only Ghostty's tabs run, besides their shells.
++        var programs: [String] = []
 +    }
 +
 +    /// Every row, in the order shown, groups flattened.
@@ -7839,7 +7845,7 @@ index 0000000..af63e22
 +    /// Undocked sessions whose name or folder has the search.
 +    var shownUndocked: [Undocked] {
 +        let term = searchTerm
-+        return term.isEmpty ? undocked : undocked.filter { matches(term, $0.name, $0.cwd) }
++        return term.isEmpty ? undocked : undocked.filter { matches(term, $0.name, $0.cwd, $0.programs.joined(separator: " ")) }
 +    }
 +
 +    private func matches(_ term: String, _ fields: String...) -> Bool {
@@ -8094,13 +8100,20 @@ index 0000000..af63e22
 +                let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
 +                if f.count == 6, f[0] == "window", let pid = Int32(f[1]) {
 +                    windows.append(Undocked(pid: pid, name: f[4], cwd: f[5], busy: f[2] == "1", moving: f[3] == "1"))
++                } else if f.count == 4, f[0] == "shell", let pid = Int32(f[1]) {
++                    let programs = f[3].split(separator: ",").map(String.init)
++                    windows.append(Undocked(pid: pid, name: "Ghostty", cwd: "", busy: !programs.isEmpty,
++                                            moving: false, shell: true, tabs: Int(f[2]) ?? 0, programs: programs))
 +                } else if f.count == 2, f[0] == "undocking" {
 +                    leaving.insert(f[1])
 +                } else if f.count == 2, f[0] == "restarting" {
 +                    restarts.insert(f[1])
 +                }
 +            }
-+            windows.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
++            windows.sort {
++                $0.shell != $1.shell ? !$0.shell
++                    : $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
++            }
 +            let missing = self?.readMissing() ?? []
 +            DispatchQueue.main.async {
 +                guard let self else { return }
@@ -10069,10 +10082,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..428cdff
+index 0000000..654bdf2
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1661 @@
+@@ -0,0 +1,1673 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -10469,7 +10482,7 @@ index 0000000..428cdff
 +            if !model.undocked.isEmpty {
 +                DockCounter(symbol: "macwindow", count: model.undocked.count, color: DockPalette.grey)
 +                    .fixedSize()
-+                    .help("\(model.undocked.count) undocked: sessions in their own Ghostty, listed under Undocked")
++                    .help("\(model.undocked.count) outside the dock: Ghostty windows of their own, listed under Undocked")
 +            }
 +            Spacer(minLength: 0)
 +        }
@@ -11478,16 +11491,17 @@ index 0000000..428cdff
 +                    .foregroundStyle(DockPalette.grey)
 +                    .lineLimit(1)
 +                    .truncationMode(.middle)
-+                Text(session.moving ? "Docking…"
-+                     : session.busy ? "Undocked · busy" : "Undocked")
++                Text(subtitle)
 +                    .font(.system(size: 10.5))
 +                    .foregroundStyle(DockPalette.grey)
 +                    .lineLimit(1)
 +            }
 +            Spacer(minLength: 0)
-+            DockIconButton(symbol: "arrow.down.left.square", busy: session.moving,
-+                           help: session.moving ? "Docking…" : "Dock into a tab here",
-+                           action: onDock)
++            if !session.shell {
++                DockIconButton(symbol: "arrow.down.left.square", busy: session.moving,
++                               help: session.moving ? "Docking…" : "Dock into a tab here",
++                               action: onDock)
++            }
 +        }
 +        .padding(.horizontal, 8)
 +        .padding(.vertical, 6)
@@ -11498,7 +11512,18 @@ index 0000000..428cdff
 +        )
 +        .contentShape(Rectangle())
 +        .onHover { hover = $0 }
-+        .help(session.cwd)
++        .help(session.shell
++              ? "A Ghostty of its own with no Claude session. Shell tabs stay where they are: moving one would stop what runs in it. Click to show it."
++              : session.cwd)
++    }
++
++    private var subtitle: String {
++        if session.shell {
++            let tabs = "\(session.tabs) tab\(session.tabs == 1 ? "" : "s")"
++            return session.programs.isEmpty ? "Shells · \(tabs)"
++                : "Running \(session.programs.joined(separator: ", ")) · \(tabs)"
++        }
++        return session.moving ? "Docking…" : session.busy ? "Undocked · busy" : "Undocked"
 +    }
 +}
 +
