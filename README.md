@@ -176,7 +176,8 @@ reports each session's status.
   catalogue by Callum Baker: four MIT collections (agency-agents, VoltAgent,
   wshobson, 0xfurai), pinned and hash-checked, with risky instructions flagged.
   Search or pick a kind, tick the ones you want and press **Install** (Return):
-  they go to ~/.claude/agents, or one open project's .claude/agents. Each shows
+  they go to the selected session's project (.claude/agents there), or pick
+  ~/.claude/agents for every project, or another open project. Each shows
   what it does, a warning if it can run commands or use every tool, its
   instructions, and how to use it: "Use the code-reviewer agent to …" (Copy),
   or **Start a Session as It** (`claude --agent <name>` in a new tab). Remove
