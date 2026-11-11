@@ -300,6 +300,37 @@ function restarting() {
     [ -n "$(find "$RESTARTING" -mmin -10 2>/dev/null)" ]
 }
 
+# A claude in a terminal whose SessionStart hook never recorded it (it timed
+# out: after a power cut every session starts at once and the Mac is busy)
+# shows as a plain shell until its next prompt. This records it as that hook
+# would have, from the claude's own environment, once it has run for 30 s.
+function backfill_status() {
+    local hook="$HOME/.local/bin/ghostty-dock-hook" sessions="$STATE_DIR/sessions"
+    [ -x "$hook" ] || return 0
+    local recorded line cpid tty etime sid env cwd var
+    recorded=$(cat "$sessions"/*.json 2>/dev/null | grep -o '"session_id":"[^"]*"')
+    while read -r cpid tty etime line; do
+        [ -n "$cpid" ] && [ "$tty" != "??" ] || continue
+        sid=$(sed -nE 's/^claude .*--(session-id|resume) ([0-9a-f-]{36})( .*)?$/\2/p' <<<"$line")
+        [ -n "$sid" ] || continue
+        grep -qF "\"session_id\":\"$sid\"" <<<"$recorded" && continue
+        # etime is [[dd-]hh:]mm:ss: under 30 s, its own hook may still come.
+        [[ "$etime" =~ ^00:([0-2][0-9])$ ]] && continue
+        env=$(ps -E -ww -o command= -p "$cpid" 2>/dev/null | tr ' ' '\n')
+        cwd=$(lsof -a -p "$cpid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+        [ -d "$cwd" ] || continue
+        local vars=()
+        for var in GHOSTTY_DOCK_HOLD GHOSTTY_DOCK_SURFACE DOCK_TAB_ID; do
+            vars+=("$(grep -m1 "^$var=" <<<"$env" || echo "$var=")")
+        done
+        jq -nc --arg sid "$sid" --arg cwd "$cwd" \
+            '{hook_event_name: "SessionStart", source: "resume", session_id: $sid, cwd: $cwd}' |
+            env "${vars[@]}" GHOSTTY_DOCK_TEST_LINEAGE="$cpid - $tty" "$hook" >/dev/null 2>&1
+        log "recorded $(basename "$cwd"): its SessionStart hook did not ($sid)"
+    done < <(ps -axo pid=,tty=,etime=,comm=,args= | awk '$4 == "claude" { $4 = ""; print }' | sed -E 's/  +/ /')
+    return 0
+}
+
 function save() {
     restarting && return 0
     local pid
@@ -308,6 +339,7 @@ function save() {
     # Held sessions too: a reboot ends their holders, and then they are
     # resumed like the rest.
     open_sessions "$pid" $(holder_pids) >"$SAVED.tmp" && mv "$SAVED.tmp" "$SAVED"
+    backfill_status
     # Forgets processes that have ended.
     local f
     for f in "$DESCRIBED"/*; do
