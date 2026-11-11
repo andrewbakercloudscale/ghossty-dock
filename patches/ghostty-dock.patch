@@ -1656,10 +1656,10 @@ index 0000000..bf8c901
 +}
 diff --git a/macos/Sources/Features/Dock/DockAgentFindView.swift b/macos/Sources/Features/Dock/DockAgentFindView.swift
 new file mode 100644
-index 0000000..e00725f
+index 0000000..6b361b3
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAgentFindView.swift
-@@ -0,0 +1,427 @@
+@@ -0,0 +1,436 @@
 +import AppKit
 +import SwiftUI
 +
@@ -1672,6 +1672,7 @@ index 0000000..e00725f
 +    @State private var picked: Set<String> = []
 +    @State private var focused: String?
 +    /// The agents folder installs go to: ~/.claude/agents, or a project's.
++    /// Starts as the selected session's project.
 +    @State private var target: String = ""
 +    @State private var installed: Set<String> = []
 +    @State private var states: [String: DockAgentInstall.State] = [:]
@@ -1723,7 +1724,15 @@ index 0000000..e00725f
 +                Divider().overlay(DockPalette.surface)
 +                footer
 +            }
-+            .onAppear(perform: reload)
++            .onAppear {
++                // The selected session's project, so an agent goes where you
++                // are working; every project when that is your home folder.
++                if let row = sessions.rows.first(where: \.selected), !row.detail.isEmpty {
++                    let root = DockAgentConfig.projectRoot(row.detail)
++                    if projects.contains(root) { target = root }
++                }
++                reload()
++            }
 +            .onChange(of: target) { _ in reload() }
 +        } else {
 +            Text("The agent catalogue is missing from the app: reinstall Ghostty Dock.")
