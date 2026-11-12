@@ -20,6 +20,10 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 STATE_DIR="$HOME/.local/state/ghostty-dock"
 LOG="$STATE_DIR/restart-dock.log"
 SAVED="$STATE_DIR/open-sessions.tsv"
+# Which app instance wrote $SAVED ("<pid> <start time>"). A list some other
+# instance wrote - copied over from another Mac, or left by an app that ran
+# before it arrived - is restored, never written over by --save.
+SAVED_BY="$STATE_DIR/open-sessions.owner"
 DESCRIBED="$STATE_DIR/described"
 # Sessions a restart or restore could not bring back: the app offers to
 # reopen them (--reopen-missing) until they run again.
@@ -336,9 +340,23 @@ function save() {
     local pid
     pid=$(app_pid)
     [ -z "$pid" ] && return 0
+    local me
+    me="$pid $(ps -o lstart= -p "$pid" 2>/dev/null)"
+    # Moving to a new Mac: the app there ran before the old one's state was
+    # copied in, so its first --save wrote over the copied list and the
+    # sessions were never reopened. A list this app did not write is
+    # restored first.
+    if [ -s "$SAVED" ] && [ "$(cat "$SAVED_BY" 2>/dev/null)" != "$me" ]; then
+        if restore_enabled; then
+            restore_foreign
+        else
+            rm -f "$SAVED"
+        fi
+    fi
     # Held sessions too: a reboot ends their holders, and then they are
     # resumed like the rest.
-    open_sessions "$pid" $(holder_pids) >"$SAVED.tmp" && mv "$SAVED.tmp" "$SAVED"
+    open_sessions "$pid" $(holder_pids) >"$SAVED.tmp" && mv "$SAVED.tmp" "$SAVED" &&
+        echo "$me" >"$SAVED_BY"
     backfill_status
     # Forgets processes that have ended.
     local f
@@ -346,6 +364,21 @@ function save() {
         [ -f "$f" ] && ! kill -0 "${f##*/}" 2>/dev/null && rm -f "$f"
     done
     return 0
+}
+
+# The app's "Reopen sessions after a quit" setting (on unless turned off).
+function restore_enabled() {
+    [ "$(defaults read consulting.cloudscale.ghosttydock dock.restoreSessions 2>/dev/null)" != 0 ]
+}
+
+# Reopens a saved list some other app instance wrote, as --restore would,
+# but without reattaching held tabs: this app is already running them.
+function restore_foreign() {
+    local sessions
+    sessions=$(cat "$SAVED")
+    rm -f "$SAVED"
+    log "restore: sessions saved by another app instance (copied from another Mac?): $(conditions)"
+    reopen_all "$sessions" "$(open_sessions $(holder_pids) | cut -f2)"
 }
 
 # Only a session in a terminal counts: Claude Burst's handover writer runs
