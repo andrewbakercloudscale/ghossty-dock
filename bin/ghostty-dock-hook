@@ -225,6 +225,7 @@ function record_state() {
         --arg ghostty_pid "$ghostty_pid" \
         --arg tty "$tty" \
         --arg pending "$pending" \
+        --arg home "${HOME%/}" \
         -f /dev/stdin <<'JQ' 2>/dev/null
 def num($s): if $s == "-" or $s == "" then null else ($s | tonumber) end;
 def clip: tostring | split("\n")[0] | if length > 160 then .[0:157] + "..." else . end;
@@ -262,7 +263,8 @@ def clip: tostring | split("\n")[0] | if length > 160 then .[0:157] + "..." else
         session_id: ($in.session_id // ""),
         project: $project,
         cwd: ($in.cwd // $o.cwd // ""),
-        name: ($project | sub("/+$"; "") | split("/") | last // ""),
+        # The home folder's own name is the login name, so it is called Home.
+        name: ($project | sub("/+$"; "") | if . == $home and . != "" then "Home" else (split("/") | last // "") end),
         dock_tab_id: (if $dock == "" then null else $dock end),
         claude_pid: num($claude_pid),
         ghostty_pid: num($ghostty_pid),

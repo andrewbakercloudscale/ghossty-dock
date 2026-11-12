@@ -40,6 +40,9 @@ function main() {
     fire '{"hook_event_name":"SessionStart","session_id":"s1","cwd":"/x/my-proj","source":"startup"}'
     check "start is idle" "$f" '.status' "idle"
     check "name from folder" "$f" '.name' "my-proj"
+    HOME=/x/my-proj/ fire '{"hook_event_name":"SessionStart","session_id":"s1","cwd":"/x/my-proj","source":"startup"}'
+    check "the home folder is called Home" "$f" '.name' "Home"
+    fire '{"hook_event_name":"SessionStart","session_id":"s1","cwd":"/x/my-proj","source":"startup"}'
     check "pids recorded" "$f" '"\(.claude_pid) \(.ghostty_pid) \(.tty)"' "111 4999999 ttys009"
 
     fire '{"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":"/x/my-proj"}'
