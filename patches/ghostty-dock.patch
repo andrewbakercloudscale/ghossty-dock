@@ -13361,17 +13361,19 @@ index 0000000..d5e7c01
 +}
 diff --git a/macos/Sources/Features/Dock/DockWindowClose.swift b/macos/Sources/Features/Dock/DockWindowClose.swift
 new file mode 100644
-index 0000000..f5fa6d7
+index 0000000..5fba076
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockWindowClose.swift
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,82 @@
 +import AppKit
 +
 +/// Ghostty Dock: closing a window of several tabs asks first. Keep Running
 +/// lets go of each terminal's holder (hold/letgo/<surface>), so its session
 +/// goes on, and opens it again as a tab in another window, or in the next
 +/// window when none is left. End Sessions closes them as Ghostty would.
-+/// Closing a single tab still ends its session.
++/// Closing a single tab still ends its session, and so does closing the
++/// last terminal window: that is shutting Ghostty down, so it closes as
++/// Ghostty would, with no Keep Running.
 +enum DockWindowClose {
 +    /// Terminals let go with no window to put them in yet.
 +    private(set) static var pending = false
@@ -13383,17 +13385,22 @@ index 0000000..f5fa6d7
 +    }
 +
 +    /// Asks what to do with the window's tabs, then closes it unless
-+    /// cancelled. False when the dock has no say (one tab, or no holders),
-+    /// and the caller closes the window its usual way.
++    /// cancelled. False when the dock has no say (one tab, no holders, or
++    /// no other terminal window), and the caller closes the window its
++    /// usual way.
 +    static func ask(_ windows: [NSWindow], sheetOn window: NSWindow, close: @escaping () -> Void) -> Bool {
 +        guard windows.count > 1, DockSettings.holdSessions,
 +              FileManager.default.isExecutableFile(atPath: DockHold.binary) else { return false }
++        let others = NSApp.windows.contains {
++            $0.isVisible && $0.windowController is TerminalController && !windows.contains($0)
++        }
++        guard others else { return false }
 +        let surfaces = windows.compactMap { $0.windowController as? TerminalController }
 +            .flatMap { Array($0.surfaceTree) }
 +        guard !surfaces.isEmpty else { return false }
 +        let alert = NSAlert()
 +        alert.messageText = "Close \(windows.count) Tabs?"
-+        alert.informativeText = "Keep Running moves them to another window, or to the next one you open, "
++        alert.informativeText = "Keep Running moves them to another window, "
 +            + "with what runs in them still running. End Sessions stops them all."
 +        alert.addButton(withTitle: "Keep Running")
 +        alert.addButton(withTitle: "End Sessions")
