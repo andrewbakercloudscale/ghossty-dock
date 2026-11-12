@@ -10092,10 +10092,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..2ba84b8
+index 0000000..7c96380
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1682 @@
+@@ -0,0 +1,1684 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -10280,7 +10280,7 @@ index 0000000..2ba84b8
 +                    DockChildLine(start: parentIndent(row), width: indent(row), moreBelow: moreBelow)
 +                }
 +            }
-+            .animation(.easeInOut(duration: 0.25), value: row.status == .running)
++            .animation(.easeInOut(duration: 0.25), value: row.status == .running || row.scripting)
 +            .animation(.easeInOut(duration: 0.2), value: row.selected)
 +            .onTapGesture { model.select(row) }
 +            // Raised: a little larger and lifted, drawn above its neighbours.
@@ -10294,11 +10294,13 @@ index 0000000..2ba84b8
 +    }
 +
 +    /// A child terminal sits a little in under its session; a running
-+    /// row steps in from the left and the selected one further.
++    /// row (or one waiting on a script it started) steps in from the left
++    /// and the selected one further.
 +    /// A child moves with its session: when the session steps in, so does it.
 +    static func indent(_ row: DockSessions.Row) -> CGFloat {
-+        row.parent != nil ? 14 + (row.selected ? 10 : row.status == .running ? 6 : 0)
-+            : row.selected ? 30 : row.status == .running ? 16 : 0
++        let busy = row.status == .running || row.scripting
++        return row.parent != nil ? 14 + (row.selected ? 10 : busy ? 6 : 0)
++            : row.selected ? 30 : busy ? 16 : 0
 +    }
 +
 +    private func parentIndent(_ row: DockSessions.Row) -> CGFloat {
