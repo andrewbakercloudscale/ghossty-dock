@@ -7669,10 +7669,10 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..dfc0d99
+index 0000000..4369870
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1819 @@
+@@ -0,0 +1,1827 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -8721,7 +8721,7 @@ index 0000000..dfc0d99
 +            let pwd = focused?.pwd ?? (failed ? focused?.startConfig?.workingDirectory : nil) ?? ""
 +            let name = best?.name.isEmpty == false ? best!.name
 +                : !title.isEmpty ? title
-+                : (pwd as NSString).lastPathComponent
++                : Self.folderName(pwd)
 +            let key = best?.sid ?? "dir:" + pwd
 +            if let old = tabKeys[id], old.controller === controller, old.key != key,
 +               !liveSids.contains(old.key), !built.contains(where: { $0.key == key }) {
@@ -9231,7 +9231,7 @@ index 0000000..dfc0d99
 +            let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
 +            // A folder, not an id shifted into its place by an old restart.
 +            guard f.count >= 2, !f[1].isEmpty, f[0].hasPrefix("/") else { return nil }
-+            return Closed(sessionId: f[1], name: (f[0] as NSString).lastPathComponent, folder: f[0],
++            return Closed(sessionId: f[1], name: Self.folderName(f[0]), folder: f[0],
 +                          flags: f.count > 2 ? f[2] : "")
 +        }
 +    }
@@ -9484,6 +9484,14 @@ index 0000000..dfc0d99
 +    }
 +
 +    /// Drops the leading status glyph Claude Code puts in titles.
++    /// A folder's name for a row; the home folder's is the login name, so
++    /// it is called Home.
++    static func folderName(_ path: String) -> String {
++        let home = FileManager.default.homeDirectoryForCurrentUser.path
++        let p = path.hasSuffix("/") && path.count > 1 ? String(path.dropLast()) : path
++        return p == home || p == "~" ? "Home" : (p as NSString).lastPathComponent
++    }
++
 +    private func cleanTitle(_ title: String) -> String {
 +        var s = Substring(title)
 +        while let c = s.first, !(c.isLetter || c.isNumber || c == "/" || c == "~" || c == "." || c == "_") {
