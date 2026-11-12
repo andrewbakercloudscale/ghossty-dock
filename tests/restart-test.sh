@@ -39,6 +39,7 @@ function main() {
     test_open "$tmp"
     test_split_fails "$tmp"
     test_items "$tmp"
+    test_foreign_saved "$tmp"
 
     echo "$PASSED passed, $FAILED failed"
     [ "$FAILED" -eq 0 ]
@@ -125,6 +126,35 @@ function test_items() {
     echo '{"session_id":"sid-1"}' >"$state/sessions/srf-NEW.json"
     expect "a session's terminal is the last it was in" "$(session_surface sid-1)" "NEW"
     expect "a session never seen has no terminal" "$(session_surface sid-2)" ""
+}
+
+# A saved list another app instance wrote (copied from another Mac) is
+# reopened by --save, not written over; one this instance wrote is not.
+function test_foreign_saved() {
+    local reopened="$1/reopened"
+    rm -f "$reopened"
+    # Stand-ins: an app that is running with nothing open, a restore setting.
+    app_pid() { echo $$; }
+    open_sessions() { :; }
+    backfill_status() { :; }
+    conditions() { echo test; }
+    reopen_all() { echo "$1" >>"$reopened"; }
+    restore_enabled() { true; }
+    printf '%s\tsid-old\t--flag\n' "$HOME" >"$SAVED"
+    echo "999 elsewhere" >"$SAVED_BY"
+    save
+    expect "a list another app wrote is reopened" "$(cat "$reopened" 2>/dev/null)" "$HOME"$'\t'"sid-old"$'\t'"--flag"
+    expect "then this app's own list replaces it" "$(cat "$SAVED")" ""
+    expect "and is marked as this app's" "$(cat "$SAVED_BY")" "$$ $(ps -o lstart= -p $$)"
+    rm -f "$reopened"
+    printf '%s\tsid-mine\t\n' "$HOME" >"$SAVED"
+    save
+    expect "this app's own list is not reopened" "$(cat "$reopened" 2>/dev/null)" ""
+    printf '%s\tsid-old\t\n' "$HOME" >"$SAVED"
+    echo "999 elsewhere" >"$SAVED_BY"
+    restore_enabled() { false; }
+    save
+    expect "with restore off, a foreign list is dropped, not reopened" "$(cat "$reopened" 2>/dev/null)" ""
 }
 
 function expect() {
