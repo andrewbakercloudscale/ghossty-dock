@@ -44,7 +44,11 @@ EOF
         -passout "pass:$pass" -out "$tmp/id.p12" \
         -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1
     security import "$tmp/id.p12" -k "$KEYCHAIN" -P "$pass" -T /usr/bin/codesign >/dev/null
-    echo "== created '$NAME' in the login keychain"
+    # Untrusted, the certificate signs but macOS's privacy service rejects the
+    # signature and keeps switching Full Disk Access back off. Trust it for code
+    # signing only (asks for the login password once).
+    security add-trusted-cert -r trustRoot -p codeSign -k "$KEYCHAIN" "$tmp/cert.pem"
+    echo "== created and trusted '$NAME' in the login keychain"
 }
 
 main "$@"
