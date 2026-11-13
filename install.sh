@@ -90,9 +90,15 @@ function main() {
     if [ -d "$ROOT/Ghostty Dock.app" ]; then
         print_step 4 4 "Install the app"
         mkdir -p "$(dirname "$APP")" && rm -rf "$APP" && ditto "$ROOT/Ghostty Dock.app" "$APP" || exit 1
+        # Without a Developer ID the release carries its maintainer's local
+        # signature, which this Mac does not trust: macOS would keep turning
+        # Full Disk Access off. Signed with this Mac's own certificate instead.
+        bash "$ROOT/scripts/sign-local.sh" "$APP" || exit 1
     else
         print_step 4 4 "Build and install the app"
         exit_on_missing_tools swift
+        # A stable, trusted signature from the first build, never ad-hoc.
+        bash "$ROOT/scripts/make-sign-id.sh" || exit 1
         bash "$ROOT/scripts/build-terminal.sh" --no-open || exit 1
     fi
     print_success "Ghostty Dock is installed: open it from ~/Applications"
