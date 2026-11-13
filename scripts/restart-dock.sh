@@ -614,6 +614,10 @@ function restart() {
     local now="$1"
     local dry="$2"
     local fresh="${3:-false}"
+    # A fresh restart still to do stays asked for: a later restart (the
+    # app's Restart button replaces one waiting) does it fresh too.
+    local fresh_mark="$STATE_DIR/restart-fresh"
+    if $fresh; then touch "$fresh_mark"; elif [ -f "$fresh_mark" ]; then fresh=true; fi
     local pid
     pid=$(app_pid)
     [ -z "$pid" ] && { log "Ghostty Dock is not running"; return 1; }
@@ -706,6 +710,7 @@ function restart() {
         "$OPENER" --shell "$dir" >>"$LOG" 2>&1 || log "$(basename "$dir"): opening the shell failed"
     done <<<"$shells"
     rm -f "$RESTARTING" "$LAYOUT_KEPT"
+    $fresh && rm -f "$fresh_mark"
     log "done"
 }
 
