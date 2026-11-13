@@ -16,6 +16,14 @@ if [[ -z "${DOCK_SIGN_ID:-}" ]]; then
 fi
 DOCK_SIGN_ID="${DOCK_SIGN_ID:--}"
 
+# A certificate macOS does not trust still signs, but the privacy service
+# rejects the signature and keeps switching Full Disk Access back off.
+if [[ "$DOCK_SIGN_ID" != "-" ]] && ! security find-identity -v -p codesigning 2>/dev/null | grep -q "\"$DOCK_SIGN_ID\""; then
+    echo "ERROR: '$DOCK_SIGN_ID' is not trusted for code signing on this Mac." >&2
+    echo "  macOS would keep turning Full Disk Access off. Run scripts/make-sign-id.sh to trust it." >&2
+    exit 1
+fi
+
 # What the installed app is signed with: its certificate's name, or "-" ad-hoc.
 function dock_installed_sign_id() {
     local app="$HOME/Applications/Ghostty Dock.app" info
