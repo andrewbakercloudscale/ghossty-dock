@@ -55,6 +55,11 @@ usage: ${SCRIPT_NAME} [options]
 
 options:
     --now          Do not wait for busy sessions (interrupts them)
+    --fresh        Start every tab again rather than reattach it: Claude
+                   sessions resume in new tabs and shells open in their
+                   folders. For after the app's signature changed: tabs
+                   kept from the old app are not the new app to macOS,
+                   which then asks for each folder on every access.
     --dry-run      Only list the sessions that would be resumed
     --foreground   Run here instead of detached
     --save         Record the open sessions (for --restore) and stop
@@ -608,6 +613,7 @@ function record_missing() {
 function restart() {
     local now="$1"
     local dry="$2"
+    local fresh="${3:-false}"
     local pid
     pid=$(app_pid)
     [ -z "$pid" ] && { log "Ghostty Dock is not running"; return 1; }
@@ -615,6 +621,16 @@ function restart() {
     local sessions held cpid
     sessions=$(open_sessions "$pid")
     held=$(open_sessions $(holder_pids))
+    # Fresh: the held sessions resume too, in new holders of this app.
+    local shells=""
+    if $fresh; then
+        sessions=$(printf '%s\n%s\n' "$sessions" "$held" | grep . | awk -F'\t' '$2 == "" || !seen[$2]++')
+        local name hpid attached hcwd rest
+        while IFS=$'\t' read -r name hpid attached hcwd rest; do
+            [ -n "$hpid" ] && [ -z "$(claudes_under "$hpid")" ] && shells+="$hcwd"$'\n'
+        done < <(holders)
+        held=""
+    fi
     # Restart Now was just clicked, so the screen is on, and asking pmset
     # takes 5 seconds each time: twice was 10 seconds of nothing happening.
     local seen="screen on (clicked), app pid $pid"
@@ -662,6 +678,16 @@ function restart() {
     # These are resumed below; the new app must not reopen them too.
     rm -f "$SAVED"
     sleep 1
+    if $fresh; then
+        local hp
+        for hp in $(holder_pids); do
+            for cpid in $(claudes_under "$hp"); do kill -TERM "$cpid" 2>/dev/null; done
+        done
+        sleep 3
+        "$HOLD" kill-detached 2>/dev/null
+        for ((i = 0; i < 20; i++)); do [ -z "$(holders)" ] && break; sleep 0.5; done
+        log "fresh: ended $(grep -c . <<<"$shells") shell(s) and the held sessions, to start again"
+    fi
 
     # The opener starts the app with window-save-state=never, so it comes up
     # with only these tabs.
@@ -673,6 +699,12 @@ function restart() {
     else
         open_items "$LAYOUT_KEPT" <<<"$reattach"
     fi
+    local dir
+    while IFS= read -r dir; do
+        [ -n "$dir" ] || continue
+        [ -d "$dir" ] || dir="$HOME"
+        "$OPENER" --shell "$dir" >>"$LOG" 2>&1 || log "$(basename "$dir"): opening the shell failed"
+    done <<<"$shells"
     rm -f "$RESTARTING" "$LAYOUT_KEPT"
     log "done"
 }
@@ -683,12 +715,14 @@ function main() {
     # Ghostty Dock ids of the tab this runs in (its row would be overwritten).
     unset CLAUDECODE CLAUDE_PID GHOSTTY_DOCK_SURFACE DOCK_TAB_ID $(compgen -e | grep "^CLAUDE_CODE_")
     local now=false
+    local fresh=false
     local dry=false
     local foreground=false
     local args=("$@")
     while [ "$1" != "" ]; do
         case $1 in
         --now) now=true ;;
+        --fresh) fresh=true ;;
         --dry-run) dry=true; foreground=true ;;
         --foreground) foreground=true ;;
         --save)
@@ -736,7 +770,7 @@ function main() {
         fi
         exit 0
     fi
-    restart "$now" "$dry"
+    restart "$now" "$dry" "$fresh"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
