@@ -63,6 +63,13 @@ System Settings → Privacy & Security first (`get.sh` downloads with curl,
 which macOS does not quarantine, so it opens either way). Installed from a
 release, Update checks GitHub's latest release and installs it with `get.sh`.
 
+Without a Developer ID, `install.sh` re-signs the app with the Mac's own
+"Ghostty Dock Local" certificate (`scripts/sign-local.sh`, which creates and
+trusts it once, asking for the login password). macOS's privacy service
+rejects a signature from a certificate the Mac does not trust and keeps
+switching Full Disk Access back off, so every session asks for every folder.
+A Developer ID build keeps its own signature.
+
 
 ![Ghostty Dock window](docs/window.png)
 

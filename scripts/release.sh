@@ -84,7 +84,8 @@ function main() {
     rm -rf "$stage"
     echo "== $zip ($signed)"
     [ "$signed" = "this Mac only" ] &&
-        echo "   Not Developer ID signed: macOS will refuse to open it on other Macs until they allow it in Privacy & Security."
+        echo "   Not Developer ID signed: macOS will refuse to open it on other Macs until they allow it in Privacy & Security." &&
+        echo "   install.sh re-signs it with each Mac's own trusted certificate (scripts/sign-local.sh), so Full Disk Access sticks."
 
     if $publish; then
         command -v gh >/dev/null || { echo "Error: gh is required to publish" >&2; exit 1; }
