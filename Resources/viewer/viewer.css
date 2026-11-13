@@ -47,6 +47,11 @@ code, pre { font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .md img { max-width: 100%; }
 .md hr { border: 0; border-top: 1px solid var(--line); margin: 1.5em 0; }
 
+/* Mermaid diagrams: drawn as SVG, or their source when they do not parse. */
+.md .diagram { margin: 0 0 1em; overflow: auto; text-align: center; }
+.md .diagram svg { max-width: 100%; height: auto; }
+.md p.diagram-error { padding: 0; margin-top: -.6em; font-size: 90%; }
+
 /* Source and text files: line numbers beside the code. */
 main.code { max-width: none; padding: 0; }
 .code table { border-collapse: collapse; width: 100%; }
