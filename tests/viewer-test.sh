@@ -2,8 +2,8 @@
 
 # Tests the file viewer's page (Resources/viewer) with the app's own scheme
 # handler (DockViewerScheme.swift) in an off-screen WKWebView: Markdown is
-# rendered, raw HTML in a file never runs, code gets line numbers, and a
-# missing file says so. macOS only; needs the patch applied to vendor/ghostty.
+# rendered, Mermaid diagrams drawn, raw HTML in a file never runs, code
+# gets line numbers, and a missing file says so. macOS only; needs the patch applied to vendor/ghostty.
 
 SCRIPT_NAME=$(basename "$0")
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -36,12 +36,13 @@ function main() {
 
     local out
     out=$(VIEWER_PAGE="$ROOT/Resources/viewer" "$tmp/render" "$tmp/plan.md" "$tmp/tool.sh" \
-        "$tmp/with space.md" "$tmp/missing.md" 2>&1)
-    local plan code spaced missing
+        "$tmp/with space.md" "$tmp/missing.md" "$tmp/diagrams.md" 2>&1)
+    local plan code spaced missing diagrams
     plan=$(section "$out" plan.md)
     code=$(section "$out" tool.sh)
     spaced=$(section "$out" "with space.md")
     missing=$(section "$out" missing.md)
+    diagrams=$(section "$out" diagrams.md)
 
     expect "Markdown is rendered" "$(sed -n 2p <<<"$plan")" "md"
     has "a heading's text, without its #" "$plan" "^The plan$"
@@ -55,6 +56,13 @@ function main() {
     has "and its text" "$code" 'echo "hello"'
     has "a name with a space" "$spaced" "^Spaced$"
     has "a missing file says so" "$missing" "Could not read"
+    has "a plain file loads no diagram drawer" "$plan" "^DIAGRAMS: 0$"
+    has "Mermaid diagrams are drawn" "$diagrams" "^DIAGRAMS: 2$"
+    has "with their labels" "$diagrams" "^Card$"
+    has "one that does not parse shows its source" "$diagrams" "graph TD oops -->"
+    has "and says why" "$diagrams" "This diagram did not draw"
+    lacks "HTML in a diagram never runs" "$diagrams" "^ERROR: ran"
+    lacks "every file finishes rendering" "$out" "^ERROR: never finished"
 
     echo "$PASSED passed, $FAILED failed"
     [ "$FAILED" -eq 0 ]
@@ -80,6 +88,23 @@ echo hi
 MD
     printf '#!/bin/sh\n# a tool\necho "hello"\n' >"$1/tool.sh"
     printf '# Spaced\n' >"$1/with space.md"
+    cat >"$1/diagrams.md" <<'MD'
+# Flow
+
+```mermaid
+graph TD
+  A[Card] --> B{Authorise}
+```
+
+```mermaid
+graph TD oops -->
+```
+
+```mermaid
+graph LR
+  X["<img src=x onerror=window.webkit.messageHandlers.viewer.postMessage('ran')>"] --> Y
+```
+MD
 }
 
 # The render of one file: from its "== <path>" line to the next.
