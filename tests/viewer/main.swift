@@ -1,7 +1,7 @@
 // Renders a file with the file viewer's real page and scheme handler
 // (Resources/viewer, DockViewerScheme.swift) in an off-screen WKWebView, and
-// prints what the page shows: its class, its text, and any page errors
-// (tests/viewer-test.sh checks them).
+// prints what the page shows: its class, its text, how many diagrams it
+// drew, and any page errors (tests/viewer-test.sh checks them).
 //
 // usage: VIEWER_PAGE=<page folder> viewer-render <file> [<file>...]
 
@@ -41,20 +41,28 @@ for path in CommandLine.arguments.dropFirst() {
     view.load(URLRequest(url: c.url!))
     let deadline = Date().addingTimeInterval(10)
     while !probe.loaded && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
-    // The page renders after it fetches the file.
+    // The page renders after it fetches the file, and marks the page when
+    // it is done (diagrams are drawn after the text).
     var out = ""
-    let until = Date().addingTimeInterval(5)
+    var rendered = false
+    let until = Date().addingTimeInterval(15)
+    let read = "(() => { const d = document.getElementById('doc'); return "
+        + "[d.dataset.rendered || '', d.querySelectorAll('svg').length, d.className + '\\n' + d.innerText].join('\\t') })()"
     while Date() < until {
         var done = false
-        view.evaluateJavaScript("document.getElementById('doc').className + '\\n' + document.getElementById('doc').innerText") { r, _ in
-            out = (r as? String) ?? ""; done = true
+        view.evaluateJavaScript(read) { r, _ in
+            let parts = ((r as? String) ?? "").split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
+            rendered = parts.first == "1"
+            out = parts.count == 3 ? parts[2] + "\nDIAGRAMS: " + parts[1] : ""
+            done = true
         }
         while !done { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
-        if out.count > 2 { break }
+        if rendered { break }
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
     }
     print("== \(file.path)")
     print(out)
+    if !rendered { print("ERROR: never finished rendering") }
     for e in probe.errors { print("ERROR: \(e)") }
     if out.count <= 2 { print("ERROR: nothing rendered") }
 }

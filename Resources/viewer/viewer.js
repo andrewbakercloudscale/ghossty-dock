@@ -1,6 +1,6 @@
 // Ghostty Dock's file viewer: renders the file named after the # of this
 // page's address. Markdown is rendered, source and text files highlighted,
-// images shown. The app serves this page, and the file under /f<path> of
+// images shown, Mermaid diagrams drawn. The app serves this page, and the file under /f<path> of
 // the same origin, over dockview:// (DockViewer.swift), and calls
 // dockReload() when the file changes.
 
@@ -43,6 +43,7 @@ function highlight(text, lang) {
 // Raw HTML in a file is shown as text, not run: the page can read files.
 const md = window.markdownit({ html: false, linkify: true, typographer: false,
   highlight: (code, lang) => {
+    if ((lang || '').toLowerCase() === 'mermaid') return `<pre class="mermaid">${escape(code)}</pre>`;
     const l = language((lang || '').toLowerCase());
     return l ? `<pre><code class="hljs language-${l}">${highlight(code, l)}</code></pre>` : '';
   } });
@@ -64,10 +65,56 @@ function tasks(root) {
   }
 }
 
-function renderMarkdown(text) {
+// Mermaid is big: it is loaded only for a file with a diagram. From the
+// page's own address, not the file's folder that <base> points at.
+let mermaidLoaded;
+function loadMermaid() {
+  mermaidLoaded ??= new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'dockview://app/mermaid.min.js';
+    script.onload = () => {
+      // Strict: a diagram's labels are text, and its click handlers are off.
+      const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+      mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: dark ? 'dark' : 'default' });
+      resolve();
+    };
+    script.onerror = () => reject(new Error('could not load mermaid.min.js'));
+    document.head.append(script);
+  });
+  return mermaidLoaded;
+}
+
+// Each diagram on its own, so one that does not parse keeps its source,
+// with why, and the rest are still drawn.
+async function diagrams(root) {
+  const blocks = [...root.querySelectorAll('pre.mermaid')];
+  if (!blocks.length) return;
+  try { await loadMermaid(); } catch (e) { report(e.message); return; }
+  for (const [i, pre] of blocks.entries()) {
+    try {
+      // Parsed first: render() left half done by a bad diagram never
+      // finishes the next one.
+      await mermaid.parse(pre.textContent);
+      const { svg } = await mermaid.render(`diagram-${Date.now()}-${i}`, pre.textContent);
+      const figure = document.createElement('div');
+      figure.className = 'diagram';
+      figure.innerHTML = svg;
+      pre.replaceWith(figure);
+    } catch (e) {
+      const note = document.createElement('p');
+      note.className = 'note diagram-error';
+      note.textContent = `This diagram did not draw: ${String(e.message || e).split('\n')[0]}`;
+      pre.after(note);
+      report(`diagram ${i + 1} in ${path}: ${e.message || e}`);
+    }
+  }
+}
+
+async function renderMarkdown(text) {
   doc.className = 'md';
   doc.innerHTML = md.render(text);
   tasks(doc);
+  await diagrams(doc);
 }
 
 function renderCode(text) {
@@ -80,7 +127,13 @@ function renderCode(text) {
     `<td><pre><code class="hljs">${highlight(text, lang)}</code></pre></td></tr></table>`;
 }
 
+// Marked when done, diagrams and all (the viewer test waits for it).
 async function render() {
+  delete doc.dataset.rendered;
+  try { await show(); } finally { doc.dataset.rendered = '1'; }
+}
+
+async function show() {
   document.title = name;
   if (IMAGES.includes(ext)) {
     doc.className = 'image';
@@ -98,7 +151,7 @@ async function render() {
     report(`could not read ${path}: ${e.message}`);
     return;
   }
-  if (MARKDOWN.includes(ext)) renderMarkdown(text); else renderCode(text);
+  if (MARKDOWN.includes(ext)) await renderMarkdown(text); else renderCode(text);
 }
 
 // Relative links and images in a file are relative to its folder.
