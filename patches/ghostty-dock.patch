@@ -6496,6 +6496,197 @@ index 0000000..ddb67af
 +        window?.makeKeyAndOrderFront(nil)
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockPermissions.swift b/macos/Sources/Features/Dock/DockPermissions.swift
+new file mode 100644
+index 0000000..7d6eb81
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockPermissions.swift
+@@ -0,0 +1,185 @@
++import AppKit
++import SwiftUI
++import UserNotifications
++
++/// Ghostty Dock: the macOS permissions it needs, granted in one go so macOS
++/// does not stop a restart, or a session, to ask folder by folder. Everything
++/// a tab runs (shells, Claude, scripts) is this app's child, so what the app
++/// is granted covers them too. Full Disk Access takes the place of each
++/// Desktop, Documents, Downloads, removable and network volume prompt.
++@MainActor
++final class DockPermissions: ObservableObject {
++    static let shared = DockPermissions()
++
++    enum State: Equatable { case granted, denied, notAsked }
++
++    struct Item: Identifiable, Equatable {
++        let id: String
++        let title: String
++        let why: String
++        var state: State
++    }
++
++    @Published private(set) var items: [Item] = []
++    /// "Not now" hides the banner for a week; then it asks again if anything is still missing.
++    @AppStorage("dock.permissionsDismissedAt") var dismissedAt = 0.0
++    var dismissed: Bool { Date().timeIntervalSince1970 - dismissedAt < 7 * 86_400 }
++    var missing: [Item] { items.filter { $0.state != .granted } }
++    private var timer: Timer?
++
++    private init() {
++        refresh()
++        // Granting happens in System Settings: notice it without a click.
++        timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
++            Task { @MainActor in self?.refresh() }
++        }
++    }
++
++    func refresh() {
++        let old = items.first { $0.id == "notifications" }?.state ?? .notAsked
++        let list = [
++            Item(id: "fda", title: "Full Disk Access",
++                 why: "Lets your sessions read your Desktop, Documents, Downloads and other drives without macOS asking folder by folder, at every restart.",
++                 state: Self.hasFullDiskAccess() ? .granted : .notAsked),
++            // Answers asynchronously: keep the last known state until it does.
++            Item(id: "notifications", title: "Notifications",
++                 why: "Tells you when a session finishes or is waiting on you, with Allow and Deny on the banner.",
++                 state: old),
++        ]
++        if list != items { items = list }
++        UNUserNotificationCenter.current().getNotificationSettings { settings in
++            let s: State = switch settings.authorizationStatus {
++            case .authorized, .provisional: .granted
++            case .denied: .denied
++            default: .notAsked
++            }
++            Task { @MainActor in
++                if let i = self.items.firstIndex(where: { $0.id == "notifications" }), self.items[i].state != s {
++                    self.items[i].state = s
++                }
++            }
++        }
++    }
++
++    /// Asks for notifications in place, then opens Full Disk Access, the one
++    /// macOS only grants in System Settings.
++    func requestAll() {
++        if let n = items.first(where: { $0.id == "notifications" }), n.state != .granted { request(n) }
++        if !Self.hasFullDiskAccess() { Self.showSettings("Privacy_AllFiles") }
++    }
++
++    func request(_ item: Item) {
++        switch item.id {
++        case "notifications" where item.state == .notAsked:
++            // macOS can answer without showing anything; not granted then
++            // means its settings page is the only way.
++            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
++                Task { @MainActor in
++                    self.refresh()
++                    if !granted { Self.showNotificationSettings() }
++                }
++            }
++        case "notifications": Self.showNotificationSettings()
++        default: Self.showSettings("Privacy_AllFiles")
++        }
++    }
++
++    static func showNotificationSettings() {
++        showURL("x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(Bundle.main.bundleIdentifier ?? "")")
++    }
++
++    static func showSettings(_ pane: String) {
++        showURL("x-apple.systempreferences:com.apple.preference.security?\(pane)")
++    }
++
++    private static func showURL(_ url: String) {
++        guard let u = URL(string: url) else { return }
++        NSWorkspace.shared.open(u)
++        // Opening a URL leaves System Settings behind this window; bring it forward.
++        for delay in [0.5, 1.5] {
++            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
++                NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.systempreferences").first?.activate()
++            }
++        }
++    }
++
++    /// Reads a folder only Full Disk Access opens, which never prompts.
++    nonisolated static func hasFullDiskAccess() -> Bool {
++        let home = FileManager.default.homeDirectoryForCurrentUser
++        for p in ["Library/Safari", ".Trash", "Library/Mail"] {
++            let url = home.appendingPathComponent(p)
++            if FileManager.default.fileExists(atPath: url.path) {
++                return (try? FileManager.default.contentsOfDirectory(atPath: url.path)) != nil
++            }
++        }
++        return false
++    }
++}
++
++/// At the top of the sidebar until everything is granted or put off.
++struct DockPermissionsBanner: View {
++    @ObservedObject var permissions = DockPermissions.shared
++
++    var body: some View {
++        let missing = permissions.missing
++        if !permissions.dismissed, !missing.isEmpty {
++            VStack(alignment: .leading, spacing: 5) {
++                Label(missing.count == 1 ? "Allow \(missing[0].title)" : "Allow \(missing.count) permissions",
++                      systemImage: "checkmark.shield.fill")
++                    .font(.system(size: 11.5, weight: .semibold))
++                Text("Once, so macOS stops asking at each restart: \(missing.map(\.title).joined(separator: ", ")).")
++                    .font(.system(size: 10.5)).fixedSize(horizontal: false, vertical: true)
++                HStack(spacing: 6) {
++                    Button("Grant All") { permissions.requestAll() }
++                        .keyboardShortcut(.defaultAction)
++                    Button("Not now") { permissions.dismissedAt = Date().timeIntervalSince1970 }
++                }
++                .controlSize(.small)
++            }
++            .foregroundStyle(DockPalette.text)
++            .padding(8)
++            .frame(maxWidth: .infinity, alignment: .leading)
++            .background(RoundedRectangle(cornerRadius: 7).fill(DockPalette.mauve.opacity(0.16)))
++            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(DockPalette.mauve.opacity(0.7), lineWidth: 1))
++            .padding(.horizontal, 6)
++            .padding(.bottom, 4)
++            .help("Grant All asks for notifications, then opens Full Disk Access in System Settings: "
++                  + "turn on Ghostty Dock there. Settings, App, Permissions has each one. Not now hides this for a week.")
++        }
++    }
++}
++
++/// Settings: each permission, whether it is granted, and a button to fix it.
++struct DockPermissionsSection: View {
++    @ObservedObject var permissions = DockPermissions.shared
++
++    var body: some View {
++        Section("Permissions") {
++            ForEach(permissions.items) { p in
++                HStack(alignment: .top, spacing: 8) {
++                    Image(systemName: p.state == .granted ? "checkmark.circle.fill"
++                          : p.state == .denied ? "xmark.circle.fill" : "circle.dashed")
++                        .foregroundStyle(p.state == .granted ? .green : p.state == .denied ? .red : .secondary)
++                    VStack(alignment: .leading, spacing: 1) {
++                        Text(p.title).fontWeight(.semibold)
++                        Text(p.why).font(.callout).foregroundStyle(.secondary)
++                            .fixedSize(horizontal: false, vertical: true)
++                    }
++                    Spacer(minLength: 8)
++                    if p.state != .granted {
++                        Button(p.id == "notifications" && p.state == .notAsked ? "Allow" : "Open Settings") {
++                            permissions.request(p)
++                        }
++                    }
++                }
++            }
++            HStack {
++                Text("Turn on Ghostty Dock in Full Disk Access, then restart it. Sessions it starts after that are covered.")
++                    .font(.callout).foregroundStyle(.secondary)
++                Spacer()
++                if !permissions.missing.isEmpty { Button("Grant All") { permissions.requestAll() } }
++            }
++        }
++        .onAppear { permissions.refresh() }
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockPrompts.swift b/macos/Sources/Features/Dock/DockPrompts.swift
 new file mode 100644
 index 0000000..15fd2f3
@@ -9502,10 +9693,10 @@ index 0000000..4369870
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..d7ceafb
+index 0000000..3eb73de
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,459 @@
+@@ -0,0 +1,460 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -9851,6 +10042,7 @@ index 0000000..d7ceafb
 +                    Button("Edit Ghostty Config…") { Ghostty.App.openConfig() }
 +                }
 +            }
++            DockPermissionsSection()
 +    }
 +
 +    private func setLogin(_ on: Bool) {
@@ -10100,10 +10292,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..7f1c3b4
+index 0000000..036c3c2
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1688 @@
+@@ -0,0 +1,1689 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -10192,6 +10384,7 @@ index 0000000..7f1c3b4
 +    private var sidebar: some View {
 +        VStack(spacing: 0) {
 +            header.zIndex(1)
++            DockPermissionsBanner()
 +            if !model.missing.isEmpty { missingBanner }
 +            ScrollView {
 +                LazyVStack(spacing: 2) {

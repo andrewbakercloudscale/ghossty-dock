@@ -242,6 +242,13 @@ reports each session's status.
   clipboard or opening apps). Each Claude session there is resumed in the
   current login, once it has been quiet for a while, with its flags and
   conversation; checked every minute. Plain shells are left as they are.
+- **macOS permissions in one go**: until Full Disk Access and Notifications
+  are granted, the sidebar shows **Grant All**. It asks for notifications,
+  then opens Full Disk Access in System Settings, which covers every
+  Desktop, Documents, Downloads and drive prompt for the app and what its
+  tabs run. Settings, App, Permissions lists each one. An ad-hoc signed
+  build loses these at each rebuild; a stable signing identity
+  (`scripts/sign-id.sh`) keeps them.
 - **Permissions skipped** (Settings, on by default): new, restarted, moved
   and reopened sessions start with `--dangerously-skip-permissions`, unless
   given a `--permission-mode`. Saved as `CLAUDE_PANEL_BYPASS_PERMISSIONS` in
