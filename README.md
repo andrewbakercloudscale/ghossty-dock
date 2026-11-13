@@ -208,6 +208,11 @@ reports each session's status.
   it was; after that, the session is resumed in a new tab with its old flags.
 - **Right-click a row** to rename it, pin it to the top or give it a colour.
   These stick to the session, across restarts.
+- **Child Terminal Here…** (right-click) opens a plain shell in the
+  session's folder, for what you must type yourself (`sudo`, a password). It
+  is listed under the session, with a dotted line, whatever the sort; `exit`
+  closes it. Right-click a child → **Stand on Its Own** to make it a row like
+  any other, for good.
 - **Colour a session** with the 🎨 header button, right-click → Colourise
   (pick straight from the menu) or right-click → Colour…:
   20 colours that sit well together. Its row is tinted in it and its
