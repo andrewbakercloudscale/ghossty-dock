@@ -7919,10 +7919,10 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..4369870
+index 0000000..4663a1d
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1827 @@
+@@ -0,0 +1,1844 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -9273,7 +9273,11 @@ index 0000000..4369870
 +        }
 +        guard saved != savedChildren else { return }
 +        savedChildren = saved
-+        if let data = try? JSONSerialization.data(withJSONObject: saved, options: [.sortedKeys]) {
++        writeChildren()
++    }
++
++    private func writeChildren() {
++        if let data = try? JSONSerialization.data(withJSONObject: savedChildren, options: [.sortedKeys]) {
 +            _ = DockLog.write(data, to: Self.childrenFile)
 +        }
 +    }
@@ -9309,6 +9313,19 @@ index 0000000..4369870
 +        guard let child = TerminalController.newTab(ghostty, from: window, withBaseConfig: config) else { return }
 +        // A child of a child goes under the same parent.
 +        children[ObjectIdentifier(child)] = row.parent ?? row.key
++        refresh()
++    }
++
++    /// A child terminal becomes a row like any other: out from under its
++    /// parent, and so after a restart too. Its saved entry goes first, or
++    /// the next refresh would put it back.
++    func standAlone(_ row: Row) {
++        guard children[row.id] != nil else { return }
++        let names = row.controller.map { Array($0.surfaceTree) }?.compactMap { holdNames[$0.id.uuidString] } ?? []
++        children[row.id] = nil
++        for name in names { savedChildren[name] = nil }
++        writeChildren()
++        DockLog.sessions.notice("\(row.name, privacy: .public) stands on its own")
 +        refresh()
 +    }
 +
@@ -10351,10 +10368,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..036c3c2
+index 0000000..e2c5ae4
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1689 @@
+@@ -0,0 +1,1692 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -11317,6 +11334,9 @@ index 0000000..036c3c2
 +                .disabled(row.sessionId == nil)
 +            Button { model.newWorktreeSession(row) } label: { Self.item("New Session in a Worktree…", "arrow.triangle.branch", .systemPurple) }.disabled(folder.isEmpty)
 +            Button { model.childTerminal(row) } label: { Self.item("Child Terminal Here…", "terminal", .systemTeal) }
++            if row.parent != nil {
++                Button { model.standAlone(row) } label: { Self.item("Stand on Its Own", "arrow.up.left", .systemTeal) }
++            }
 +            Button { model.move(row, by: -1) } label: { Self.item("Move Up", "arrow.up", .systemIndigo) }
 +                .disabled(model.visibleRows.first?.key == row.key)
 +            Button { model.move(row, by: 1) } label: { Self.item("Move Down", "arrow.down", .systemIndigo) }

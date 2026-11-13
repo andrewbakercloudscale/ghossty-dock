@@ -13,6 +13,7 @@
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
 #include "include/cef_focus_handler.h"
+#include "include/cef_permission_handler.h"
 #include "include/wrapper/cef_library_loader.h"
 
 static NSString* const kChanged = @"DockBrowserChanged";
@@ -34,6 +35,61 @@ static BOOL gHandlingSendEvent = NO;
 }
 @end
 
+// Chromium's Local Network Access: a public page reaching a private
+// address (a company proxy can put AWS's sign-in files on one) or this Mac.
+// Chrome asks; left alone, CEF says no and the page breaks. Asked here once
+// per site, a yes kept under kLocalNetworkKey, a no until the app quits.
+static const uint32_t kLocalNetwork = CEF_PERMISSION_TYPE_LOCAL_NETWORK | CEF_PERMISSION_TYPE_LOOPBACK_NETWORK;
+static NSString* const kLocalNetworkKey = @"dock.browser.localNetworkSites";
+static NSMutableSet<NSString*>* gRefused;
+// A site's questions while its dialog is up, answered together.
+static NSMutableDictionary<NSString*, NSMutableArray<void (^)(BOOL)>*>* gAsking;
+
+static void Answer(NSString* site, BOOL allow) {
+  if (allow) {
+    NSArray* kept = [NSUserDefaults.standardUserDefaults stringArrayForKey:kLocalNetworkKey] ?: @[];
+    if (![kept containsObject:site])
+      [NSUserDefaults.standardUserDefaults setObject:[kept arrayByAddingObject:site] forKey:kLocalNetworkKey];
+  } else {
+    [gRefused addObject:site];
+  }
+  NSLog(@"DockBrowser: local network for %@: %@", site, allow ? @"allowed" : @"refused");
+  NSArray* waiting = gAsking[site];
+  [gAsking removeObjectForKey:site];
+  for (void (^done)(BOOL) in waiting) done(allow);
+}
+
+// On the main thread. `window` is the terminal's the page is in, if it shows.
+static void AskLocalNetwork(NSString* site, uint32_t wanted, NSWindow* window, void (^done)(BOOL)) {
+  if (!gRefused) gRefused = [NSMutableSet set], gAsking = [NSMutableDictionary dictionary];
+  if ([[NSUserDefaults.standardUserDefaults stringArrayForKey:kLocalNetworkKey] containsObject:site]) return done(YES);
+  if ([gRefused containsObject:site]) return done(NO);
+  if (gAsking[site]) return [gAsking[site] addObject:done];
+  gAsking[site] = [NSMutableArray arrayWithObject:done];
+
+  NSString* host = [NSURL URLWithString:site].host ?: site;
+  NSString* where = (wanted & CEF_PERMISSION_TYPE_LOCAL_NETWORK) ? @"your local network" : @"this Mac";
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = [NSString stringWithFormat:@"Let %@ reach %@?", host, where];
+  alert.informativeText =
+      @"The page in the browser wants to load from an address on your network or this Mac, as a company "
+      @"proxy, a router or a dev server has. Allow only a site you trust: a page allowed this can reach "
+      @"devices on your network.\n\nAllow is remembered for this site. Don't Allow lasts until Ghostty Dock quits.";
+  [alert addButtonWithTitle:@"Allow"];
+  [alert addButtonWithTitle:@"Don't Allow"];
+  // A sheet, not runModal: Chromium's work comes through the main queue,
+  // and a modal loop inside one of its blocks would stop the browser.
+  window = window ?: NSApp.keyWindow ?: NSApp.mainWindow;
+  if (!window) {
+    for (NSWindow* w in NSApp.windows)
+      if (w.visible && w.canBecomeKeyWindow) { window = w; break; }
+  }
+  if (!window) return Answer(site, NO);
+  [alert beginSheetModalForWindow:window completionHandler:^(NSModalResponse r) {
+    Answer(site, r == NSAlertFirstButtonReturn);
+  }];
+}
+
 static void TeachApplication() {
   Class app = [NSApplication class];
   auto add = [&](SEL name, SEL from) {
@@ -52,6 +108,16 @@ static void TeachApplication() {
 // The app's run loop drives CEF: CEF asks for work when it has some, and
 // a timer catches anything it did not ask for.
 static void PumpWork() { CefDoMessageLoopWork(); }
+
+// Chromium stops asking a site whose prompts went unanswered a few times
+// (an embargo), and builds before the local network one was asked here
+// answered none: such a site was refused without a word. A page's record
+// of prompts it was not answered goes as it opens, so you are asked.
+static void ForgetIgnoredPrompts(CefRefPtr<CefBrowser> browser, const CefString& url) {
+  if (url.ToString().rfind("http", 0) != 0) return;
+  browser->GetHost()->GetRequestContext()->SetWebsiteSetting(
+      url, url, CEF_CONTENT_SETTING_TYPE_PERMISSION_AUTOBLOCKER_DATA, nullptr);
+}
 
 class DockApp : public CefApp, public CefBrowserProcessHandler {
  public:
@@ -90,7 +156,11 @@ class DockApp : public CefApp, public CefBrowserProcessHandler {
 - (void)closed;
 @end
 
-class DockClient : public CefClient, public CefDisplayHandler, public CefFocusHandler, public CefLifeSpanHandler {
+class DockClient : public CefClient,
+                   public CefDisplayHandler,
+                   public CefFocusHandler,
+                   public CefLifeSpanHandler,
+                   public CefPermissionHandler {
  public:
   explicit DockClient(DockBrowserView* view) : view_(view) {}
 
@@ -99,6 +169,22 @@ class DockClient : public CefClient, public CefDisplayHandler, public CefFocusHa
   CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
   CefRefPtr<CefFocusHandler> GetFocusHandler() override { return this; }
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
+  CefRefPtr<CefPermissionHandler> GetPermissionHandler() override { return this; }
+
+  // Only the local network is asked about; anything else CEF turns down,
+  // as before.
+  bool OnShowPermissionPrompt(CefRefPtr<CefBrowser>, uint64_t, const CefString& origin, uint32_t wanted,
+                              CefRefPtr<CefPermissionPromptCallback> callback) override {
+    if (!(wanted & kLocalNetwork) || (wanted & ~kLocalNetwork)) return false;
+    NSString* site = [NSString stringWithUTF8String:origin.ToString().c_str()] ?: @"";
+    __weak DockBrowserView* view = view_;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      AskLocalNetwork(site, wanted, view.window, ^(BOOL allow) {
+        callback->Continue(allow ? CEF_PERMISSION_RESULT_ACCEPT : CEF_PERMISSION_RESULT_DENY);
+      });
+    });
+    return true;
+  }
 
   // A page that loads or reloads (yours, or Claude driving it over the
   // debugging port) would take the keyboard from the terminal; only a
@@ -107,8 +193,10 @@ class DockClient : public CefClient, public CefDisplayHandler, public CefFocusHa
     return source == FOCUS_SOURCE_NAVIGATION;
   }
 
-  void OnAddressChange(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame, const CefString& url) override {
-    if (frame->IsMain()) Post(@"url", url);
+  void OnAddressChange(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, const CefString& url) override {
+    if (!frame->IsMain()) return;
+    Post(@"url", url);
+    ForgetIgnoredPrompts(browser, url);
   }
   void OnTitleChange(CefRefPtr<CefBrowser>, const CefString& title) override { Post(@"title", title); }
 
