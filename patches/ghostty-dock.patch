@@ -10100,10 +10100,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..7c96380
+index 0000000..7f1c3b4
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1684 @@
+@@ -0,0 +1,1688 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -10562,10 +10562,14 @@ index 0000000..7c96380
 +                    else if headerTip == tip { headerTip = nil }
 +                }
 +            }
-+            if updates.available || updates.state == .installing {
++            // Not while a newer build is already installed: Restart is the
++            // step then, and the two crowded a narrow sidebar into a bar.
++            if (updates.available && !updates.restartPending) || updates.state == .installing {
 +                Button(action: updates.confirmInstall) {
 +                    Text(updates.state == .installing ? "Updating…" : "Update")
 +                        .font(.system(size: 10.5, weight: .semibold))
++                        .lineLimit(1)
++                        .fixedSize()
 +                        .foregroundStyle(DockPalette.base)
 +                        .padding(.horizontal, 7)
 +                        .padding(.vertical, 2)
