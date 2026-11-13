@@ -109,6 +109,16 @@ static void TeachApplication() {
 // a timer catches anything it did not ask for.
 static void PumpWork() { CefDoMessageLoopWork(); }
 
+// Chromium stops asking a site whose prompts went unanswered a few times
+// (an embargo), and builds before the local network one was asked here
+// answered none: such a site was refused without a word. A page's record
+// of prompts it was not answered goes as it opens, so you are asked.
+static void ForgetIgnoredPrompts(CefRefPtr<CefBrowser> browser, const CefString& url) {
+  if (url.ToString().rfind("http", 0) != 0) return;
+  browser->GetHost()->GetRequestContext()->SetWebsiteSetting(
+      url, url, CEF_CONTENT_SETTING_TYPE_PERMISSION_AUTOBLOCKER_DATA, nullptr);
+}
+
 class DockApp : public CefApp, public CefBrowserProcessHandler {
  public:
   explicit DockApp(int port) : port_(port) {}
@@ -183,8 +193,10 @@ class DockClient : public CefClient,
     return source == FOCUS_SOURCE_NAVIGATION;
   }
 
-  void OnAddressChange(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame, const CefString& url) override {
-    if (frame->IsMain()) Post(@"url", url);
+  void OnAddressChange(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, const CefString& url) override {
+    if (!frame->IsMain()) return;
+    Post(@"url", url);
+    ForgetIgnoredPrompts(browser, url);
   }
   void OnTitleChange(CefRefPtr<CefBrowser>, const CefString& title) override { Post(@"title", title); }
 
