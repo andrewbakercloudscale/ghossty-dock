@@ -1,21 +1,23 @@
 diff --git a/macos/Sources/App/macOS/AppDelegate.swift b/macos/Sources/App/macOS/AppDelegate.swift
-index b02337e..85a854d 100644
+index b02337e..8236bbf 100644
 --- a/macos/Sources/App/macOS/AppDelegate.swift
 +++ b/macos/Sources/App/macOS/AppDelegate.swift
-@@ -210,6 +210,12 @@ class AppDelegate: NSObject,
+@@ -210,6 +210,14 @@ class AppDelegate: NSObject,
          // Store our start time
          applicationLaunchTime = ProcessInfo.processInfo.systemUptime
  
 +        // Ghostty Dock: session statuses, badge and hotkey run with or without the sidebar.
 +        DockSettings.register()
++        // Before any session or shell starts: without Full Disk Access each
++        // one asks macOS for every folder it touches.
++        DockPermissions.gateOnFullDiskAccess()
 +        DockSessions.shared.start()
 +        DockUpdates.shared.start()
-+        DockPermissions.askForFullDiskAccessAtLaunch()
 +
          // Check if secure input was enabled when we last quit.
          if UserDefaults.ghostty.bool(forKey: "SecureInput") != SecureInput.shared.enabled {
              toggleSecureInput(self)
-@@ -307,6 +313,9 @@ class AppDelegate: NSObject,
+@@ -307,6 +315,9 @@ class AppDelegate: NSObject,
              }
  
              ghostty_app_set_color_scheme(app, scheme)
@@ -25,7 +27,7 @@ index b02337e..85a854d 100644
          }
  
          // Setup our menu
-@@ -356,7 +365,8 @@ class AppDelegate: NSObject,
+@@ -356,7 +367,8 @@ class AppDelegate: NSObject,
              // is possible to have other windows in a few scenarios:
              //   - if we're opening a URL since `application(_:openFile:)` is called before this.
              //   - if we're restoring from persisted state
@@ -35,7 +37,7 @@ index b02337e..85a854d 100644
                  undoManager.disableUndoRegistration()
                  _ = TerminalController.newWindow(ghostty)
                  undoManager.enableUndoRegistration()
-@@ -427,6 +437,9 @@ class AppDelegate: NSObject,
+@@ -427,6 +439,9 @@ class AppDelegate: NSObject,
      }
  
      func applicationWillTerminate(_ notification: Notification) {
@@ -45,7 +47,7 @@ index b02337e..85a854d 100644
          // We have no notifications we want to persist after death,
          // so remove them all now. In the future we may want to be
          // more selective and only remove surface-targeted notifications.
-@@ -574,6 +587,9 @@ class AppDelegate: NSObject,
+@@ -574,6 +589,9 @@ class AppDelegate: NSObject,
      }
  
      private func localEventKeyDown(_ event: NSEvent) -> NSEvent? {
@@ -55,7 +57,7 @@ index b02337e..85a854d 100644
          // If the tab overview is visible and escape is pressed, close it.
          // This can't POSSIBLY be right and is probably a FirstResponder problem
          // that we should handle elsewhere in our program. But this works and it
-@@ -796,13 +812,9 @@ class AppDelegate: NSObject,
+@@ -796,13 +814,9 @@ class AppDelegate: NSObject,
          DispatchQueue.main.async { self.syncAppearance(config: config) }
  
          // Decide whether to hide/unhide app from dock and app switcher
@@ -72,7 +74,7 @@ index b02337e..85a854d 100644
  
          // If we have configuration errors, we need to show them.
          let c = ConfigurationErrorsController.sharedInstance
-@@ -894,6 +906,20 @@ class AppDelegate: NSObject,
+@@ -894,6 +908,20 @@ class AppDelegate: NSObject,
          didReceive: UNNotificationResponse,
          withCompletionHandler: () -> Void
      ) {
@@ -93,7 +95,7 @@ index b02337e..85a854d 100644
          ghostty.handleUserNotification(response: didReceive)
          withCompletionHandler()
      }
-@@ -903,7 +929,8 @@ class AppDelegate: NSObject,
+@@ -903,7 +931,8 @@ class AppDelegate: NSObject,
          willPresent: UNNotification,
          withCompletionHandler: (UNNotificationPresentationOptions) -> Void
      ) {
@@ -103,7 +105,7 @@ index b02337e..85a854d 100644
          let options: UNNotificationPresentationOptions = shouldPresent ? [.banner, .sound] : []
          withCompletionHandler(options)
      }
-@@ -941,7 +968,7 @@ class AppDelegate: NSObject,
+@@ -941,7 +970,7 @@ class AppDelegate: NSObject,
      // MARK: - IB Actions
  
      @IBAction func openConfig(_ sender: Any?) {
@@ -112,7 +114,7 @@ index b02337e..85a854d 100644
      }
  
      @IBAction func reloadConfig(_ sender: Any?) {
-@@ -949,7 +976,10 @@ class AppDelegate: NSObject,
+@@ -949,7 +978,10 @@ class AppDelegate: NSObject,
      }
  
      @IBAction func checkForUpdates(_ sender: Any?) {
@@ -124,7 +126,7 @@ index b02337e..85a854d 100644
          // UpdateSimulator.happyPath.simulate(with: updateViewModel)
      }
  
-@@ -970,12 +1000,12 @@ class AppDelegate: NSObject,
+@@ -970,12 +1002,12 @@ class AppDelegate: NSObject,
      }
  
      @IBAction func showAbout(_ sender: Any?) {
@@ -140,7 +142,7 @@ index b02337e..85a854d 100644
      }
  
      @IBAction func toggleSecureInput(_ sender: Any) {
-@@ -1104,6 +1134,8 @@ extension AppDelegate {
+@@ -1104,6 +1136,8 @@ extension AppDelegate {
          // Note: This COULD Be done all in the xib file, but I find it easier to
          // modify this stuff as code.
          self.menuAbout?.setImageIfDesired(systemSymbolName: "info.circle")
@@ -6499,10 +6501,10 @@ index 0000000..ddb67af
 +}
 diff --git a/macos/Sources/Features/Dock/DockPermissions.swift b/macos/Sources/Features/Dock/DockPermissions.swift
 new file mode 100644
-index 0000000..1dc038d
+index 0000000..779f85b
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockPermissions.swift
-@@ -0,0 +1,212 @@
+@@ -0,0 +1,241 @@
 +import AppKit
 +import SwiftUI
 +import UserNotifications
@@ -6608,30 +6610,59 @@ index 0000000..1dc038d
 +        }
 +    }
 +
-+    /// At launch without Full Disk Access (a new Mac, or it was turned off):
-+    /// says why and opens its page in System Settings, so sessions do not
-+    /// start asking folder by folder. Every launch until it is on, unless
-+    /// "Don't ask again" is ticked.
++    /// At launch without Full Disk Access (a new Mac, or it was turned off),
++    /// before any tab or shell starts: macOS asks folder by folder for every
++    /// process that touches the Desktop, Documents or Downloads, and a dozen
++    /// sessions starting at once came to hundreds of prompts. So nothing
++    /// starts until Full Disk Access is on, or the user goes on without it.
++    /// Every launch until it is on, unless "Don't ask again" is ticked.
 +    static let skipFullDiskAccessKey = "dock.skipFullDiskAccessAsk"
 +
-+    static func askForFullDiskAccessAtLaunch() {
-+        guard !hasFullDiskAccess(), !UserDefaults.standard.bool(forKey: skipFullDiskAccessKey) else { return }
-+        DispatchQueue.main.async {
-+            let alert = NSAlert()
-+            alert.messageText = "Give Ghostty Dock Full Disk Access"
-+            alert.informativeText = "Without it, macOS asks for each folder (Desktop, Documents, Downloads, "
-+                + "other drives) every time a session touches one. Turn on Ghostty Dock in "
-+                + "Full Disk Access, then let System Settings quit and reopen it. Your sessions come back."
-+            alert.addButton(withTitle: "Open Full Disk Access")
-+            alert.addButton(withTitle: "Not Now")
-+            alert.showsSuppressionButton = true
-+            alert.suppressionButton?.title = "Don't ask again"
-+            NSApp.activate(ignoringOtherApps: true)
-+            let answer = alert.runModal()
-+            if alert.suppressionButton?.state == .on {
-+                UserDefaults.standard.set(true, forKey: skipFullDiskAccessKey)
-+            }
-+            if answer == .alertFirstButtonReturn { showSettings("Privacy_AllFiles") }
++    /// GHOSTTY_DOCK_TEST_NO_FDA=1 shows the gate on a Mac that has it.
++    nonisolated private static var fullDiskAccess: Bool {
++        ProcessInfo.processInfo.environment["GHOSTTY_DOCK_TEST_NO_FDA"] != "1" && hasFullDiskAccess()
++    }
++
++    static func gateOnFullDiskAccess() {
++        guard !fullDiskAccess, !UserDefaults.standard.bool(forKey: skipFullDiskAccessKey) else { return }
++        NSApp.activate(ignoringOtherApps: true)
++        let alert = NSAlert()
++        alert.messageText = "Give Ghostty Dock Full Disk Access first"
++        alert.informativeText = "Without it, macOS asks separately for your Desktop, Documents, Downloads "
++            + "and other drives, for every session and script, which can be hundreds of prompts. "
++            + "One switch covers them all, so no session starts until it is on.\n\n"
++            + "Click Open Full Disk Access and turn on Ghostty Dock. Ghostty Dock carries on by itself."
++        alert.addButton(withTitle: "Open Full Disk Access")
++        alert.addButton(withTitle: "Continue Without")
++        alert.showsSuppressionButton = true
++        alert.suppressionButton?.title = "Don't ask again"
++        let answer = alert.runModal()
++        if alert.suppressionButton?.state == .on {
++            UserDefaults.standard.set(true, forKey: skipFullDiskAccessKey)
++        }
++        guard answer == .alertFirstButtonReturn else { return }
++        showSettings("Privacy_AllFiles")
++        waitForFullDiskAccess()
++    }
++
++    /// Holds the launch until Full Disk Access is on, or Continue Without.
++    private static func waitForFullDiskAccess() {
++        let wait = NSAlert()
++        wait.messageText = "Waiting for Full Disk Access…"
++        wait.informativeText = "In System Settings, Privacy & Security, Full Disk Access: turn on Ghostty Dock. "
++            + "If it is not listed, click + and choose Ghostty Dock in your Applications folder. "
++            + "If System Settings offers to quit and reopen Ghostty Dock, let it."
++        wait.addButton(withTitle: "Continue Without")
++        wait.addButton(withTitle: "Open Settings Again")
++        let timer = Timer(timeInterval: 1, repeats: true) { _ in
++            if fullDiskAccess { MainActor.assumeIsolated { NSApp.stopModal(withCode: .OK) } }
++        }
++        RunLoop.main.add(timer, forMode: .modalPanel)
++        defer { timer.invalidate() }
++        while true {
++            let answer = wait.runModal()
++            if answer == .alertSecondButtonReturn { showSettings("Privacy_AllFiles"); continue }
++            return
 +        }
 +    }
 +
