@@ -246,7 +246,8 @@ reports each session's status.
   are granted, the sidebar shows **Grant All**. It asks for notifications,
   then opens Full Disk Access in System Settings, which covers every
   Desktop, Documents, Downloads and drive prompt for the app and what its
-  tabs run. Settings, App, Permissions lists each one. An ad-hoc signed
+  tabs run. At launch without Full Disk Access (a new Mac), Ghostty
+  Dock says so and opens that page. Settings, App, Permissions lists each one. An ad-hoc signed
   build loses these at each rebuild; a stable signing identity
   (`scripts/sign-id.sh`) keeps them.
 - **Permissions skipped** (Settings, on by default): new, restarted, moved
