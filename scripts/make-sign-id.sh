@@ -18,7 +18,17 @@ function usage() {
 function main() {
     case "${1:-}" in -h | --help) usage ;; esac
     if security find-certificate -c "$NAME" "$KEYCHAIN" >/dev/null 2>&1; then
-        echo "== '$NAME' is already in the login keychain"
+        if security find-identity -v -p codesigning | grep -q "\"$NAME\""; then
+            echo "== '$NAME' is already in the login keychain and trusted"
+            return 0
+        fi
+        # Made by an older version of this script, which did not trust it.
+        local pem
+        pem=$(mktemp)
+        security find-certificate -c "$NAME" -p "$KEYCHAIN" >"$pem"
+        security add-trusted-cert -r trustRoot -p codeSign -k "$KEYCHAIN" "$pem"
+        rm -f "$pem"
+        echo "== trusted the existing '$NAME' for code signing"
         return 0
     fi
     local pass
