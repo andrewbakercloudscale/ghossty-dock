@@ -28,6 +28,11 @@ DESCRIBED="$STATE_DIR/described"
 # Sessions a restart or restore could not bring back: the app offers to
 # reopen them (--reopen-missing) until they run again.
 MISSING="$STATE_DIR/missing-sessions.tsv"
+# Sessions that dropped out of $SAVED, with when: "<folder>\t<id>\t<epoch>\t<flags>"
+# (flags last: read collapses an empty field between tabs).
+# A shutdown can end some claudes before the app's last save, which then
+# left them out; restore counts those as not come back.
+ENDED="$STATE_DIR/ended-sessions.tsv"
 # What a restart is waiting for, for the app to show: "<what>\t<deadline>\t<names>".
 STATUS="$STATE_DIR/restart-status"
 # The sessions a restart is bringing back, while it runs: --save and
@@ -360,8 +365,9 @@ function save() {
     fi
     # Held sessions too: a reboot ends their holders, and then they are
     # resumed like the rest.
-    open_sessions "$pid" $(holder_pids) >"$SAVED.tmp" && mv "$SAVED.tmp" "$SAVED" &&
-        echo "$me" >"$SAVED_BY"
+    open_sessions "$pid" $(holder_pids) >"$SAVED.tmp" || return 0
+    note_ended "$SAVED" "$SAVED.tmp"
+    mv "$SAVED.tmp" "$SAVED" && echo "$me" >"$SAVED_BY"
     backfill_status
     # Forgets processes that have ended.
     local f
@@ -369,6 +375,50 @@ function save() {
         [ -f "$f" ] && ! kill -0 "${f##*/}" 2>/dev/null && rm -f "$f"
     done
     return 0
+}
+
+# Records the sessions in the old list (first argument) and not the new one
+# (second), and forgets those back in it and any over a day old.
+function note_ended() {
+    local old="$1"
+    local new="$2"
+    local now cwd sid flags at
+    now=$(date +%s)
+    {
+        [ -s "$ENDED" ] && while IFS=$'\t' read -r cwd sid at flags; do
+            [ -n "$sid" ] && [ $((now - ${at:-0})) -lt 86400 ] || continue
+            grep -qF $'\t'"$sid"$'\t' "$new" && continue
+            printf '%s\t%s\t%s\t%s\n' "$cwd" "$sid" "$at" "$flags"
+        done <"$ENDED"
+        [ -s "$old" ] && while IFS=$'\t' read -r cwd sid flags; do
+            [ -n "$sid" ] || continue
+            grep -qF $'\t'"$sid"$'\t' "$new" && continue
+            grep -qF $'\t'"$sid"$'\t' "$ENDED" 2>/dev/null && continue
+            printf '%s\t%s\t%s\t%s\n' "$cwd" "$sid" "$now" "$flags"
+        done <"$old"
+    } >"$ENDED.tmp"
+    if [ -s "$ENDED.tmp" ]; then mv "$ENDED.tmp" "$ENDED"; else rm -f "$ENDED.tmp" "$ENDED"; fi
+}
+
+# After a quit or shutdown: sessions that ended in the 5 minutes before the
+# last save (the first argument, epoch) and whose tab was not closed by hand
+# are listed as not come back, so the sidebar shows them.
+function recover_ended() {
+    local last="$1"
+    [ -s "$ENDED" ] || return 0
+    local history="$STATE_DIR/history.json" cwd sid flags at closed
+    while IFS=$'\t' read -r cwd sid at flags; do
+        [ -n "$sid" ] && [ -d "$cwd" ] || continue
+        [ "${at:-0}" -ge $((last - 300)) ] || continue
+        # History's closedAt counts from 2001 (Apple's reference date).
+        closed=$(jq -r --arg sid "$sid" '[.[]? | select(.sessionId == $sid) | .closedAt + 978307200 | floor] | max // 0' \
+            "$history" 2>/dev/null)
+        [ "${closed:-0}" -ge $((at - 120)) ] && continue
+        running_anywhere "$sid" && continue
+        log "$(basename "$cwd") ended before the last save (shutdown?); recorded in $(basename "$MISSING")"
+        record_missing "$cwd" "$sid" "$flags"
+    done <"$ENDED"
+    rm -f "$ENDED"
 }
 
 # The app's "Reopen sessions after a quit" setting (on unless turned off).
@@ -400,8 +450,11 @@ function restore() {
     local held
     held=$(held_items)
     [ -n "$held" ] && log "reattaching $(grep -c . <<<"$held") terminal(s)"
+    local last
+    last=$(stat -f %m "$SAVED" 2>/dev/null || date +%s)
     if [ ! -s "$SAVED" ]; then
         open_items "$LAYOUT" <<<"$held"
+        recover_ended "$last"
         return 0
     fi
     local sessions
@@ -409,6 +462,7 @@ function restore() {
     rm -f "$SAVED"
     log "restore: $(conditions)"
     reopen_all "$sessions" "$(open_sessions $(holder_pids) | cut -f2)" "$held"
+    recover_ended "$last"
 }
 
 # Opens a tab for each terminal left running without one, as when a window
