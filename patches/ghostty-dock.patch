@@ -7919,10 +7919,10 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..4663a1d
+index 0000000..7a3a546
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1844 @@
+@@ -0,0 +1,1895 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -8201,6 +8201,16 @@ index 0000000..4663a1d
 +    /// interruption to the transcript but runs no Stop hook, so the hook's
 +    /// file still says running.
 +    private var interrupted: Set<String> = []
++    /// Waiting sessions by id, with when the hook said so.
++    private var waiting: [String: Int] = [:]
++    /// Of those, the ones whose transcript has gone on since: the question
++    /// or permission was answered, but the hook that says so did not run.
++    /// Claude Code cancels hooks it gives up on (a Mac slowed by security
++    /// software timed every hook out for two hours), which left a question
++    /// in the sidebar the window had long answered.
++    private var answered: Set<String> = []
++    /// As interruptChecks, for `answered`. Only read on `costQueue`.
++    private var answerChecks: [String: (size: UInt64, modified: Date, since: Int, moved: Bool)] = [:]
 +    /// Running sessions by id, with when the hook said busy and how many
 +    /// checks in a row their screen has had no "esc to interrupt": Ctrl+C
 +    /// before Claude answers writes nothing to the transcript, so only the
@@ -8692,6 +8702,7 @@ index 0000000..4663a1d
 +    private func refreshAgentsRunning() {
 +        let files = rows.compactMap { r in r.sessionId.flatMap { transcript($0) } }
 +        let busyFiles = busy.compactMap { sid, since in transcript(sid).map { (sid, $0, since) } }
++        let waitingFiles = waiting.compactMap { sid, since in transcript(sid).map { (sid, $0, since) } }
 +        let quietScreens = checkSpinners()
 +        let working = Set(rows.compactMap { row -> String? in
 +            guard let sid = row.sessionId, done.contains(sid),
@@ -8708,9 +8719,12 @@ index 0000000..4663a1d
 +            let stopped = Set(busyFiles.filter { self.checkInterrupted($0.1, since: $0.2) }.map(\.0))
 +                .union(quietScreens)
 +            self.interruptChecks = self.interruptChecks.filter { path, _ in busyFiles.contains { $0.1.path == path } }
++            let moved = Set(waitingFiles.filter { self.checkAnswered($0.1, since: $0.2) }.map(\.0))
++            self.answerChecks = self.answerChecks.filter { path, _ in waitingFiles.contains { $0.1.path == path } }
 +            DispatchQueue.main.async {
-+                guard stopped != self.interrupted else { return }
++                guard stopped != self.interrupted || moved != self.answered else { return }
 +                self.interrupted = stopped
++                self.answered = moved
 +                self.refresh()
 +            }
 +            let fm = FileManager.default
@@ -8802,6 +8816,40 @@ index 0000000..4663a1d
 +        let stopped = DockSessions.wasInterrupted(url, since: since)
 +        interruptChecks[url.path] = (size, modified, since, stopped)
 +        return stopped
++    }
++
++    private func checkAnswered(_ url: URL, since: Int) -> Bool {
++        guard let a = try? FileManager.default.attributesOfItem(atPath: url.path),
++              let size = (a[.size] as? NSNumber)?.uint64Value,
++              let modified = a[.modificationDate] as? Date
++        else { return false }
++        if let c = answerChecks[url.path], c.size == size, c.modified == modified, c.since == since {
++            return c.moved
++        }
++        let moved = DockSessions.movedOn(url, since: since)
++        answerChecks[url.path] = (size, modified, since, moved)
++        return moved
++    }
++
++    /// The conversation went on after the hook said waiting: its last
++    /// message (a tool's result, a reply, a new prompt) came later. The
++    /// question or permission prompt itself is written before the hook runs.
++    static func movedOn(_ url: URL, since: Int) -> Bool {
++        guard let h = try? FileHandle(forReadingFrom: url) else { return false }
++        defer { try? h.close() }
++        let end = (try? h.seekToEnd()) ?? 0
++        try? h.seek(toOffset: end > 65536 ? end - 65536 : 0)
++        guard let data = try? h.readToEnd() else { return false }
++        let f = ISO8601DateFormatter()
++        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
++        for line in data.split(separator: UInt8(ascii: "\n")).reversed() {
++            guard let o = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
++                  let type = o["type"] as? String, type == "user" || type == "assistant",
++                  o["isSidechain"] as? Bool != true else { continue }
++            guard let at = (o["timestamp"] as? String).flatMap(f.date) else { return false }
++            return Int(at.timeIntervalSince1970) > since + 1
++        }
++        return false
 +    }
 +
 +    static func wasInterrupted(_ url: URL, since: Int) -> Bool {
@@ -8915,7 +8963,8 @@ index 0000000..4663a1d
 +        var built: [Row] = []
 +        var busyNow: [String: Int] = [:]
 +        var doneNow: Set<String> = []
-+        defer { busy = busyNow; done = doneNow }
++        var waitingNow: [String: Int] = [:]
++        defer { busy = busyNow; done = doneNow; waiting = waitingNow }
 +        // With the app in the background no window is key or main, which
 +        // left no row selected: the frontmost terminal window stands in.
 +        let anyMain = TerminalController.all.contains { $0.window?.isKeyWindow == true || $0.window?.isMainWindow == true }
@@ -8944,9 +8993,11 @@ index 0000000..4663a1d
 +                let sid = s.session_id.flatMap { $0.isEmpty ? nil : $0 }
 +                if let sid, s.status == "running" || s.status == "waiting" { busyNow[sid] = s.since }
 +                if let sid, s.status == "done" { doneNow.insert(sid) }
++                if let sid, s.status == "waiting" { waitingNow[sid] = s.since }
 +                switch s.status {
 +                case _ where sid.map(interrupted.contains) == true: status = .idle
 +                case "done" where sid.map(resumed.contains) == true: status = .running
++                case "waiting" where sid.map(answered.contains) == true: status = .running
 +                case "running": status = .running
 +                case "waiting": status = .waiting
 +                case "done": status = (seen[key] ?? 0) >= s.since ? .idle : .unread
