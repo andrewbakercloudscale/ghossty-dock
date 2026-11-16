@@ -40,6 +40,7 @@ function main() {
     test_split_fails "$tmp"
     test_items "$tmp"
     test_foreign_saved "$tmp"
+    test_ended "$tmp"
 
     echo "$PASSED passed, $FAILED failed"
     [ "$FAILED" -eq 0 ]
@@ -155,6 +156,33 @@ function test_foreign_saved() {
     restore_enabled() { false; }
     save
     expect "with restore off, a foreign list is dropped, not reopened" "$(cat "$reopened" 2>/dev/null)" ""
+}
+
+# A shutdown that ended a claude before the app's last save: that save left
+# it out, and restore still lists it as not come back.
+function test_ended() {
+    rm -f "$ENDED" "$MISSING" "$STATE_DIR/history.json"
+    running_anywhere() { false; }
+    mkdir -p "$HOME/cyber" "$HOME/closed"
+    printf '%s\tsid-a\t--f\n%s\tsid-cyber\t--g\n%s\tsid-closed\t\n' "$HOME" "$HOME/cyber" "$HOME/closed" >"$1/old"
+    printf '%s\tsid-a\t--f\n' "$HOME" >"$1/new"
+    note_ended "$1/old" "$1/new"
+    expect "sessions dropped from the list are noted" "$(cut -f2 "$ENDED" | tr '\n' ' ')" "sid-cyber sid-closed "
+    note_ended "$1/new" "$1/new"
+    expect "and kept across later saves" "$(cut -f2 "$ENDED" | tr '\n' ' ')" "sid-cyber sid-closed "
+    printf '%s\tsid-a\t--f\n%s\tsid-cyber\t--g\n' "$HOME" "$HOME/cyber" >"$1/back"
+    note_ended "$1/new" "$1/back"
+    expect "one back in the list is forgotten" "$(cut -f2 "$ENDED" | tr '\n' ' ')" "sid-closed "
+    note_ended "$1/old" "$1/new"
+    # sid-closed's tab was closed by hand: History has it.
+    jq -n --argjson t "$(($(date +%s) - 978307200))" '[{sessionId: "sid-closed", closedAt: $t}]' >"$STATE_DIR/history.json"
+    recover_ended "$(date +%s)"
+    expect "restore lists the one that ended, not the one closed by hand" "$(cat "$MISSING")" "$HOME/cyber"$'\t'"sid-cyber"$'\t'"--g"
+    expect "and forgets the rest" "$(cat "$ENDED" 2>/dev/null)" ""
+    rm -f "$MISSING"
+    printf '%s\tsid-cyber\t%s\t--g\n' "$HOME/cyber" "$(($(date +%s) - 3600))" >"$ENDED"
+    recover_ended "$(date +%s)"
+    expect "one that ended long before the quit is not listed" "$(cat "$MISSING" 2>/dev/null)" ""
 }
 
 function expect() {

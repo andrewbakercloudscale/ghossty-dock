@@ -7919,10 +7919,10 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..7a3a546
+index 0000000..781dd23
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1895 @@
+@@ -0,0 +1,1914 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -9583,6 +9583,25 @@ index 0000000..7a3a546
 +        missing = []
 +    }
 +
++    /// Forgets one missing session.
++    func dismissMissing(_ c: Closed) {
++        let text = (try? String(contentsOf: missingFile, encoding: .utf8)) ?? ""
++        let kept = text.split(separator: "\n").filter {
++            $0.split(separator: "\t", omittingEmptySubsequences: false).dropFirst().first.map(String.init) != c.sessionId
++        }
++        if kept.isEmpty {
++            try? FileManager.default.removeItem(at: missingFile)
++        } else {
++            try? (kept.joined(separator: "\n") + "\n").write(to: missingFile, atomically: true, encoding: .utf8)
++        }
++        missing.removeAll { $0.sessionId == c.sessionId }
++    }
++
++    /// Reopens one missing session in a new tab.
++    func reopenMissing(_ c: Closed) {
++        if reopen(c) { dismissMissing(c) } else { NSSound.beep() }
++    }
++
 +    private var failedCount = 0
 +
 +    /// Says so when tabs fail to start while you are not looking.
@@ -10419,10 +10438,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..e2c5ae4
+index 0000000..f5312ca
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1692 @@
+@@ -0,0 +1,1711 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -10560,18 +10579,37 @@ index 0000000..e2c5ae4
 +        .id(themeName)
 +    }
 +
-+    /// Sessions a restart or restore could not bring back.
++    /// Sessions a restart or restore could not bring back: a group of its
++    /// own, each with Reopen, so a failure is never just a missing tab.
 +    private var missingBanner: some View {
-+        let names = model.missing.map(\.name).joined(separator: ", ")
-+        return VStack(alignment: .leading, spacing: 5) {
-+            Text(model.missing.count == 1 ? "1 session didn't come back" : "\(model.missing.count) sessions didn't come back")
-+                .font(.system(size: 11.5, weight: .semibold))
-+            Text(names).font(.system(size: 10.5)).lineLimit(2).truncationMode(.tail)
++        VStack(alignment: .leading, spacing: 3) {
 +            HStack(spacing: 6) {
-+                Button("Reopen") { model.reopenMissing() }
++                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(DockPalette.peach)
++                Text("Didn't reopen (\(model.missing.count))")
++                    .font(.system(size: 11.5, weight: .semibold))
++                Spacer(minLength: 4)
++                Button("Reopen All") { model.reopenMissing() }
 +                Button("Dismiss") { model.dismissMissing() }
 +            }
 +            .controlSize(.small)
++            ForEach(model.missing, id: \.sessionId) { c in
++                HStack(spacing: 6) {
++                    VStack(alignment: .leading, spacing: 0) {
++                        Text(c.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
++                        Text((c.folder as NSString).abbreviatingWithTildeInPath)
++                            .font(.system(size: 10)).foregroundStyle(DockPalette.grey)
++                            .lineLimit(1).truncationMode(.middle)
++                    }
++                    Spacer(minLength: 4)
++                    Button("Reopen") { model.reopenMissing(c) }.controlSize(.small)
++                    Button { model.dismissMissing(c) } label: { Image(systemName: "xmark") }
++                        .buttonStyle(.plain).foregroundStyle(DockPalette.grey)
++                        .help("Forget it here; History still has it")
++                }
++                .padding(.vertical, 3)
++                .padding(.horizontal, 6)
++                .background(RoundedRectangle(cornerRadius: 5).fill(DockPalette.peach.opacity(0.10)))
++            }
 +        }
 +        .foregroundStyle(DockPalette.text)
 +        .padding(8)
@@ -10580,8 +10618,8 @@ index 0000000..e2c5ae4
 +        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(DockPalette.peach.opacity(0.7), lineWidth: 1))
 +        .padding(.horizontal, 6)
 +        .padding(.bottom, 4)
-+        .help("A restart or restore opened these but they did not start (often the screen was off). "
-+              + "Reopen resumes each in a tab. Log: ~/.local/state/ghostty-dock/restart-dock.log")
++        .help("Sessions that were open before the last quit, restart or shutdown and did not come back. "
++              + "Reopen resumes one in a tab. Log: ~/.local/state/ghostty-dock/restart-dock.log")
 +    }
 +
 +    private func rowView(_ row: DockSessions.Row, moreBelow: Bool = false) -> some View {
