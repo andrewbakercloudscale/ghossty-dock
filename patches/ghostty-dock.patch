@@ -7919,10 +7919,10 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..781dd23
+index 0000000..4f5cc18
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1914 @@
+@@ -0,0 +1,1942 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -9364,6 +9364,34 @@ index 0000000..781dd23
 +        guard let child = TerminalController.newTab(ghostty, from: window, withBaseConfig: config) else { return }
 +        // A child of a child goes under the same parent.
 +        children[ObjectIdentifier(child)] = row.parent ?? row.key
++        refresh()
++    }
++
++    /// Selected text as a command: whitespace runs (the line breaks of
++    /// wrapped text too) become one space, the ends are trimmed, and a
++    /// leading "! " or "$ " prompt goes. Nil when nothing is left.
++    static func runnable(_ text: String) -> String? {
++        var cmd = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
++        for prompt in ["! ", "$ ", "% "] where cmd.hasPrefix(prompt) {
++            cmd = String(cmd.dropFirst(prompt.count)).trimmingCharacters(in: .whitespaces)
++        }
++        if cmd == "!" || cmd == "$" { return nil }
++        return cmd.isEmpty ? nil : cmd
++    }
++
++    /// Run a command in a new child terminal of the tab it was picked in:
++    /// a shell in the same folder with the command typed and entered, so
++    /// its output stays and the shell is there after it.
++    func runInChild(_ command: String, from window: NSWindow?) {
++        guard let window,
++              let ghostty = (NSApp.delegate as? AppDelegate)?.ghostty else { NSSound.beep(); return }
++        let row = rows.first { $0.controller?.window === window }
++        var config = Ghostty.SurfaceConfiguration()
++        if let folder = row.map({ $0.project ?? $0.detail }), !folder.isEmpty { config.workingDirectory = folder }
++        config.initialInput = command + "\n"
++        guard let child = TerminalController.newTab(ghostty, from: window, withBaseConfig: config) else { return }
++        if let row { children[ObjectIdentifier(child)] = row.parent ?? row.key }
++        DockLog.sessions.notice("run in child: \(command, privacy: .public)")
 +        refresh()
 +    }
 +
@@ -14308,7 +14336,7 @@ index 47503dc..3070afa 100644
                          let keys = Array(environmentVariables.keys)
                          let values = Array(environmentVariables.values)
 diff --git a/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift b/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift
-index 3129acf..b271610 100644
+index 3129acf..2a5df93 100644
 --- a/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift	
 +++ b/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift	
 @@ -42,6 +42,10 @@ extension Ghostty {
@@ -14330,6 +14358,39 @@ index 3129acf..b271610 100644
              let surface = surface_cfg.withCValue(view: self) { surface_cfg_c in
                  ghostty_surface_new(app, &surface_cfg_c)
              }
+@@ -1497,9 +1502,18 @@ extension Ghostty {
+ 
+             // If we have a selection, add copy
+             if let text = self.accessibilitySelectedText(), text.count > 0 {
+-                menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
++                item = menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
++                item.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")
++                // Ghostty Dock: run the selection in a child terminal.
++                if let command = DockSessions.runnable(text) {
++                    item = menu.addItem(withTitle: "Run", action: #selector(runSelection(_:)), keyEquivalent: "")
++                    item.image = NSImage(systemSymbolName: "play.fill", accessibilityDescription: "Run")
++                    item.toolTip = command
++                    item.representedObject = command
++                }
+             }
+-            menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
++            item = menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
++            item.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "Paste")
+ 
+             menu.addItem(.separator())
+             item = menu.addItem(withTitle: "Split Right", action: #selector(splitRight(_:)), keyEquivalent: "")
+@@ -1529,6 +1543,11 @@ extension Ghostty {
+ 
+         // MARK: Menu Handlers
+ 
++        @objc func runSelection(_ sender: NSMenuItem) {
++            guard let command = sender.representedObject as? String else { return }
++            DockSessions.shared.runInChild(command, from: window)
++        }
++
+         @IBAction func copy(_ sender: Any?) {
+             guard let surface = self.surface else { return }
+             let action = "copy_to_clipboard"
 diff --git a/src/Surface.zig b/src/Surface.zig
 index 4d66622..83a671f 100644
 --- a/src/Surface.zig
