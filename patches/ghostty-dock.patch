@@ -10438,10 +10438,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..f5312ca
+index 0000000..fb96c12
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1711 @@
+@@ -0,0 +1,1713 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -11470,7 +11470,9 @@ index 0000000..f5312ca
 +    /// A menu item with its icon in colour: menus tint symbol images, so
 +    /// the symbol is drawn into a plain image first.
 +    static func item(_ title: String, _ symbol: String, _ color: NSColor) -> some View {
++        // macOS 27 shows a menu item's title only unless asked for the icon.
 +        Label { Text(title) } icon: { Image(nsImage: icon(symbol, color)) }
++            .labelStyle(.titleAndIcon)
 +    }
 +
 +    static func icon(_ symbol: String, _ color: NSColor) -> NSImage {
