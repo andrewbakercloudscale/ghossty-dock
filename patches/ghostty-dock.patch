@@ -10779,10 +10779,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..8c61c8a
+index 0000000..97967c4
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1718 @@
+@@ -0,0 +1,1775 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -11045,6 +11045,7 @@ index 0000000..8c61c8a
 +
 +    private var header: some View {
 +        VStack(alignment: .leading, spacing: 7) {
++            DockUpdateBanner()
 +            headerButtons
 +            if let line = updates.restartStatus {
 +                Label(line, systemImage: "hourglass")
@@ -11258,27 +11259,6 @@ index 0000000..8c61c8a
 +                        headerTip = tip
 +                        headerTipColor = updates.restarting ? DockPalette.color(DockTag.red) : DockPalette.green
 +                    }
-+                    else if headerTip == tip { headerTip = nil }
-+                }
-+            }
-+            // Not while a newer build is already installed: Restart is the
-+            // step then, and the two crowded a narrow sidebar into a bar.
-+            if (updates.available && !updates.restartPending) || updates.state == .installing {
-+                Button(action: updates.confirmInstall) {
-+                    Text(updates.state == .installing ? "Updating…" : "Update")
-+                        .font(.system(size: 10.5, weight: .semibold))
-+                        .lineLimit(1)
-+                        .fixedSize()
-+                        .foregroundStyle(DockPalette.base)
-+                        .padding(.horizontal, 7)
-+                        .padding(.vertical, 2)
-+                        .background(Capsule().fill(DockPalette.green))
-+                }
-+                .buttonStyle(.plain)
-+                .disabled(updates.state == .installing)
-+                .onHover { inside in
-+                    let tip = updates.latest.map { "Update: install \($0) from GitHub" } ?? "Install the latest version"
-+                    if inside { headerTip = tip; headerTipColor = DockPalette.green }
 +                    else if headerTip == tip { headerTip = nil }
 +                }
 +            }
@@ -12501,6 +12481,83 @@ index 0000000..8c61c8a
 +        .allowsHitTesting(false)
 +    }
 +}
++
++/// Above the sidebar's header while there is an update: one click installs
++/// it, then Ghostty Dock restarts once sessions are quiet and reopens them.
++struct DockUpdateBanner: View {
++    @ObservedObject private var updates = DockUpdates.shared
++
++    var body: some View {
++        if let error = updates.installError, updates.state != .installing {
++            card(icon: "exclamationmark.triangle.fill", tint: DockPalette.peach,
++                 title: "The update failed", detail: error,
++                 button: "Try Again", tip: "Try the update again", action: updates.install)
++        } else if updates.state == .installing, updates.restartStatus == nil {
++            card(icon: nil, tint: DockPalette.green,
++                 title: "Updating to \(updates.latest ?? "the latest version")…",
++                 detail: updates.progress.isEmpty ? "Starting…" : updates.progress,
++                 button: nil, tip: "", action: {})
++        } else if updates.restartPending, !updates.restarting {
++            card(icon: "checkmark.circle.fill", tint: DockPalette.green,
++                 title: "Update installed", detail: "Restart to use it. Your sessions come back as tabs.",
++                 button: "Restart", tip: "Restart once no session is busy and you have not typed for 10 seconds",
++                 action: updates.restartWhenQuiet)
++        } else if updates.available, !updates.restartPending, !updates.restarting {
++            card(icon: "arrow.down.circle.fill", tint: DockPalette.green,
++                 title: "Ghostty Dock \(updates.latest ?? "update") is out",
++                 detail: "You have \(DockUpdates.version). Sessions come back as tabs.",
++                 button: "Update", tip: "Install it, then restart once your sessions are quiet",
++                 action: updates.install,
++                 more: { DockAboutWindow.shared.show(near: NSEvent.mouseLocation) })
++        }
++    }
++
++    private func card(icon: String?, tint: Color, title: String, detail: String,
++                      button: String?, tip: String, action: @escaping () -> Void,
++                      more: (() -> Void)? = nil) -> some View {
++        HStack(alignment: .center, spacing: 8) {
++            if let icon {
++                Image(systemName: icon)
++                    .font(.system(size: 16, weight: .semibold))
++                    .foregroundStyle(tint)
++            } else {
++                ProgressView().controlSize(.small)
++            }
++            VStack(alignment: .leading, spacing: 1) {
++                Text(title)
++                    .font(.system(size: 11.5, weight: .bold))
++                    .lineLimit(1)
++                Text(detail)
++                    .font(.system(size: 10.5))
++                    .foregroundStyle(.secondary)
++                    .lineLimit(2)
++                    .fixedSize(horizontal: false, vertical: true)
++                if let more {
++                    Button("What's new", action: more)
++                        .buttonStyle(.link)
++                        .font(.system(size: 10.5))
++                }
++            }
++            Spacer(minLength: 4)
++            if let button {
++                Button(action: action) {
++                    Text(button)
++                        .font(.system(size: 11.5, weight: .bold))
++                        .foregroundStyle(DockPalette.base)
++                        .padding(.horizontal, 12)
++                        .padding(.vertical, 5)
++                        .background(Capsule().fill(tint))
++                }
++                .buttonStyle(.plain)
++                .help(tip)
++            }
++        }
++        .padding(.horizontal, 10)
++        .padding(.vertical, 8)
++        .background(RoundedRectangle(cornerRadius: 9).fill(tint.opacity(0.14)))
++        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(tint.opacity(0.45), lineWidth: 1))
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockStaleLogin.swift b/macos/Sources/Features/Dock/DockStaleLogin.swift
 new file mode 100644
 index 0000000..1930311
@@ -13098,10 +13155,10 @@ index 0000000..0a5e412
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..ecd048f
+index 0000000..199fadc
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
-@@ -0,0 +1,391 @@
+@@ -0,0 +1,405 @@
 +import AppKit
 +import Combine
 +
@@ -13137,6 +13194,8 @@ index 0000000..ecd048f
 +    @Published private(set) var lastCheck: Date?
 +    /// The last line of the update log, while installing.
 +    @Published private(set) var progress = ""
++    /// Why the last update failed; cleared when one starts.
++    @Published private(set) var installError: String?
 +
 +    var available: Bool { !changes.isEmpty }
 +    /// A newer build is installed on disk than the one running.
@@ -13183,11 +13242,11 @@ index 0000000..ecd048f
 +    private let logURL = FileManager.default.homeDirectoryForCurrentUser
 +        .appendingPathComponent(".local/state/ghostty-dock/update.log")
 +
-+    /// Checks 5 seconds after launch and every 6 hours.
++    /// Checks 5 seconds after launch and every hour.
 +    func start() {
 +        guard timer == nil else { return }
 +        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.check() }
-+        timer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in self?.check() }
++        timer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in self?.check() }
 +        checkInstalled()
 +        installedTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.checkInstalled() }
 +        statusTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.readRestartStatus() }
@@ -13327,6 +13386,12 @@ index 0000000..ecd048f
 +        if answer == .alertSecondButtonReturn { restartNow(); return }
 +        if answer == .alertThirdButtonReturn { DockLogin.shared.confirmResume(all: true); return }
 +        guard answer == .alertFirstButtonReturn else { return }
++        restartWhenQuiet()
++    }
++
++    /// Restarts once no session is busy and you have not typed for 10
++    /// seconds; the sessions come back as tabs.
++    func restartWhenQuiet() {
 +        let restarter = FileManager.default.homeDirectoryForCurrentUser
 +            .appendingPathComponent(".local/bin/ghostty-dock-restart").path
 +        guard FileManager.default.isExecutableFile(atPath: restarter) else {
@@ -13423,15 +13488,19 @@ index 0000000..ecd048f
 +        return text
 +    }
 +
-+    private func install() {
++    /// One click: download (or pull and build), then restart once sessions
++    /// are quiet. The sidebar's update banner shows how it goes.
++    func install() {
 +        guard let script, state != .installing else { return }
 +        state = .installing
++        installError = nil
 +        progress = "Starting…"
 +        logOffset = (try? FileManager.default.attributesOfItem(atPath: logURL.path)[.size] as? UInt64) ?? 0
 +        installStarted = Date()
 +        DockLog.updates.notice("update started")
 +        guard DockProcess.launch("/bin/bash", [script, "--install", "--detach"], log: DockLog.updates) else {
 +            state = .failed("Could not start the update.")
++            installError = "Could not start the update."
 +            return
 +        }
 +        logTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.followLog() }
@@ -13456,6 +13525,7 @@ index 0000000..ecd048f
 +            stopFollowing()
 +            DockLog.updates.error("update \(last, privacy: .public)")
 +            state = .failed(String(last.dropFirst(8)))
++            installError = String(last.dropFirst(8))
 +        } else if Date().timeIntervalSince(installStarted) > 15, !Self.updateRunning() {
 +            // update.sh is gone without a last word: it was killed, or done.
 +            stopFollowing()
@@ -13464,6 +13534,7 @@ index 0000000..ecd048f
 +            } else {
 +                DockLog.updates.error("update stopped at: \(last, privacy: .public)")
 +                state = .failed("The update stopped" + (last.isEmpty ? "." : " at: \(last)") + " See update.log.")
++                installError = "The update stopped" + (last.isEmpty ? "." : " at: \(last)")
 +            }
 +        }
 +    }
