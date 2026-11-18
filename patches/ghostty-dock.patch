@@ -14615,7 +14615,7 @@ index 3129acf..2a5df93 100644
              guard let surface = self.surface else { return }
              let action = "copy_to_clipboard"
 diff --git a/src/Surface.zig b/src/Surface.zig
-index 4d66622..83a671f 100644
+index 4d66622..0656fd9 100644
 --- a/src/Surface.zig
 +++ b/src/Surface.zig
 @@ -2678,7 +2678,10 @@ pub fn keyCallback(
@@ -14629,16 +14629,21 @@ index 4d66622..83a671f 100644
              (self.mouse.mods.shift and !self.mouseShiftCapture(false)))
          {
              // Refresh our link state
-@@ -3990,6 +3993,8 @@ pub fn mouseButtonCallback(
+@@ -3990,6 +3993,13 @@ pub fn mouseButtonCallback(
              // If we have shift-pressed and we aren't allowed to capture it,
              // then we do not do a mouse report.
              if (mods.shift and !shift_capture) break :report;
 +            // Ghostty Dock: nor a ⌘-click on a link, which opens it.
 +            if (mods.super and self.mouse.over_link) break :report;
++            // Ghostty Dock: nor a right-click with text selected (by a
++            // shift-drag in an app that takes the mouse, such as Claude
++            // Code): it shows the menu with Copy and Run for it, instead
++            // of the app getting the click and the selection being lost.
++            if (button == .right and self.io.terminal.screens.active.selection != null) break :report;
  
              // In any other mouse button scenario without shift pressed we
              // clear the selection since the underlying application can handle
-@@ -4715,6 +4720,7 @@ pub fn cursorPosCallback(
+@@ -4715,6 +4725,7 @@ pub fn cursorPosCallback(
          self.mouse.link_point == null or
          (self.mouse.link_point != null and !self.mouse.link_point.?.eql(pos_vp))) and
          (self.io.terminal.flags.mouse_event == .none or
