@@ -12460,7 +12460,7 @@ index 0000000..1930311
 +}
 diff --git a/macos/Sources/Features/Dock/DockSurfaceError.swift b/macos/Sources/Features/Dock/DockSurfaceError.swift
 new file mode 100644
-index 0000000..f0b8d41
+index 0000000..6f9b758
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSurfaceError.swift
 @@ -0,0 +1,105 @@
@@ -12553,7 +12553,7 @@ index 0000000..f0b8d41
 +    }
 +
 +    /// The session id in "claude --resume <id>", if the command has one.
-+    static func resumedSession(_ command: String?) -> String? {
++    nonisolated static func resumedSession(_ command: String?) -> String? {
 +        guard let command, let r = command.range(of: #"--resume ([0-9a-f-]{36})"#, options: .regularExpression)
 +        else { return nil }
 +        return String(command[r].dropFirst("--resume ".count))
