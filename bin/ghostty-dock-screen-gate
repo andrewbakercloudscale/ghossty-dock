@@ -44,13 +44,20 @@ EOM
     exit 1
 }
 
-# Seconds since the last key press or mouse movement.
+# Seconds since the last key press or mouse movement: one ioreg, read with
+# bash itself, no awk.
 function idle_seconds() {
     if [ -n "${GHOSTTY_DOCK_TEST_IDLE:-}" ]; then
-        cat "$GHOSTTY_DOCK_TEST_IDLE" 2>/dev/null || echo 999
+        IDLE=$(<"$GHOSTTY_DOCK_TEST_IDLE") || IDLE=999
         return
     fi
-    ioreg -c IOHIDSystem -d 4 2>/dev/null | awk '/HIDIdleTime/ { print int($NF / 1000000000); exit }'
+    local out
+    out=$(ioreg -c IOHIDSystem -d 4 2>/dev/null)
+    if [[ $out =~ \"HIDIdleTime\"\ =\ ([0-9]+) ]]; then
+        IDLE=$((BASH_REMATCH[1] / 1000000000))
+    else
+        IDLE=""
+    fi
 }
 
 # Tools that only read: they never take the screen.
@@ -93,14 +100,15 @@ function main() {
     done
     [ -e "$STATE_DIR/screen-gate-off" ] && exit 0
 
-    local input tool action sid
+    local input tool action sid cwd
     input=$(cat)
-    tool=$(jq -r '.tool_name // empty' <<<"$input" 2>/dev/null)
+    # One jq for all four fields: this runs before every browser action.
+    { IFS= read -r tool; IFS= read -r action; IFS= read -r sid; IFS= read -r cwd; } < <(
+        jq -r '.tool_name // "", .tool_input.action // "", .session_id // "unknown", .cwd // ""' \
+            <<<"$input" 2>/dev/null)
     [ -n "$tool" ] || exit 0
-    action=$(jq -r '.tool_input.action // empty' <<<"$input" 2>/dev/null)
     reads_only "$tool" "$action" && exit 0
 
-    sid=$(jq -r '.session_id // "unknown"' <<<"$input" 2>/dev/null)
     sid="${sid//[^A-Za-z0-9_-]/}"
     mkdir -p "$GATE_DIR" 2>/dev/null || exit 0
     local lease="$GATE_DIR/lease-$sid" now
@@ -116,9 +124,8 @@ function main() {
     fi
     ((QUIET > 0)) || { touch "$lease"; exit 0; }
 
-    local what name cwd wait="$GATE_DIR/$sid.json"
+    local what name wait="$GATE_DIR/$sid.json"
     what=$(describe "$input")
-    cwd=$(jq -r '.cwd // ""' <<<"$input" 2>/dev/null)
     name=$(basename "${cwd:-Claude}")
     [ "${cwd%/}" = "${HOME%/}" ] && name="Home"
     jq -cn --arg sid "$sid" --arg name "$name" --arg what "$what" --argjson quiet "$QUIET" \
@@ -134,24 +141,27 @@ function main() {
         end run' "$name" "$what" "$QUIET" >/dev/null 2>&1 &
     fi
 
-    local idle start
-    start=$(date +%s)
+    # Checked once a second with no processes but sleep; ioreg only when the
+    # pause could be long enough: idle 4 of 10 s means not before 6 s more.
+    # (Every 0.5 s with date, ioreg and awk it started ~10 processes a
+    # second per waiting agent.)
+    local start=$SECONDS next=$((SECONDS + SHOWN_MIN))
     while :; do
-        now=$(date +%s)
         if [ -e "$GATE_DIR/$sid.stop" ]; then
             rm -f "$GATE_DIR/$sid.stop"
             deny "The user said not now to using the screen ($what). Carry on without it, or ask them when they are ready."
         fi
         [ -e "$GATE_DIR/$sid.go" ] && break
-        if ((now - start >= SHOWN_MIN)); then
-            idle=$(idle_seconds)
-            [ -z "$idle" ] && break
-            ((idle >= QUIET)) && break
+        if ((SECONDS >= next)); then
+            idle_seconds
+            [ -z "$IDLE" ] && break
+            ((IDLE >= QUIET)) && break
+            next=$((SECONDS + QUIET - IDLE))
         fi
-        if ((now - start >= GIVE_UP)); then
+        if ((SECONDS - start >= GIVE_UP)); then
             deny "The user kept typing for $((GIVE_UP / 60)) minutes, so the screen was not free ($what). Ask them before using it."
         fi
-        sleep 0.5
+        sleep 1
     done
     rm -f "$GATE_DIR/$sid.go"
     touch "$lease"
