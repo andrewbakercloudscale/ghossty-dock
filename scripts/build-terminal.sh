@@ -100,6 +100,14 @@ EOS
 
 function build_lib() {
     echo "== build libghostty"
+    # Xcode 26's libtool (cctools_ld) drops Zig's objects from the fat
+    # archive ("not 8-byte aligned"), and the app then fails to link. The
+    # Command Line Tools libtool keeps them: put it first on PATH.
+    local clt=/Library/Developer/CommandLineTools/usr/bin/libtool
+    if [ -x "$clt" ]; then
+        local ltdir
+        ltdir=$(mktemp -d) && ln -s "$clt" "$ltdir/libtool" && PATH="$ltdir:$PATH"
+    fi
     local args=(-Doptimize=ReleaseFast -Demit-xcframework=true
         -Demit-macos-app=false -Dxcframework-target=native)
     if [ -n "${GHOSTTY_DOCK_SDK:-}" ]; then
@@ -297,8 +305,16 @@ function main() {
     done
 
     fetch_sources
+    # Zig sources changed since the last library build: rebuild it, or the
+    # app ships the old core without anyone noticing.
+    if ! $lib && [ -d "$SRC/macos/GhosttyKit.xcframework" ] &&
+        [ -n "$(find "$SRC/src" -name '*.zig' -newer "$SRC/macos/GhosttyKit.xcframework" -print -quit)" ]; then
+        echo "== Zig sources changed: rebuilding libghostty"
+        lib=true
+    fi
     if $lib || [ ! -d "$SRC/macos/GhosttyKit.xcframework" ]; then
         build_lib
+        touch "$SRC/macos/GhosttyKit.xcframework"
     fi
     build_app
     package_app
