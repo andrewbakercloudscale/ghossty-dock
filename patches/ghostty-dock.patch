@@ -8067,7 +8067,7 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..3db6dd7
+index 0000000..2cf3e00
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
 @@ -0,0 +1,1992 @@
@@ -9206,7 +9206,7 @@ index 0000000..3db6dd7
 +            // colour and jumps once Claude is up.
 +            let resuming = best == nil && !failed
 +                && Date().timeIntervalSince(firstSeen[id] ?? Date()) < Self.startingSecs
-+                ? DockSurfaceError.resumedSession(focused?.startConfig?.command) : nil
++                ? DockSurfaceRetry.resumedSession(focused?.startConfig?.command) : nil
 +            let pwd = focused?.pwd
 +                ?? (failed || resuming != nil ? focused?.startConfig?.workingDirectory : nil) ?? ""
 +            let name = best?.name.isEmpty == false ? best!.name
