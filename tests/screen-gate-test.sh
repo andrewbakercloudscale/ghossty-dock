@@ -76,8 +76,9 @@ function main() {
     check "same session straight after has the lease" "$r" "0 "
 
     # Typing: the gate waits, and the wait file says what it is for.
+    # Pause 4 s: idle 0 at the first check (3 s) means the next is at 7 s.
     echo 0 >"$TMP/idle"
-    GHOSTTY_DOCK_STATE="$TMP/state" GHOSTTY_DOCK_TEST_IDLE="$TMP/idle" GHOSTTY_DOCK_SCREEN_QUIET=10 \
+    GHOSTTY_DOCK_STATE="$TMP/state" GHOSTTY_DOCK_TEST_IDLE="$TMP/idle" GHOSTTY_DOCK_SCREEN_QUIET=4 \
         "$GATE" <<<"$(hook_json mcp__playwright__browser_navigate '{"url":"https://example.org/a"}' s2)" \
         >"$TMP/out2" &
     local pid=$!
@@ -88,7 +89,7 @@ function main() {
     sleep 3
     check "still waiting while typing" "$(kill -0 $pid 2>/dev/null && echo waiting)" "waiting"
     echo 12 >"$TMP/idle"
-    sleep 1.5
+    sleep 3.5
     check "goes once the pause comes" "$(kill -0 $pid 2>/dev/null && echo waiting || echo gone)" "gone"
     check "wait file removed" "$(ls "$TMP/state/screen-wait/s2.json" 2>/dev/null)" ""
     wait $pid
