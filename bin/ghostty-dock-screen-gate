@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+
+# Claude Code PreToolUse hook: before an agent takes the screen (drives
+# Chrome, a Playwright browser or the mouse and keyboard), say what it is
+# about to do and wait until you have not typed or moved the mouse for a
+# while, so it does not fight you for the keyboard.
+#
+# Ghostty Dock shows each wait in a small panel that does not take focus,
+# with "Go Now" and "Not Now"; without the app it is a notification. Once an
+# agent has the screen, its next actions in a row go straight through.
+#
+# Never in Claude's way beyond the wait: any failure lets the tool run.
+
+DEPENDENCIES=(jq ioreg)
+SCRIPT_NAME=$(basename "$0")
+STATE_DIR="${GHOSTTY_DOCK_STATE:-$HOME/.local/state/ghostty-dock}"
+GATE_DIR="$STATE_DIR/screen-wait"
+QUIET="${GHOSTTY_DOCK_SCREEN_QUIET:-}"   # seconds without input (default: settings, else 10)
+SHOWN_MIN=3                              # the panel shows at least this long
+LEASE=30                                 # a session that used the screen this recently goes straight on
+GIVE_UP=540                              # then tell the agent to ask (the hook's timeout is 600)
+
+function usage() {
+    cat <<EOM
+
+Claude Code PreToolUse hook for Ghostty Dock: waits for a pause in your
+typing before an agent drives the browser or the screen.
+
+usage: ${SCRIPT_NAME} < hook.json
+
+files in ${STATE_DIR}:
+    screen-gate-off        present: no waiting
+    screen-gate-seconds    the pause to wait for, in seconds (default 10)
+    screen-wait/           one file per waiting agent, read by Ghostty Dock
+
+environment:
+    GHOSTTY_DOCK_STATE          state directory
+    GHOSTTY_DOCK_SCREEN_QUIET   the pause, overriding the setting
+    GHOSTTY_DOCK_TEST_IDLE      a file holding the idle seconds to use (tests)
+
+dependencies: ${DEPENDENCIES[@]}
+
+EOM
+    exit 1
+}
+
+# Seconds since the last key press or mouse movement.
+function idle_seconds() {
+    if [ -n "${GHOSTTY_DOCK_TEST_IDLE:-}" ]; then
+        cat "$GHOSTTY_DOCK_TEST_IDLE" 2>/dev/null || echo 999
+        return
+    fi
+    ioreg -c IOHIDSystem -d 4 2>/dev/null | awk '/HIDIdleTime/ { print int($NF / 1000000000); exit }'
+}
+
+# Tools that only read: they never take the screen.
+function reads_only() {
+    local tool="$1" action="$2"
+    case "${tool##*__}" in
+        tabs_context | tabs_context_mcp | read_page | get_page_text | find | read_console_messages | \
+            read_network_requests | browser_snapshot | browser_console_messages | \
+            browser_network_requests | browser_take_screenshot | screenshot | list_*)
+            return 0 ;;
+    esac
+    case "$action" in screenshot | zoom | wait | cursor_position) return 0 ;; esac
+    return 1
+}
+
+# "Chrome: navigate https://…" from the hook's JSON.
+function describe() {
+    jq -r '
+        (.tool_name | split("__")) as $p
+        | ({"claude-in-chrome": "Chrome", "playwright": "Browser", "computer-use": "Screen"}[$p[1] // ""]
+            // ($p[1] // .tool_name)) as $who
+        | (.tool_input.action // ($p[2] // "") | sub("_mcp$"; "") | sub("^browser_"; "")) as $what
+        | ((.tool_input.url // .tool_input.text // .tool_input.query // .tool_input.element
+            // (.tool_input.coordinate | if . then "at \(.[0]),\(.[1])" else null end) // "")
+            | tostring | gsub("\\s+"; " ") | if length > 70 then .[0:69] + "…" else . end) as $detail
+        | "\($who): \($what | gsub("_"; " "))\(if $detail == "" then "" else " " + $detail end)"
+    ' <<<"$1" 2>/dev/null
+}
+
+function deny() {
+    jq -cn --arg why "$1" '{hookSpecificOutput: {hookEventName: "PreToolUse",
+        permissionDecision: "deny", permissionDecisionReason: $why}}'
+    exit 0
+}
+
+function main() {
+    [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] && usage
+    for cmd in "${DEPENDENCIES[@]}"; do
+        command -v "$cmd" >/dev/null 2>&1 || exit 0
+    done
+    [ -e "$STATE_DIR/screen-gate-off" ] && exit 0
+
+    local input tool action sid
+    input=$(cat)
+    tool=$(jq -r '.tool_name // empty' <<<"$input" 2>/dev/null)
+    [ -n "$tool" ] || exit 0
+    action=$(jq -r '.tool_input.action // empty' <<<"$input" 2>/dev/null)
+    reads_only "$tool" "$action" && exit 0
+
+    sid=$(jq -r '.session_id // "unknown"' <<<"$input" 2>/dev/null)
+    sid="${sid//[^A-Za-z0-9_-]/}"
+    mkdir -p "$GATE_DIR" 2>/dev/null || exit 0
+    local lease="$GATE_DIR/lease-$sid" now
+    now=$(date +%s)
+    if [ -f "$lease" ] && ((now - $(stat -f %m "$lease" 2>/dev/null || echo 0) < LEASE)); then
+        touch "$lease"
+        exit 0
+    fi
+
+    if [ -z "$QUIET" ]; then
+        QUIET=$(tr -dc 0-9 <"$STATE_DIR/screen-gate-seconds" 2>/dev/null)
+        QUIET="${QUIET:-10}"
+    fi
+    ((QUIET > 0)) || { touch "$lease"; exit 0; }
+
+    local what name cwd wait="$GATE_DIR/$sid.json"
+    what=$(describe "$input")
+    cwd=$(jq -r '.cwd // ""' <<<"$input" 2>/dev/null)
+    name=$(basename "${cwd:-Claude}")
+    [ "${cwd%/}" = "${HOME%/}" ] && name="Home"
+    jq -cn --arg sid "$sid" --arg name "$name" --arg what "$what" --argjson quiet "$QUIET" \
+        --argjson started "$now" --argjson pid "$$" \
+        '{session_id: $sid, name: $name, what: $what, quiet: $quiet, started: $started, pid: $pid}' \
+        >"$wait.tmp" 2>/dev/null && mv -f "$wait.tmp" "$wait"
+    rm -f "$GATE_DIR/$sid.go" "$GATE_DIR/$sid.stop"
+    trap 'rm -f "$wait" "$wait.tmp"' EXIT
+
+    if ! pgrep -qx ghostty 2>/dev/null; then
+        osascript -e 'on run argv
+            display notification (item 2 of argv) with title ((item 1 of argv) & " wants the screen") subtitle ("Starts when you stop typing for " & (item 3 of argv) & " seconds")
+        end run' "$name" "$what" "$QUIET" >/dev/null 2>&1 &
+    fi
+
+    local idle start
+    start=$(date +%s)
+    while :; do
+        now=$(date +%s)
+        if [ -e "$GATE_DIR/$sid.stop" ]; then
+            rm -f "$GATE_DIR/$sid.stop"
+            deny "The user said not now to using the screen ($what). Carry on without it, or ask them when they are ready."
+        fi
+        [ -e "$GATE_DIR/$sid.go" ] && break
+        if ((now - start >= SHOWN_MIN)); then
+            idle=$(idle_seconds)
+            [ -z "$idle" ] && break
+            ((idle >= QUIET)) && break
+        fi
+        if ((now - start >= GIVE_UP)); then
+            deny "The user kept typing for $((GIVE_UP / 60)) minutes, so the screen was not free ($what). Ask them before using it."
+        fi
+        sleep 0.5
+    done
+    rm -f "$GATE_DIR/$sid.go"
+    touch "$lease"
+    exit 0
+}
+
+main "$@"

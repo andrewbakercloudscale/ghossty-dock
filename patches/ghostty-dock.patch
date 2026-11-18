@@ -1,8 +1,8 @@
 diff --git a/macos/Sources/App/macOS/AppDelegate.swift b/macos/Sources/App/macOS/AppDelegate.swift
-index b02337e..8236bbf 100644
+index b02337e..c77e47a 100644
 --- a/macos/Sources/App/macOS/AppDelegate.swift
 +++ b/macos/Sources/App/macOS/AppDelegate.swift
-@@ -210,6 +210,14 @@ class AppDelegate: NSObject,
+@@ -210,6 +210,15 @@ class AppDelegate: NSObject,
          // Store our start time
          applicationLaunchTime = ProcessInfo.processInfo.systemUptime
  
@@ -12,12 +12,13 @@ index b02337e..8236bbf 100644
 +        // one asks macOS for every folder it touches.
 +        DockPermissions.gateOnFullDiskAccess()
 +        DockSessions.shared.start()
++        DockScreenGate.shared.start()
 +        DockUpdates.shared.start()
 +
          // Check if secure input was enabled when we last quit.
          if UserDefaults.ghostty.bool(forKey: "SecureInput") != SecureInput.shared.enabled {
              toggleSecureInput(self)
-@@ -307,6 +315,9 @@ class AppDelegate: NSObject,
+@@ -307,6 +316,9 @@ class AppDelegate: NSObject,
              }
  
              ghostty_app_set_color_scheme(app, scheme)
@@ -27,7 +28,7 @@ index b02337e..8236bbf 100644
          }
  
          // Setup our menu
-@@ -356,7 +367,8 @@ class AppDelegate: NSObject,
+@@ -356,7 +368,8 @@ class AppDelegate: NSObject,
              // is possible to have other windows in a few scenarios:
              //   - if we're opening a URL since `application(_:openFile:)` is called before this.
              //   - if we're restoring from persisted state
@@ -37,7 +38,7 @@ index b02337e..8236bbf 100644
                  undoManager.disableUndoRegistration()
                  _ = TerminalController.newWindow(ghostty)
                  undoManager.enableUndoRegistration()
-@@ -427,6 +439,9 @@ class AppDelegate: NSObject,
+@@ -427,6 +440,9 @@ class AppDelegate: NSObject,
      }
  
      func applicationWillTerminate(_ notification: Notification) {
@@ -47,7 +48,7 @@ index b02337e..8236bbf 100644
          // We have no notifications we want to persist after death,
          // so remove them all now. In the future we may want to be
          // more selective and only remove surface-targeted notifications.
-@@ -574,6 +589,9 @@ class AppDelegate: NSObject,
+@@ -574,6 +590,9 @@ class AppDelegate: NSObject,
      }
  
      private func localEventKeyDown(_ event: NSEvent) -> NSEvent? {
@@ -57,7 +58,7 @@ index b02337e..8236bbf 100644
          // If the tab overview is visible and escape is pressed, close it.
          // This can't POSSIBLY be right and is probably a FirstResponder problem
          // that we should handle elsewhere in our program. But this works and it
-@@ -796,13 +814,9 @@ class AppDelegate: NSObject,
+@@ -796,13 +815,9 @@ class AppDelegate: NSObject,
          DispatchQueue.main.async { self.syncAppearance(config: config) }
  
          // Decide whether to hide/unhide app from dock and app switcher
@@ -74,7 +75,7 @@ index b02337e..8236bbf 100644
  
          // If we have configuration errors, we need to show them.
          let c = ConfigurationErrorsController.sharedInstance
-@@ -894,6 +908,20 @@ class AppDelegate: NSObject,
+@@ -894,6 +909,20 @@ class AppDelegate: NSObject,
          didReceive: UNNotificationResponse,
          withCompletionHandler: () -> Void
      ) {
@@ -95,7 +96,7 @@ index b02337e..8236bbf 100644
          ghostty.handleUserNotification(response: didReceive)
          withCompletionHandler()
      }
-@@ -903,7 +931,8 @@ class AppDelegate: NSObject,
+@@ -903,7 +932,8 @@ class AppDelegate: NSObject,
          willPresent: UNNotification,
          withCompletionHandler: (UNNotificationPresentationOptions) -> Void
      ) {
@@ -105,7 +106,7 @@ index b02337e..8236bbf 100644
          let options: UNNotificationPresentationOptions = shouldPresent ? [.banner, .sound] : []
          withCompletionHandler(options)
      }
-@@ -941,7 +970,7 @@ class AppDelegate: NSObject,
+@@ -941,7 +971,7 @@ class AppDelegate: NSObject,
      // MARK: - IB Actions
  
      @IBAction func openConfig(_ sender: Any?) {
@@ -114,7 +115,7 @@ index b02337e..8236bbf 100644
      }
  
      @IBAction func reloadConfig(_ sender: Any?) {
-@@ -949,7 +978,10 @@ class AppDelegate: NSObject,
+@@ -949,7 +979,10 @@ class AppDelegate: NSObject,
      }
  
      @IBAction func checkForUpdates(_ sender: Any?) {
@@ -126,7 +127,7 @@ index b02337e..8236bbf 100644
          // UpdateSimulator.happyPath.simulate(with: updateViewModel)
      }
  
-@@ -970,12 +1002,12 @@ class AppDelegate: NSObject,
+@@ -970,12 +1003,12 @@ class AppDelegate: NSObject,
      }
  
      @IBAction func showAbout(_ sender: Any?) {
@@ -142,7 +143,7 @@ index b02337e..8236bbf 100644
      }
  
      @IBAction func toggleSecureInput(_ sender: Any) {
-@@ -1104,6 +1136,8 @@ extension AppDelegate {
+@@ -1104,6 +1137,8 @@ extension AppDelegate {
          // Note: This COULD Be done all in the xib file, but I find it easier to
          // modify this stuff as code.
          self.menuAbout?.setImageIfDesired(systemSymbolName: "info.circle")
@@ -7630,6 +7631,153 @@ index 0000000..ea97919
 +        window?.makeKeyAndOrderFront(nil)
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockScreenGate.swift b/macos/Sources/Features/Dock/DockScreenGate.swift
+new file mode 100644
+index 0000000..520fa75
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockScreenGate.swift
+@@ -0,0 +1,141 @@
++import AppKit
++import SwiftUI
++
++/// Agents about to take the screen (drive Chrome, a browser or the mouse),
++/// held by the ghostty-dock-screen-gate hook until you pause typing. Shown
++/// in a small floating panel that never takes focus, so you can keep typing
++/// while you read it; "Go Now" and "Not Now" answer the hook through files.
++final class DockScreenGate: ObservableObject {
++    static let shared = DockScreenGate()
++
++    struct Wait: Identifiable, Decodable, Equatable {
++        let session_id: String
++        let name: String
++        let what: String
++        let quiet: Int
++        let started: Int
++        let pid: Int
++        var id: String { session_id }
++    }
++
++    @Published private(set) var waits: [Wait] = []
++    @Published private(set) var idle = 0
++
++    static let stateDir = FileManager.default.homeDirectoryForCurrentUser
++        .appendingPathComponent(".local/state/ghostty-dock")
++    private let dir = stateDir.appendingPathComponent("screen-wait")
++    private var timer: Timer?
++    private var panel: NSPanel?
++
++    /// The setting: on unless screen-gate-off exists, and the pause wanted.
++    static var enabled: Bool {
++        get { !FileManager.default.fileExists(atPath: stateDir.appendingPathComponent("screen-gate-off").path) }
++        set {
++            let off = stateDir.appendingPathComponent("screen-gate-off")
++            if newValue { try? FileManager.default.removeItem(at: off) }
++            else {
++                try? FileManager.default.createDirectory(at: stateDir, withIntermediateDirectories: true)
++                FileManager.default.createFile(atPath: off.path, contents: Data())
++            }
++        }
++    }
++
++    static var seconds: Int {
++        get {
++            (try? String(contentsOf: stateDir.appendingPathComponent("screen-gate-seconds"), encoding: .utf8))
++                .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 10
++        }
++        set {
++            try? FileManager.default.createDirectory(at: stateDir, withIntermediateDirectories: true)
++            try? "\(newValue)\n".write(to: stateDir.appendingPathComponent("screen-gate-seconds"),
++                                     atomically: true, encoding: .utf8)
++        }
++    }
++
++    func start() {
++        guard timer == nil else { return }
++        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.poll() }
++    }
++
++    private func poll() {
++        let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
++        let found = files.filter { $0.pathExtension == "json" }
++            .compactMap { try? JSONDecoder().decode(Wait.self, from: Data(contentsOf: $0)) }
++            .filter { kill(pid_t($0.pid), 0) == 0 }   // a hook that died left its file
++            .sorted { $0.started < $1.started }
++        if found != waits { waits = found }
++        if !found.isEmpty { idle = Self.idleSeconds() }
++        found.isEmpty ? hide() : show()
++    }
++
++    /// Seconds since the last key press or mouse movement, anywhere.
++    static func idleSeconds() -> Int {
++        let any = CGEventType(rawValue: ~0)!
++        return Int(CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: any))
++    }
++
++    func go(_ w: Wait) { touch("\(w.session_id).go") }
++    func stop(_ w: Wait) { touch("\(w.session_id).stop") }
++
++    private func touch(_ name: String) {
++        FileManager.default.createFile(atPath: dir.appendingPathComponent(name).path, contents: Data())
++    }
++
++    private func show() {
++        if panel == nil {
++            let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 80),
++                            styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView, .utilityWindow, .hudWindow],
++                            backing: .buffered, defer: false)
++            p.titleVisibility = .hidden
++            p.titlebarAppearsTransparent = true
++            p.isFloatingPanel = true
++            p.level = .statusBar
++            p.hidesOnDeactivate = false
++            p.becomesKeyOnlyIfNeeded = true
++            p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
++            p.isMovableByWindowBackground = true
++            p.contentView = NSHostingView(rootView: DockScreenGateView(gate: self))
++            panel = p
++        }
++        guard let p = panel else { return }
++        if let size = p.contentView?.fittingSize { p.setContentSize(size) }
++        if !p.isVisible, let screen = NSScreen.main {
++            let f = screen.visibleFrame
++            p.setFrameTopLeftPoint(NSPoint(x: f.maxX - p.frame.width - 16, y: f.maxY - 16))
++            p.orderFrontRegardless()
++        }
++    }
++
++    private func hide() {
++        panel?.orderOut(nil)
++    }
++}
++
++struct DockScreenGateView: View {
++    @ObservedObject var gate: DockScreenGate
++
++    var body: some View {
++        VStack(alignment: .leading, spacing: 10) {
++            ForEach(gate.waits) { w in
++                HStack(alignment: .top, spacing: 10) {
++                    Image(systemName: "hand.raised.fill").foregroundStyle(.orange).font(.title2)
++                    VStack(alignment: .leading, spacing: 2) {
++                        Text("\(w.name) wants the screen").fontWeight(.semibold)
++                        Text(w.what).font(.callout).lineLimit(2).fixedSize(horizontal: false, vertical: true)
++                        Text(gate.idle >= w.quiet ? "Starting…"
++                             : "Starts when you stop typing for \(w.quiet)s (\(max(0, w.quiet - gate.idle))s)")
++                            .font(.caption).foregroundStyle(.secondary).monospacedDigit()
++                        HStack {
++                            Button("Go Now") { gate.go(w) }
++                            Button("Not Now") { gate.stop(w) }
++                        }
++                        .controlSize(.small)
++                        .padding(.top, 2)
++                    }
++                }
++            }
++        }
++        .padding(14)
++        .frame(width: 360, alignment: .leading)
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockScripts.swift b/macos/Sources/Features/Dock/DockScripts.swift
 new file mode 100644
 index 0000000..0abffdd
@@ -9871,10 +10019,10 @@ index 0000000..0d2606e
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..3eb73de
+index 0000000..b361284
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,460 @@
+@@ -0,0 +1,480 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -10221,6 +10369,7 @@ index 0000000..3eb73de
 +                }
 +            }
 +            DockPermissionsSection()
++            DockScreenGateSection()
 +    }
 +
 +    private func setLogin(_ on: Bool) {
@@ -10333,6 +10482,25 @@ index 0000000..3eb73de
 +        if let point, window?.isVisible == false { window?.place(near: point) }
 +        NSApp.activate(ignoringOtherApps: true)
 +        window?.makeKeyAndOrderFront(nil)
++    }
++}
++
++/// Settings > App: the wait before an agent takes the screen.
++struct DockScreenGateSection: View {
++    @State private var on = DockScreenGate.enabled
++    @State private var seconds = DockScreenGate.seconds
++
++    var body: some View {
++        Section("Agents Using the Screen") {
++            Toggle("Wait for a pause in my typing", isOn: $on)
++                .onChange(of: on) { DockScreenGate.enabled = $0 }
++            Stepper("Pause: \(seconds) seconds", value: $seconds, in: 3...60)
++                .onChange(of: seconds) { DockScreenGate.seconds = $0 }
++                .disabled(!on)
++            Text("Before an agent drives Chrome, a browser or the mouse, a panel says what it is about to do, and it waits until you stop typing for this long. Its next actions straight after go on without waiting.")
++                .font(.callout).foregroundStyle(.secondary)
++                .fixedSize(horizontal: false, vertical: true)
++        }
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockShortcuts.swift b/macos/Sources/Features/Dock/DockShortcuts.swift

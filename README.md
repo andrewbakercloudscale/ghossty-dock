@@ -268,6 +268,16 @@ reports each session's status.
   and reopened sessions start with `--dangerously-skip-permissions`, unless
   given a `--permission-mode`. Saved as `CLAUDE_PANEL_BYPASS_PERMISSIONS` in
   `~/.config/claude-panel/options`, which `ghostty-claude-launcher` reads too.
+- **Agents wait for a pause in your typing** (Settings, App, on by default):
+  before an agent drives Chrome, a Playwright browser or the mouse, a small
+  panel at the top right says which session and what it is about to do
+  ("Chrome: navigate https://…"), and the agent waits until you have not
+  typed or moved the mouse for 10 seconds (3–60 in Settings). The panel never
+  takes focus, so you can finish what you are typing. **Go Now** lets it go
+  at once and **Not Now** tells the agent to carry on without the screen.
+  Its next actions within 30 seconds go straight on, and reading a page or
+  taking a screenshot never waits. It is the `ghostty-dock-screen-gate`
+  hook; without the app running it is a notification.
 - **Remote Control names** (Settings, off by default): every five minutes,
   each running session's title on the phone is set to its repo, so the
   phone's AI titles are undone. The title lives on Anthropic's server, and
@@ -424,6 +434,7 @@ type a password if asked.
 ## Tests
 
     bash tests/hook-test.sh                          # the Claude Code hook
+    bash tests/screen-gate-test.sh                   # agents wait for a pause in your typing
     bash tests/browser-tools-test.sh                 # the browser note, dock-browser tools and $BROWSER
     bash tests/restart-test.sh                       # split tabs come back split after a restart
     bash tests/viewer-test.sh                        # the file viewer's page (macOS, after a build)
