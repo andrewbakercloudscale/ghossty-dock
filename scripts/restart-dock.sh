@@ -170,12 +170,23 @@ PY
 # started (ghostty-claude-launcher), unless CLAUDE_PANEL_BYPASS_PERMISSIONS is
 # off in ~/.config/claude-panel/options or the flags already pick a mode. A
 # session started some other way otherwise came back asking, or in auto mode.
+# The option with_bypass goes by, read once: it was five processes per
+# session per save. Called before a loop, as with_bypass runs in $(...).
+function load_bypass_opt() {
+    local opt=""
+    [ -f "$HOME/.config/claude-panel/options" ] &&
+        while IFS= read -r line || [ -n "$line" ]; do
+            [[ "$line" == CLAUDE_PANEL_BYPASS_PERMISSIONS=* ]] && opt="${line#*=}"
+        done <"$HOME/.config/claude-panel/options"
+    opt="${opt//[\"\' ]/}"
+    BYPASS_OPT=$(tr '[:upper:]' '[:lower:]' <<<"$opt")
+}
+
 function with_bypass() {
-    local flags="$1" opt
-    opt=$(grep -E '^CLAUDE_PANEL_BYPASS_PERMISSIONS=' "$HOME/.config/claude-panel/options" 2>/dev/null | tail -1)
-    opt=$(printf '%s' "${opt#*=}" | tr -d "\"' " | tr '[:upper:]' '[:lower:]')
-    case "$opt" in false|0|no|off) echo "$flags"; return ;; esac
-    if grep -qE -- '(^| )(--dangerously-skip-permissions|--permission-mode)( |=|$)' <<<"$flags"; then
+    local flags="$1"
+    [ -n "${BYPASS_OPT+x}" ] || load_bypass_opt
+    case "$BYPASS_OPT" in false|0|no|off) echo "$flags"; return ;; esac
+    if [[ " $flags" =~ \ (--dangerously-skip-permissions|--permission-mode)(\ |=|$) ]]; then
         echo "$flags"
     else
         echo "--dangerously-skip-permissions${flags:+ $flags}"
@@ -189,10 +200,16 @@ function with_bypass() {
 function describe() {
     local cpid="$1"
     local args sid flags cwd
-    args=$(ps -o command= -p "$cpid")
-    sid=$(hook_session "$cpid")
-    [ -z "$sid" ] && grep -qE -- "--(session-id|resume) " <<<"$args" &&
-        sid=$(sed -E 's/.*--(session-id|resume) ([^ ]+).*/\2/' <<<"$args")
+    # open_sessions passes what the hook recorded ("-" for nothing) and the
+    # command line, from one look at all of them.
+    if [ $# -ge 3 ]; then
+        sid="${2#-}"
+        args="$3"
+    else
+        args=$(ps -o command= -p "$cpid")
+        sid=$(hook_session "$cpid")
+    fi
+    [ -z "$sid" ] && [[ "$args" =~ --(session-id|resume)\ ([^ ]+) ]] && sid="${BASH_REMATCH[2]}"
     # A session's folder and flags never change, and finding them takes
     # lsof and python, so each is worked out once per process. The command
     # line is kept with them in case the pid is reused.
@@ -318,10 +335,51 @@ function wait_for_input_idle() {
 # Prints "<cwd>\t<session id>\t<flags>" for every claude under the given
 # pids: the app's for the sessions it runs itself, the holders' for the rest.
 function open_sessions() {
-    local cpid
-    for cpid in $(claudes_under "$@"); do
-        describe "$cpid"
-    done | awk -F'\t' '$2 == "" || !seen[$2]++'
+    local cpid hsid args
+    load_bypass_opt
+    while IFS=$'\t' read -r cpid hsid args; do
+        describe "$cpid" "$hsid" "$args"
+    done < <(claude_table "$@") | awk -F'\t' '$2 == "" || !seen[$2]++'
+}
+
+# "<pid>\t<hook session id or ->\t<command>" for every claude under the
+# given pids, from one ps and one grep: the app saves every 10 s, and a ps,
+# grep, xargs, ls, head and sed for each session was over 10 new processes
+# a second with 15 open. The hook's newest file for a pid wins, as in
+# hook_session.
+function claude_table() {
+    local roots="$*" files hooks=""
+    [ -z "$roots" ] && return 0
+    files=$(ls -t "$STATE_DIR"/sessions/*.json 2>/dev/null)
+    if [ -n "$files" ]; then
+        local IFS=$'\n'
+        # shellcheck disable=SC2086
+        hooks=$(grep -Ho '"session_id":"[^"]*"\|"claude_pid":[0-9]*' $files 2>/dev/null)
+    fi
+    # macOS awk takes no newlines in -v, so the hook lines come as a file.
+    ps -axo pid=,ppid=,command= | awk -v roots="$roots" '
+        BEGIN { n = split(roots, r, " "); for (i = 1; i <= n; i++) root[r[i]] = 1 }
+        FILENAME != "-" {
+            if ($0 == "") next
+            f = $0; sub(/:.*/, "", f); v = substr($0, length(f) + 2)
+            if (f != cur) { cur = f; pid = ""; sid = "" }
+            if (v ~ /^"claude_pid":/) { pid = v; sub(/.*:/, "", pid) }
+            else { sid = v; sub(/^"session_id":"/, "", sid); sub(/"$/, "", sid) }
+            if (pid != "" && sid != "" && !(pid in hook)) { hook[pid] = sid; pid = "x" }
+            next
+        }
+        { parent[$1] = $2; line = $0; sub(/^ *[0-9]+ +[0-9]+ +/, "", line); cmd[$1] = line }
+        END {
+            for (p in cmd) {
+                if (cmd[p] !~ /^([^ ]*\/)?claude( |$)/) continue
+                if (cmd[p] ~ / (-p|--print)( |$)/) continue
+                q = p
+                while (q > 1) {
+                    q = parent[q]
+                    if (q in root) { print p "\t" ((p in hook) ? hook[p] : "-") "\t" cmd[p]; break }
+                }
+            }
+        }' <(printf '%s\n' "$hooks") -
 }
 
 # True while a restart is quitting the app and reopening its sessions; a
@@ -341,9 +399,9 @@ function backfill_status() {
     recorded=$(cat "$sessions"/*.json 2>/dev/null | grep -o '"session_id":"[^"]*"')
     while read -r cpid tty etime line; do
         [ -n "$cpid" ] && [ "$tty" != "??" ] || continue
-        sid=$(sed -nE 's/^claude .*--(session-id|resume) ([0-9a-f-]{36})( .*)?$/\2/p' <<<"$line")
-        [ -n "$sid" ] || continue
-        grep -qF "\"session_id\":\"$sid\"" <<<"$recorded" && continue
+        [[ "$line" =~ ^claude\ .*--(session-id|resume)\ ([0-9a-f-]{36})(\ |$) ]] || continue
+        sid="${BASH_REMATCH[2]}"
+        [[ "$recorded" == *"\"session_id\":\"$sid\""* ]] && continue
         # etime is [[dd-]hh:]mm:ss: under 30 s, its own hook may still come.
         [[ "$etime" =~ ^00:([0-2][0-9])$ ]] && continue
         env=$(ps -E -ww -o command= -p "$cpid" 2>/dev/null | tr ' ' '\n')
@@ -398,18 +456,20 @@ function save() {
 function note_ended() {
     local old="$1"
     local new="$2"
-    local now cwd sid flags at
+    local now cwd sid flags at newtext ended=""
     now=$(date +%s)
+    newtext=$(<"$new")
+    [ -s "$ENDED" ] && ended=$(<"$ENDED")
     {
         [ -s "$ENDED" ] && while IFS=$'\t' read -r cwd sid at flags; do
             [ -n "$sid" ] && [ $((now - ${at:-0})) -lt 86400 ] || continue
-            grep -qF $'\t'"$sid"$'\t' "$new" && continue
+            [[ "$newtext" == *$'\t'"$sid"$'\t'* ]] && continue
             printf '%s\t%s\t%s\t%s\n' "$cwd" "$sid" "$at" "$flags"
         done <"$ENDED"
         [ -s "$old" ] && while IFS=$'\t' read -r cwd sid flags; do
             [ -n "$sid" ] || continue
-            grep -qF $'\t'"$sid"$'\t' "$new" && continue
-            grep -qF $'\t'"$sid"$'\t' "$ENDED" 2>/dev/null && continue
+            [[ "$newtext" == *$'\t'"$sid"$'\t'* ]] && continue
+            [[ "$ended" == *$'\t'"$sid"$'\t'* ]] && continue
             printf '%s\t%s\t%s\t%s\n' "$cwd" "$sid" "$now" "$flags"
         done <"$old"
     } >"$ENDED.tmp"
