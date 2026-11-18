@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 
-# Installs Ghostty Dock from its latest GitHub release, with nothing to build:
+# Installs Ghostty Dock from its latest GitHub release, with nothing to build.
+# Run only this one line; pasting this file's text into zsh fails with
+# "event not found" (zsh reads the "!" in the first line as history):
 #
 #     curl -fsSL https://raw.githubusercontent.com/andrewbakercloudscale/ghossty-dock/main/get.sh | bash
+#
+# The zip is fetched over HTTPS only and checked against the SHA-256 the
+# release publishes beside it, and the app's signature must be intact,
+# before anything is unpacked.
 #
 # Unpacks the release into ~/.local/share/ghostty-dock, runs its install.sh
 # and opens the app. Run it again to update. Downloaded with curl, the app
 # carries no quarantine flag, so macOS opens it without asking.
 
-DEPENDENCIES=(curl ditto jq)
+DEPENDENCIES=(curl ditto jq shasum codesign)
 SCRIPT_NAME=$(basename "$0")
 REPO="andrewbakercloudscale/ghossty-dock"
 ZIP_URL="${GHOSTTY_DOCK_ZIP_URL:-https://github.com/$REPO/releases/latest/download/Ghostty-Dock.zip}"
@@ -44,6 +50,23 @@ function die() {
     exit 1
 }
 
+# The release publishes Ghostty-Dock.zip.sha256 beside the zip. A zip that
+# does not match it is not installed. A zip from GHOSTTY_DOCK_ZIP_URL with
+# no checksum beside it is installed with a warning.
+function verify_checksum() {
+    local tmp="$1" want got
+    if ! curl -fsSL --proto '=https' --tlsv1.2 -o "$tmp/sum" "$ZIP_URL.sha256"; then
+        [ -n "${GHOSTTY_DOCK_ZIP_URL:-}" ] || die "could not download the release's checksum ($ZIP_URL.sha256)"
+        printf '\033[0;33mWarning:\033[0m no checksum beside %s; not verified\n' "$ZIP_URL" >&2
+        return 0
+    fi
+    want=$(awk '{print $1; exit}' "$tmp/sum")
+    got=$(shasum -a 256 "$tmp/Ghostty-Dock.zip" | awk '{print $1}')
+    [[ "$want" =~ ^[0-9a-f]{64}$ ]] || die "the release's checksum file is not a SHA-256"
+    [ "$want" = "$got" ] || die "the download does not match the release's checksum. Nothing was installed."
+    say "Checksum matches ($got)"
+}
+
 function main() {
     local open=true
     while [ $# -gt 0 ]; do
@@ -69,10 +92,14 @@ function main() {
     trap 'rm -rf "$tmp"' EXIT
 
     say "Downloading Ghostty Dock"
-    curl -fL --progress-bar -o "$tmp/Ghostty-Dock.zip" "$ZIP_URL" || die "could not download $ZIP_URL"
+    curl -fL --proto '=https' --tlsv1.2 --progress-bar -o "$tmp/Ghostty-Dock.zip" "$ZIP_URL" ||
+        die "could not download $ZIP_URL"
+    verify_checksum "$tmp"
     ditto -x -k "$tmp/Ghostty-Dock.zip" "$tmp/unzipped" || die "the download is not a valid zip"
     [ -f "$tmp/unzipped/Ghostty Dock/install.sh" ] && [ -d "$tmp/unzipped/Ghostty Dock/Ghostty Dock.app" ] ||
         die "the download does not hold Ghostty Dock"
+    codesign --verify --deep --strict "$tmp/unzipped/Ghostty Dock/Ghostty Dock.app" 2>/dev/null ||
+        die "the app's signature is broken: it was changed after it was built. Nothing was installed."
 
     say "Unpacking into $DEST"
     mkdir -p "$(dirname "$DEST")" || die "could not create $(dirname "$DEST")"
