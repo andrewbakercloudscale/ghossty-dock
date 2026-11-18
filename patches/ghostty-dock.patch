@@ -5866,6 +5866,26 @@ index 0000000..532f7df
 +        stale = []
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockMenuIcon.swift b/macos/Sources/Features/Dock/DockMenuIcon.swift
+new file mode 100644
+index 0000000..f8514d8
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockMenuIcon.swift
+@@ -0,0 +1,14 @@
++import AppKit
++
++extension NSMenuItem {
++    /// Ghostty Dock: a coloured SF Symbol on a menu item. Not a template
++    /// image, so the menu keeps the colour and shows it on every macOS.
++    func dockIcon(_ symbol: String, _ color: NSColor) {
++        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
++            .applying(.init(paletteColors: [color]))
++        guard let image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)?
++            .withSymbolConfiguration(config) else { return }
++        image.isTemplate = false
++        self.image = image
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockNotices.swift b/macos/Sources/Features/Dock/DockNotices.swift
 new file mode 100644
 index 0000000..bc033d2
@@ -14569,7 +14589,7 @@ index 47503dc..3070afa 100644
                          let keys = Array(environmentVariables.keys)
                          let values = Array(environmentVariables.values)
 diff --git a/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift b/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift
-index 3129acf..0ad4ddb 100644
+index 3129acf..29b52f1 100644
 --- a/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift	
 +++ b/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift	
 @@ -42,6 +42,10 @@ extension Ghostty {
@@ -14628,7 +14648,7 @@ index 3129acf..0ad4ddb 100644
              let mods = Ghostty.ghosttyMods(event.modifierFlags)
              if ghostty_surface_mouse_button(
                  surface,
-@@ -1495,11 +1521,30 @@ extension Ghostty {
+@@ -1495,40 +1521,65 @@ extension Ghostty {
              // in a row without storing it all.
              var item: NSMenuItem
  
@@ -14637,7 +14657,7 @@ index 3129acf..0ad4ddb 100644
 +            if (self.accessibilitySelectedText() ?? "").isEmpty, let text = appSelection(),
 +               let command = DockSessions.runnable(text) {
 +                item = menu.addItem(withTitle: "Run", action: #selector(runSelection(_:)), keyEquivalent: "")
-+                item.image = NSImage(systemSymbolName: "play.fill", accessibilityDescription: "Run")
++                item.dockIcon("play.fill", .systemGreen)
 +                item.toolTip = command
 +                item.representedObject = command
 +            }
@@ -14646,22 +14666,53 @@ index 3129acf..0ad4ddb 100644
              if let text = self.accessibilitySelectedText(), text.count > 0 {
 -                menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
 +                item = menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
-+                item.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")
++                item.dockIcon("doc.on.doc", .systemBlue)
 +                // Ghostty Dock: run the selection in a child terminal.
 +                if let command = DockSessions.runnable(text) {
 +                    item = menu.addItem(withTitle: "Run", action: #selector(runSelection(_:)), keyEquivalent: "")
-+                    item.image = NSImage(systemSymbolName: "play.fill", accessibilityDescription: "Run")
++                    item.dockIcon("play.fill", .systemGreen)
 +                    item.toolTip = command
 +                    item.representedObject = command
 +                }
              }
 -            menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
 +            item = menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
-+            item.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "Paste")
++            item.dockIcon("doc.on.clipboard", .systemIndigo)
  
              menu.addItem(.separator())
              item = menu.addItem(withTitle: "Split Right", action: #selector(splitRight(_:)), keyEquivalent: "")
-@@ -1529,6 +1574,11 @@ extension Ghostty {
+-            item.setImageIfDesired(systemSymbolName: "rectangle.righthalf.inset.filled")
++            item.dockIcon("rectangle.righthalf.inset.filled", .systemTeal)
+             item = menu.addItem(withTitle: "Split Left", action: #selector(splitLeft(_:)), keyEquivalent: "")
+-            item.setImageIfDesired(systemSymbolName: "rectangle.leadinghalf.inset.filled")
++            item.dockIcon("rectangle.leadinghalf.inset.filled", .systemTeal)
+             item = menu.addItem(withTitle: "Split Down", action: #selector(splitDown(_:)), keyEquivalent: "")
+-            item.setImageIfDesired(systemSymbolName: "rectangle.bottomhalf.inset.filled")
++            item.dockIcon("rectangle.bottomhalf.inset.filled", .systemTeal)
+             item = menu.addItem(withTitle: "Split Up", action: #selector(splitUp(_:)), keyEquivalent: "")
+-            item.setImageIfDesired(systemSymbolName: "rectangle.tophalf.inset.filled")
++            item.dockIcon("rectangle.tophalf.inset.filled", .systemTeal)
+ 
+             menu.addItem(.separator())
+             item = menu.addItem(withTitle: "Reset Terminal", action: #selector(resetTerminal(_:)), keyEquivalent: "")
+-            item.setImageIfDesired(systemSymbolName: "arrow.trianglehead.2.clockwise")
++            item.dockIcon("arrow.trianglehead.2.clockwise", .systemOrange)
+             item = menu.addItem(withTitle: "Toggle Terminal Inspector", action: #selector(toggleTerminalInspector(_:)), keyEquivalent: "")
+-            item.setImageIfDesired(systemSymbolName: "scope")
++            item.dockIcon("scope", .systemPurple)
+             item = menu.addItem(withTitle: "Terminal Read-only", action: #selector(toggleReadonly(_:)), keyEquivalent: "")
+-            item.setImageIfDesired(systemSymbolName: "eye.fill")
++            item.dockIcon("eye.fill", .systemYellow)
+             item.state = readonly ? .on : .off
+             menu.addItem(.separator())
+             item = menu.addItem(withTitle: "Change Tab Title...", action: #selector(BaseTerminalController.changeTabTitle(_:)), keyEquivalent: "")
+-            item.setImageIfDesired(systemSymbolName: "pencil.line")
++            item.dockIcon("pencil.line", .systemPink)
+             item = menu.addItem(withTitle: "Change Terminal Title...", action: #selector(changeTitle(_:)), keyEquivalent: "")
++            item.dockIcon("character.cursor.ibeam", .systemPink)
+ 
+             return menu
+         }
  
          // MARK: Menu Handlers
  
