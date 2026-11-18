@@ -8067,10 +8067,10 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..d68e8ff
+index 0000000..3db6dd7
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1972 @@
+@@ -0,0 +1,1992 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -8128,6 +8128,10 @@ index 0000000..d68e8ff
 +        /// What it is waiting on: "script", or "agent"/"task" when Claude's
 +        /// screen says "Waiting for N background agents to finish".
 +        var waitKind = "script"
++        /// A tab opened to resume a session (`claude --resume <id>`, as a
++        /// restart does) that has not said it is up yet: shown as Starting…
++        /// under the session's own name, colour and place from the start.
++        var starting = false
 +        weak var controller: TerminalController?
 +
 +        /// Its turn is over but it is waiting on a script it started.
@@ -8140,7 +8144,7 @@ index 0000000..d68e8ff
 +                && a.ask == b.ask && a.askSurface == b.askSurface
 +                && a.pinned == b.pinned && a.tag == b.tag && a.hatch == b.hatch && a.renamed == b.renamed
 +                && a.failed == b.failed && a.pid == b.pid && a.parent == b.parent && a.scripts == b.scripts
-+                && a.waitKind == b.waitKind
++                && a.waitKind == b.waitKind && a.starting == b.starting
 +        }
 +    }
 +
@@ -8291,6 +8295,10 @@ index 0000000..d68e8ff
 +    /// Holds the tab itself too: a closed tab's ObjectIdentifier can be
 +    /// reused by a new one, which must not inherit the closed tab's colour.
 +    private var tabKeys: [ObjectIdentifier: TabKey] = [:]
++    /// When each tab was first seen: one still starting after
++    /// `startingSecs` shows what it is, a shell.
++    private var firstSeen: [ObjectIdentifier: Date] = [:]
++    private static let startingSecs: TimeInterval = 120
 +    private struct TabKey {
 +        let key: String
 +        weak var controller: TerminalController?
@@ -9146,6 +9154,7 @@ index 0000000..d68e8ff
 +            guard let window = controller.window else { continue }
 +            let id = ObjectIdentifier(controller)
 +            if !order.contains(id) { order.append(id) }
++            if firstSeen[id] == nil { firstSeen[id] = Date() }
 +            if children[id] == nil,
 +               let parent = controller.surfaceTree.lazy
 +                   .compactMap({ self.holdNames[$0.id.uuidString].flatMap { self.savedChildren[$0] } }).first {
@@ -9191,11 +9200,20 @@ index 0000000..d68e8ff
 +            let focused = controller.focusedSurface ?? controller.surfaceTree.first
 +            let failed = controller.surfaceTree.contains { $0.error != nil }
 +            let title = cleanTitle(window.title)
-+            let pwd = focused?.pwd ?? (failed ? focused?.startConfig?.workingDirectory : nil) ?? ""
++            // Resuming a session that has not reported yet: known from the
++            // command the tab was opened with, so it is that session's row
++            // (name, colour, place) at once, not a shell that changes
++            // colour and jumps once Claude is up.
++            let resuming = best == nil && !failed
++                && Date().timeIntervalSince(firstSeen[id] ?? Date()) < Self.startingSecs
++                ? DockSurfaceError.resumedSession(focused?.startConfig?.command) : nil
++            let pwd = focused?.pwd
++                ?? (failed || resuming != nil ? focused?.startConfig?.workingDirectory : nil) ?? ""
 +            let name = best?.name.isEmpty == false ? best!.name
++                : resuming != nil ? Self.folderName(pwd)
 +                : !title.isEmpty ? title
 +                : Self.folderName(pwd)
-+            let key = best?.sid ?? "dir:" + pwd
++            let key = best?.sid ?? resuming ?? "dir:" + pwd
 +            if let old = tabKeys[id], old.controller === controller, old.key != key,
 +               !liveSids.contains(old.key), !built.contains(where: { $0.key == key }) {
 +                carry(from: old.key, to: key)
@@ -9239,10 +9257,12 @@ index 0000000..d68e8ff
 +                             parent: children[id],
 +                             scripts: background?.count ?? ((status == .idle || status == .unread) ? best?.pid.map(DockScripts.count) ?? 0 : 0),
 +                             waitKind: background?.kind ?? "script",
++                             starting: resuming != nil,
 +                             controller: controller))
 +        }
 +        order.removeAll { id in !built.contains { $0.id == id } }
 +        tabKeys = tabKeys.filter { id, _ in built.contains { $0.id == id } }
++        firstSeen = firstSeen.filter { id, _ in built.contains { $0.id == id } }
 +        // Tab order: windows in the order first seen, tabs as in each window.
 +        func place(_ r: Row) -> (Int, Int) {
 +            guard let w = r.controller?.window else { return (0, 0) }
@@ -9267,7 +9287,7 @@ index 0000000..d68e8ff
 +                                      place: [p.0, p.1], pinned: r.pinned)
 +        }
 +        for row in built where closeWhenEmpty[row.id] != nil {
-+            if row.status == .shell {
++            if row.status == .shell && !row.starting {
 +                closeWhenEmpty[row.id] = nil
 +                row.controller?.window?.close()
 +            } else if Date().timeIntervalSince(closeWhenEmpty[row.id]!) > 30 {
@@ -10664,10 +10684,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..352168b
+index 0000000..8c61c8a
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1714 @@
+@@ -0,0 +1,1718 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -11457,7 +11477,11 @@ index 0000000..352168b
 +
 +    var body: some View {
 +        HStack(spacing: 9) {
-+            if row.scripting {
++            if row.starting {
++                ProgressView().controlSize(.small)
++                    .frame(width: 18, height: 18)
++                    .dockTip("Claude is starting in this tab")
++            } else if row.scripting {
 +                Image(systemName: "hourglass")
 +                    .font(.system(size: 13, weight: .semibold))
 +                    .foregroundStyle(DockPalette.teal)
@@ -11728,7 +11752,7 @@ index 0000000..352168b
 +
 +    private func subtitle(now: Date) -> String {
 +        let gated = row.sessionId.map { sid in DockScreenGate.shared.waits.contains { $0.session_id == sid } } ?? false
-+        let label = gated ? "Waiting for a pause in your typing" : row.scripting ? (row.scripts == 1 ? "Waiting on a\(row.waitKind == "agent" ? "n" : "") \(row.waitKind)" : "Waiting on \(row.scripts) \(row.waitKind)s")
++        let label = row.starting ? "Starting…" : gated ? "Waiting for a pause in your typing" : row.scripting ? (row.scripts == 1 ? "Waiting on a\(row.waitKind == "agent" ? "n" : "") \(row.waitKind)" : "Waiting on \(row.scripts) \(row.waitKind)s")
 +            : DockPalette.label(row.status)
 +        var parts = [label]
 +        if let since = row.since { parts.append(elapsed(now.timeIntervalSince(since))) }
