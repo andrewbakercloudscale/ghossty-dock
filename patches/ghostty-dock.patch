@@ -8067,10 +8067,10 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..2cf3e00
+index 0000000..b892c7e
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1992 @@
+@@ -0,0 +1,2002 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -8201,6 +8201,9 @@ index 0000000..2cf3e00
 +    @Published private(set) var velocity = DockCost.Velocity()
 +    /// Subagents of the open sessions at work now, for the header's 👥.
 +    @Published private(set) var agentsRunning = 0
++    /// Sessions with a subagent at work: running, even with their own turn
++    /// over and the screen saying "Waiting for 2 background agents".
++    private var withAgents: Set<String> = []
 +    /// Row key to its folder's git branch, pull request and ports.
 +    @Published private(set) var workspaces: [String: DockWorkspace] = [:]
 +    private let workspaceMeter = DockWorkspaces()
@@ -8860,7 +8863,7 @@ index 0000000..2cf3e00
 +    /// Counts the open sessions' subagents at work: not finished, and wrote
 +    /// to their transcript in the last 15 minutes, as DockAgents.Agent.live.
 +    private func refreshAgentsRunning() {
-+        let files = rows.compactMap { r in r.sessionId.flatMap { transcript($0) } }
++        let files = rows.compactMap { r in r.sessionId.flatMap { sid in transcript(sid).map { (sid, $0) } } }
 +        let busyFiles = busy.compactMap { sid, since in transcript(sid).map { (sid, $0, since) } }
 +        let waitingFiles = waiting.compactMap { sid, since in transcript(sid).map { (sid, $0, since) } }
 +        let quietScreens = checkSpinners()
@@ -8891,7 +8894,8 @@ index 0000000..2cf3e00
 +            let now = Date()
 +            var running = 0
 +            var finished: Set<String> = []
-+            for url in files {
++            var sessions: Set<String> = []
++            for (sid, url) in files {
 +                let dir = url.deletingPathExtension().appendingPathComponent("subagents")
 +                for name in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where name.hasSuffix(".jsonl") {
 +                    let file = dir.appendingPathComponent(name)
@@ -8900,13 +8904,15 @@ index 0000000..2cf3e00
 +                          now.timeIntervalSince(m) < 15 * 60 else { continue }
 +                    var agent = DockAgents.Agent(id: "", sessionId: "")
 +                    DockAgents.applyMeta(file.deletingPathExtension().appendingPathExtension("meta.json"), to: &agent)
-+                    if agent.finished { finished.insert(file.path) } else { running += 1 }
++                    if agent.finished { finished.insert(file.path) } else { running += 1; sessions.insert(sid) }
 +                }
 +            }
 +            self.finishedAgents = finished
 +            DispatchQueue.main.async {
-+                guard running != self.agentsRunning else { return }
-+                self.agentsRunning = running
++                if running != self.agentsRunning { self.agentsRunning = running }
++                guard sessions != self.withAgents else { return }
++                self.withAgents = sessions
++                self.refresh()
 +            }
 +        }
 +    }
@@ -9176,6 +9182,10 @@ index 0000000..2cf3e00
 +                if let sid, s.status == "done" { doneNow.insert(sid) }
 +                if let sid, s.status == "waiting" { waitingNow[sid] = s.since }
 +                switch s.status {
++                // A question or permission is still the user's, with agents at work or not.
++                case "waiting" where sid.map(interrupted.contains) != true: status = .waiting
++                case "ended": status = .idle
++                case _ where sid.map(withAgents.contains) == true: status = .running
 +                case _ where sid.map(interrupted.contains) == true: status = .idle
 +                case "done" where sid.map(resumed.contains) == true: status = .running
 +                case "waiting" where sid.map(answered.contains) == true: status = .running
