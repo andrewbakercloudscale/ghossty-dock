@@ -5868,22 +5868,35 @@ index 0000000..532f7df
 +}
 diff --git a/macos/Sources/Features/Dock/DockMenuIcon.swift b/macos/Sources/Features/Dock/DockMenuIcon.swift
 new file mode 100644
-index 0000000..f8514d8
+index 0000000..2a3f4d3
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockMenuIcon.swift
-@@ -0,0 +1,14 @@
+@@ -0,0 +1,27 @@
 +import AppKit
 +
 +extension NSMenuItem {
-+    /// Ghostty Dock: a coloured SF Symbol on a menu item. Not a template
-+    /// image, so the menu keeps the colour and shows it on every macOS.
++    /// Ghostty Dock: a coloured SF Symbol before a menu item's title. macOS
++    /// 27 leaves a context menu item's `image` out, so the symbol goes in
++    /// the title itself, where every macOS draws it.
 +    func dockIcon(_ symbol: String, _ color: NSColor) {
-+        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
++        let font = NSFont.menuFont(ofSize: 0)
++        let config = NSImage.SymbolConfiguration(pointSize: font.pointSize, weight: .medium)
 +            .applying(.init(paletteColors: [color]))
 +        guard let image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)?
 +            .withSymbolConfiguration(config) else { return }
 +        image.isTemplate = false
-+        self.image = image
++        let attachment = NSTextAttachment()
++        attachment.image = image
++        // Centred on the text: the symbol's middle on the font's x-height middle.
++        let size = image.size
++        attachment.bounds = CGRect(x: 0, y: (font.capHeight - size.height) / 2,
++                                   width: size.width, height: size.height)
++        let text = NSMutableAttributedString(attachment: attachment)
++        // A fixed-width slot, so titles line up whatever the symbol's width.
++        let pad = max(4, 22 - size.width)
++        text.append(NSAttributedString(string: "\u{2007}", attributes: [.font: font, .kern: pad - 4]))
++        text.append(NSAttributedString(string: title, attributes: [.font: font]))
++        attributedTitle = text
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockNotices.swift b/macos/Sources/Features/Dock/DockNotices.swift
