@@ -14654,7 +14654,7 @@ index 47503dc..3070afa 100644
                          let keys = Array(environmentVariables.keys)
                          let values = Array(environmentVariables.values)
 diff --git a/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift b/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift
-index 3129acf..29b52f1 100644
+index 3129acf..e764ebb 100644
 --- a/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift	
 +++ b/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift	
 @@ -42,6 +42,10 @@ extension Ghostty {
@@ -14713,7 +14713,7 @@ index 3129acf..29b52f1 100644
              let mods = Ghostty.ghosttyMods(event.modifierFlags)
              if ghostty_surface_mouse_button(
                  surface,
-@@ -1495,40 +1521,65 @@ extension Ghostty {
+@@ -1495,40 +1521,64 @@ extension Ghostty {
              // in a row without storing it all.
              var item: NSMenuItem
  
@@ -14730,8 +14730,6 @@ index 3129acf..29b52f1 100644
              // If we have a selection, add copy
              if let text = self.accessibilitySelectedText(), text.count > 0 {
 -                menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
-+                item = menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
-+                item.dockIcon("doc.on.doc", .systemBlue)
 +                // Ghostty Dock: run the selection in a child terminal.
 +                if let command = DockSessions.runnable(text) {
 +                    item = menu.addItem(withTitle: "Run", action: #selector(runSelection(_:)), keyEquivalent: "")
@@ -14739,12 +14737,14 @@ index 3129acf..29b52f1 100644
 +                    item.toolTip = command
 +                    item.representedObject = command
 +                }
++                item = menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
++                item.dockIcon("doc.on.doc", .systemBlue)
              }
 -            menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
-+            item = menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
-+            item.dockIcon("doc.on.clipboard", .systemIndigo)
++            // Ghostty Dock: no Paste item; ⌘V pastes.
  
-             menu.addItem(.separator())
+-            menu.addItem(.separator())
++            if !menu.items.isEmpty { menu.addItem(.separator()) }
              item = menu.addItem(withTitle: "Split Right", action: #selector(splitRight(_:)), keyEquivalent: "")
 -            item.setImageIfDesired(systemSymbolName: "rectangle.righthalf.inset.filled")
 +            item.dockIcon("rectangle.righthalf.inset.filled", .systemTeal)
