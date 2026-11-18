@@ -109,14 +109,14 @@ function main() {
 function install_scripts() {
     mkdir -p "$BIN_DIR" || return 1
     local f
-    for f in ghostty-dock ghostty-dock-open ghostty-dock-hook ghostty-dock-context ghostty-dock-browser-mcp ghostty-dock-browse ghostty-dock-rc-titles; do
+    for f in ghostty-dock ghostty-dock-open ghostty-dock-hook ghostty-dock-context ghostty-dock-browser-mcp ghostty-dock-browse ghostty-dock-rc-titles ghostty-dock-screen-gate; do
         install -m 0755 "$ROOT/bin/$f" "$BIN_DIR/$f" || { print_error "could not install $f"; return 1; }
     done
     install -m 0755 "$ROOT/scripts/move-to-dock.sh" "$BIN_DIR/ghostty-dock-move" ||
         { print_error "could not install ghostty-dock-move"; return 1; }
     install -m 0755 "$ROOT/scripts/restart-dock.sh" "$BIN_DIR/ghostty-dock-restart" ||
         { print_error "could not install ghostty-dock-restart"; return 1; }
-    print_success "ghostty-dock, ghostty-dock-open, ghostty-dock-hook, ghostty-dock-context, ghostty-dock-browser-mcp, ghostty-dock-browse, ghostty-dock-rc-titles, ghostty-dock-move, ghostty-dock-restart"
+    print_success "ghostty-dock, ghostty-dock-open, ghostty-dock-hook, ghostty-dock-context, ghostty-dock-browser-mcp, ghostty-dock-browse, ghostty-dock-rc-titles, ghostty-dock-screen-gate, ghostty-dock-move, ghostty-dock-restart"
 }
 
 function install_hooks() {
@@ -132,13 +132,16 @@ function install_hooks() {
 
     local cmd="$BIN_DIR/ghostty-dock-hook"
     local context="$BIN_DIR/ghostty-dock-context"
+    local gate="$BIN_DIR/ghostty-dock-screen-gate"
     local events_json
     events_json=$(printf '%s\n' "${HOOK_EVENTS[@]}" | jq -R . | jq -s .)
     local tmp="$SETTINGS.ghostty-dock.tmp"
     # PreToolUse only matters for questions; every other tool call is already
     # "running" from the prompt, and PostToolUse clears a question once answered.
     # SessionStart also tells a session in a dock tab about the browser.
-    jq --arg cmd "$cmd" --arg context "$context" --argjson events "$events_json" '
+    # The screen gate holds an agent about to drive a browser or the mouse
+    # until you pause typing, so its timeout is long.
+    jq --arg cmd "$cmd" --arg context "$context" --arg gate "$gate" --argjson events "$events_json" '
         def has($name): any(.hooks[]?; (.command // "") | contains($name));
         reduce $events[] as $ev (.;
             .hooks[$ev] = ((.hooks[$ev] // []) as $list
@@ -150,6 +153,10 @@ function install_hooks() {
         | .hooks.SessionStart = ((.hooks.SessionStart // []) as $list
             | if any($list[]; has("ghostty-dock-context")) then $list
               else $list + [{matcher: "", hooks: [{type: "command", command: $context, timeout: 5}]}] end)
+        | .hooks.PreToolUse = ((.hooks.PreToolUse // []) as $list
+            | if any($list[]; has("ghostty-dock-screen-gate")) then $list
+              else $list + [{matcher: "mcp__claude-in-chrome__.*|mcp__playwright__.*|mcp__computer-use__.*",
+                             hooks: [{type: "command", command: $gate, timeout: 600}]}] end)
     ' "$SETTINGS" >"$tmp" && jq -e . "$tmp" >/dev/null && mv -f "$tmp" "$SETTINGS" || {
         rm -f "$tmp"
         print_error "could not update $SETTINGS (backup: $backup)"
@@ -315,13 +322,13 @@ function uninstall_all() {
     pkill -x GhosttyDock 2>/dev/null
     rm -rf "$APP"
     rm -f "$BIN_DIR/ghostty-dock" "$BIN_DIR/ghostty-dock-open" "$BIN_DIR/ghostty-dock-hook" "$BIN_DIR/ghostty-dock-move" "$BIN_DIR/ghostty-dock-restart" \
-        "$BIN_DIR/ghostty-dock-context" "$BIN_DIR/ghostty-dock-browser-mcp" "$BIN_DIR/ghostty-dock-browse" "$BIN_DIR/ghostty-dock-rc-titles"
+        "$BIN_DIR/ghostty-dock-context" "$BIN_DIR/ghostty-dock-browser-mcp" "$BIN_DIR/ghostty-dock-browse" "$BIN_DIR/ghostty-dock-rc-titles" "$BIN_DIR/ghostty-dock-screen-gate"
     command -v claude >/dev/null 2>&1 && claude mcp remove --scope user "$MCP_NAME" >/dev/null 2>&1
     if [ -f "$SETTINGS" ] && jq -e . "$SETTINGS" >/dev/null 2>&1; then
         local tmp="$SETTINGS.ghostty-dock.tmp"
         jq '
             if .hooks then .hooks |= with_entries(
-                .value |= (map(.hooks |= map(select((.command // "") | test("ghostty-dock-(hook|context)") | not)))
+                .value |= (map(.hooks |= map(select((.command // "") | test("ghostty-dock-(hook|context|screen-gate)") | not)))
                            | map(select(.hooks | length > 0))))
             else . end
             | if (.theme // "") | startswith("custom:ghostty-dock-") then .theme |= ltrimstr("custom:ghostty-dock-") else . end
