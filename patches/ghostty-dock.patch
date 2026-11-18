@@ -14569,7 +14569,7 @@ index 47503dc..3070afa 100644
                          let keys = Array(environmentVariables.keys)
                          let values = Array(environmentVariables.values)
 diff --git a/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift b/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift
-index 3129acf..2a5df93 100644
+index 3129acf..0ad4ddb 100644
 --- a/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift	
 +++ b/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift	
 @@ -42,6 +42,10 @@ extension Ghostty {
@@ -14591,8 +14591,57 @@ index 3129acf..2a5df93 100644
              let surface = surface_cfg.withCValue(view: self) { surface_cfg_c in
                  ghostty_surface_new(app, &surface_cfg_c)
              }
-@@ -1497,9 +1502,18 @@ extension Ghostty {
+@@ -876,8 +881,25 @@ extension Ghostty {
+             setSurfaceSize(width: UInt32(scaledSize.width), height: UInt32(scaledSize.height))
+         }
  
++        /// Ghostty Dock: the clipboard's change count and the time at the last
++        /// left press, so a right-click can tell that an app that takes the
++        /// mouse (Claude Code's full-screen view) copied what was dragged over.
++        private var pressedAt: (count: Int, time: Date)?
++
++        /// The text an app that takes the mouse copied since the last left
++        /// press in this terminal, within two minutes: what the user selected.
++        private func appSelection() -> String? {
++            guard let pressedAt, surfaceModel?.mouseCaptured == true,
++                  Date().timeIntervalSince(pressedAt.time) < 120,
++                  NSPasteboard.general.changeCount != pressedAt.count,
++                  let text = NSPasteboard.general.string(forType: .string),
++                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
++            return text
++        }
++
+         override func mouseDown(with event: NSEvent) {
+             guard let surface = self.surface else { return }
++            pressedAt = (NSPasteboard.general.changeCount, Date())
+             let mods = Ghostty.ghosttyMods(event.modifierFlags)
+             ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, mods)
+         }
+@@ -919,6 +941,10 @@ extension Ghostty {
+         override func rightMouseDown(with event: NSEvent) {
+             guard let surface = self.surface else { return super.rightMouseDown(with: event) }
+ 
++            // Ghostty Dock: the app selected and copied text: show the menu
++            // to run it, rather than handing the app the right-click.
++            if appSelection() != nil { return super.rightMouseDown(with: event) }
++
+             let mods = Ghostty.ghosttyMods(event.modifierFlags)
+             if ghostty_surface_mouse_button(
+                 surface,
+@@ -1495,11 +1521,30 @@ extension Ghostty {
+             // in a row without storing it all.
+             var item: NSMenuItem
+ 
++            // Ghostty Dock: text an app that takes the mouse selected and
++            // copied (Claude Code's full-screen view) can be run too.
++            if (self.accessibilitySelectedText() ?? "").isEmpty, let text = appSelection(),
++               let command = DockSessions.runnable(text) {
++                item = menu.addItem(withTitle: "Run", action: #selector(runSelection(_:)), keyEquivalent: "")
++                item.image = NSImage(systemSymbolName: "play.fill", accessibilityDescription: "Run")
++                item.toolTip = command
++                item.representedObject = command
++            }
++
              // If we have a selection, add copy
              if let text = self.accessibilitySelectedText(), text.count > 0 {
 -                menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
@@ -14612,7 +14661,7 @@ index 3129acf..2a5df93 100644
  
              menu.addItem(.separator())
              item = menu.addItem(withTitle: "Split Right", action: #selector(splitRight(_:)), keyEquivalent: "")
-@@ -1529,6 +1543,11 @@ extension Ghostty {
+@@ -1529,6 +1574,11 @@ extension Ghostty {
  
          // MARK: Menu Handlers
  
