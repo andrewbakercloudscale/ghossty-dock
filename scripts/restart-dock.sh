@@ -51,6 +51,20 @@ GIVE_UP_SECS=$((4 * 3600))
 # never lands while you are typing; a key press starts the count again.
 INPUT_IDLE_SECS=10
 
+
+# "caffeinate -i " to keep the Mac awake while a session runs, as the
+# launcher does, unless CLAUDE_PANEL_CAFFEINATE is off in
+# ~/.config/claude-panel/options (Settings → App in Ghostty Dock).
+function awake() {
+    local opt="" line
+    [ -f "$HOME/.config/claude-panel/options" ] &&
+        while IFS= read -r line || [ -n "$line" ]; do
+            [[ "$line" == CLAUDE_PANEL_CAFFEINATE=* ]] && opt="${line#*=}"
+        done <"$HOME/.config/claude-panel/options"
+    opt="${opt//[\"\' ]/}"
+    case "$opt" in [Ff][Aa][Ll][Ss][Ee]|0|[Nn][Oo]|[Oo][Ff][Ff]) ;; *) printf 'caffeinate -i ' ;; esac
+}
+
 function usage() {
     cat <<EOM
 
@@ -585,7 +599,7 @@ function session_items() {
         # Once only: never a second tab on a session already back.
         running_anywhere "$sid" && continue
         surface=$(session_surface "$sid")
-        printf '%s\t%s\t%s\n' "${surface:--}" "$cwd" "caffeinate -i claude --resume $sid $flags"
+        printf '%s\t%s\t%s\n' "${surface:--}" "$cwd" "$(awake)claude --resume $sid $flags"
     done <<<"$1"
 }
 
@@ -718,7 +732,7 @@ function resume_all() {
         running_anywhere "$sid" && continue
         log "$(basename "$cwd") did not start; trying again ($(conditions))"
         wait_for_display
-        "$OPENER" --command "caffeinate -i claude --resume $sid $flags" "$cwd" >>"$LOG" 2>&1 \
+        "$OPENER" --command "$(awake)claude --resume $sid $flags" "$cwd" >>"$LOG" 2>&1 \
             || log "$(basename "$cwd"): opening the tab failed"
     done <<<"$sessions"
     sleep 20

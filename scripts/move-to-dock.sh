@@ -27,6 +27,20 @@ NOW=false
 REMOTE_NAME=""
 GIVE_UP_SECS=$((12 * 3600))
 
+
+# "caffeinate -i " to keep the Mac awake while a session runs, as the
+# launcher does, unless CLAUDE_PANEL_CAFFEINATE is off in
+# ~/.config/claude-panel/options (Settings → App in Ghostty Dock).
+function awake() {
+    local opt="" line
+    [ -f "$HOME/.config/claude-panel/options" ] &&
+        while IFS= read -r line || [ -n "$line" ]; do
+            [[ "$line" == CLAUDE_PANEL_CAFFEINATE=* ]] && opt="${line#*=}"
+        done <"$HOME/.config/claude-panel/options"
+    opt="${opt//[\"\' ]/}"
+    case "$opt" in [Ff][Aa][Ll][Ss][Ee]|0|[Nn][Oo]|[Oo][Ff][Ff]) ;; *) printf 'caffeinate -i ' ;; esac
+}
+
 function usage() {
     cat <<EOM
 
@@ -200,7 +214,7 @@ function move_one() {
         log "$(basename "$cwd"): busy (active ${quiet}s ago), waiting"
         return 1
     fi
-    local cmd="caffeinate -i claude --resume $sid $flags"
+    local cmd="$(awake)claude --resume $sid $flags"
     log "$(basename "$cwd"): moving ($cmd)"
     $dry && return 0
 
@@ -408,7 +422,7 @@ function undock() {
         [ $(($(date +%s) - started)) -gt "$GIVE_UP_SECS" ] && { log "$(basename "$cwd"): gave up"; return 1; }
         sleep 20
     done
-    local cmd="caffeinate -i claude --resume $sid $flags"
+    local cmd="$(awake)claude --resume $sid $flags"
     log "$(basename "$cwd"): ${mode}ing ($cmd)"
     $dry && return 0
     printf '%s\t%s\t%s\n' "$sid" "$cwd" "$flags" >>"$STATE_DIR/sessions-snapshot.tsv"
