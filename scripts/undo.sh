@@ -23,6 +23,20 @@ GHOSTTY_CONFIG="$HOME/.config/ghostty/config"
 SERVICES="$HOME/Library/Services"
 DISABLED_MARK="$STATE_DIR/disabled"
 
+
+# "caffeinate -i " to keep the Mac awake while a session runs, as the
+# launcher does, unless CLAUDE_PANEL_CAFFEINATE is off in
+# ~/.config/claude-panel/options (Settings → App in Ghostty Dock).
+function awake() {
+    local opt="" line
+    [ -f "$HOME/.config/claude-panel/options" ] &&
+        while IFS= read -r line || [ -n "$line" ]; do
+            [[ "$line" == CLAUDE_PANEL_CAFFEINATE=* ]] && opt="${line#*=}"
+        done <"$HOME/.config/claude-panel/options"
+    opt="${opt//[\"\' ]/}"
+    case "$opt" in [Ff][Aa][Ll][Ss][Ee]|0|[Nn][Oo]|[Oo][Ff][Ff]) ;; *) printf 'caffeinate -i ' ;; esac
+}
+
 function usage() {
     cat <<EOM
 
@@ -93,7 +107,7 @@ function reopen() {
         print_success "$name: already running"
         return
     fi
-    local cmd="caffeinate -i claude --resume $sid $flags"
+    local cmd="$(awake)claude --resume $sid $flags"
     if $list; then
         echo "  $name: $cmd"
         return

@@ -1660,7 +1660,7 @@ index 0000000..bf8c901
 +}
 diff --git a/macos/Sources/Features/Dock/DockAgentFindView.swift b/macos/Sources/Features/Dock/DockAgentFindView.swift
 new file mode 100644
-index 0000000..6b361b3
+index 0000000..5d0017a
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockAgentFindView.swift
 @@ -0,0 +1,436 @@
@@ -2044,7 +2044,7 @@ index 0000000..6b361b3
 +            error = "ghostty-dock-open is not installed: run install.sh again."
 +            return
 +        }
-+        _ = DockProcess.launch("/bin/bash", [opener, "--command", "caffeinate -i claude \(DockBypass.flags("--agent \(a.slug)"))", folder],
++        _ = DockProcess.launch("/bin/bash", [opener, "--command", DockAwake.command("claude \(DockBypass.flags("--agent \(a.slug)"))"), folder],
 +                               log: DockLog.sessions)
 +    }
 +
@@ -3808,10 +3808,10 @@ index 0000000..4d7dd95
 +}
 diff --git a/macos/Sources/Features/Dock/DockBypass.swift b/macos/Sources/Features/Dock/DockBypass.swift
 new file mode 100644
-index 0000000..81d3ee9
+index 0000000..a5887f7
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockBypass.swift
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,75 @@
 +import Foundation
 +
 +/// Every session starts with --dangerously-skip-permissions, as
@@ -3827,14 +3827,51 @@ index 0000000..81d3ee9
 +        return flags.isEmpty ? "--dangerously-skip-permissions" : "--dangerously-skip-permissions " + flags
 +    }
 +
++    private static let key = "CLAUDE_PANEL_BYPASS_PERMISSIONS"
++
++    static func set(_ on: Bool) {
++        DockOptions.set(key, on, about: "start sessions with --dangerously-skip-permissions")
++    }
++
++    static var enabled: Bool { DockOptions.bool(key) }
++}
++
++/// Every session runs under caffeinate -i, so the Mac does not sleep while
++/// it works, unless CLAUDE_PANEL_CAFFEINATE is off in the options file,
++/// which the launcher and the restart scripts read too.
++enum DockAwake {
++    private static let key = "CLAUDE_PANEL_CAFFEINATE"
++
++    static func set(_ on: Bool) {
++        DockOptions.set(key, on, about: "keep the Mac awake (caffeinate -i) while a session runs, however it was started")
++    }
++
++    static var enabled: Bool { DockOptions.bool(key) }
++
++    /// "caffeinate -i claude …", or "claude …" with the option off.
++    static func command(_ claude: String) -> String {
++        enabled ? "caffeinate -i " + claude : claude
++    }
++}
++
++/// ~/.config/claude-panel/options: KEY=true/false lines that
++/// ghostty-claude-launcher and the restart scripts read too.
++enum DockOptions {
 +    private static var path: String {
 +        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/claude-panel/options").path
 +    }
-+    private static let key = "CLAUDE_PANEL_BYPASS_PERMISSIONS"
 +
-+    /// Writes the choice to the options file, which ghostty-claude-launcher
-+    /// and the restart scripts read too, replacing any line it had.
-+    static func set(_ on: Bool) {
++    /// The key's last value; on unless it says false, 0, no or off.
++    static func bool(_ key: String) -> Bool {
++        guard let text = try? String(contentsOfFile: path, encoding: .utf8),
++              let line = text.split(separator: "\n").last(where: { $0.hasPrefix(key + "=") })
++        else { return true }
++        let v = line.dropFirst(key.count + 1).filter { !"\"' ".contains($0) }.lowercased()
++        return !["false", "0", "no", "off"].contains(v)
++    }
++
++    /// Writes the choice, replacing any line the key had.
++    static func set(_ key: String, _ on: Bool, about: String) {
 +        let old = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
 +        var lines = old.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
 +        if lines.last == "" { lines.removeLast() }
@@ -3843,20 +3880,11 @@ index 0000000..81d3ee9
 +            lines[i] = line
 +            lines.removeAll { $0.hasPrefix(key + "=") && $0 != line }
 +        } else {
-+            lines += ["# \(key): start sessions with --dangerously-skip-permissions", line]
++            lines += ["# \(key): \(about)", line]
 +        }
 +        try? FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent,
 +                                                 withIntermediateDirectories: true)
 +        try? (lines.joined(separator: "\n") + "\n").write(toFile: path, atomically: true, encoding: .utf8)
-+    }
-+
-+    static var enabled: Bool {
-+        guard let text = try? String(contentsOfFile: path, encoding: .utf8),
-+              let line = text.split(separator: "\n").last(where: { $0.hasPrefix("CLAUDE_PANEL_BYPASS_PERMISSIONS=") })
-+        else { return true }
-+        let v = line.dropFirst("CLAUDE_PANEL_BYPASS_PERMISSIONS=".count)
-+            .filter { !"\"' ".contains($0) }.lowercased()
-+        return !["false", "0", "no", "off"].contains(v)
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockCenteredTitle.swift b/macos/Sources/Features/Dock/DockCenteredTitle.swift
@@ -8100,7 +8128,7 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..db2e54c
+index 0000000..fa70298
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
 @@ -0,0 +1,2020 @@
@@ -9700,7 +9728,7 @@ index 0000000..db2e54c
 +        guard !name.isEmpty else { NSSound.beep(); return }
 +        let opener = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/ghostty-dock-open").path
 +        guard FileManager.default.isExecutableFile(atPath: opener) else { NSSound.beep(); return }
-+        DockProcess.launch("/bin/bash", [opener, "--command", "caffeinate -i claude \(DockBypass.flags("--worktree \(name)"))", root],
++        DockProcess.launch("/bin/bash", [opener, "--command", DockAwake.command("claude \(DockBypass.flags("--worktree \(name)"))"), root],
 +                           log: DockLog.sessions)
 +    }
 +
@@ -9819,7 +9847,7 @@ index 0000000..db2e54c
 +        DockLog.sessions.notice("reopen \(c.name, privacy: .public) (\(c.sessionId, privacy: .public))")
 +        DockHistory.shared.remove(c.sessionId)
 +        return DockProcess.launch("/bin/bash", [opener, "--command",
-+                                                "caffeinate -i claude --resume \(c.sessionId) \(DockBypass.flags(c.flags))", c.folder],
++                                                DockAwake.command("claude --resume \(c.sessionId) \(DockBypass.flags(c.flags))"), c.folder],
 +                                  log: DockLog.sessions)
 +    }
 +
@@ -10126,10 +10154,10 @@ index 0000000..db2e54c
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..b361284
+index 0000000..29f3ed7
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,480 @@
+@@ -0,0 +1,486 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -10233,6 +10261,7 @@ index 0000000..b361284
 +    @AppStorage(DockSettings.restoreSessionsKey) private var restoreSessions = true
 +    @AppStorage(DockSettings.remoteEverySessionKey) private var remoteEverySession = false
 +    @State private var skipPermissions = DockBypass.enabled
++    @State private var keepAwake = DockAwake.enabled
 +    @AppStorage(DockSettings.holdSessionsKey) private var holdSessions = true
 +    @AppStorage(DockSettings.themeKey) private var theme = ""
 +    @AppStorage(DockSettings.groupingKey) private var grouping = DockSettings.Grouping.none
@@ -10450,6 +10479,11 @@ index 0000000..b361284
 +                    get: { skipPermissions }, set: { skipPermissions = $0; DockBypass.set($0) }))
 +                    .onAppear { skipPermissions = DockBypass.enabled }
 +                Text("New, restarted, moved and reopened sessions start with --dangerously-skip-permissions, unless they were given a --permission-mode. A running session changes when it is next restarted. Saved in ~/.config/claude-panel/options, which your launcher reads too.")
++                    .font(.callout)
++                Toggle("Keep the Mac awake while sessions run", isOn: Binding(
++                    get: { keepAwake }, set: { keepAwake = $0; DockAwake.set($0) }))
++                    .onAppear { keepAwake = DockAwake.enabled }
++                Text("Sessions run under caffeinate -i, so the Mac does not go to sleep while Claude works. The screen still turns off, and closing the lid still sleeps it. New, restarted, moved and reopened sessions follow this; a running session changes when it is next restarted.")
 +                    .font(.callout)
 +                Toggle("Name every Remote Control session after its repo", isOn: $remoteEverySession)
 +                Text("Every five minutes, each running session's title on the phone is set to its repo, using your Claude login, so the phone's own titles are undone. Sessions are not restarted. The grey line under the title is the phone's and can't be changed.")
