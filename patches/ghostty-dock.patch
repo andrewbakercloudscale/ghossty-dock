@@ -8087,10 +8087,10 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..b892c7e
+index 0000000..db2e54c
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,2002 @@
+@@ -0,0 +1,2020 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -9607,6 +9607,23 @@ index 0000000..b892c7e
 +        return cmd.isEmpty ? nil : cmd
 +    }
 +
++    /// A script named on its own, as "install.sh" in a reply, is not on
++    /// PATH: zsh says "command not found". A file of that name in the
++    /// folder runs as "./install.sh", or "bash install.sh" if it is not
++    /// executable. Anything else is left as it is.
++    static func scriptCommand(_ command: String, in folder: String) -> String {
++        guard !folder.isEmpty else { return command }
++        let parts = command.split(separator: " ", maxSplits: 1)
++        guard let first = parts.first.map(String.init),
++              !first.hasPrefix("/"), !first.hasPrefix("./"), !first.hasPrefix("~") else { return command }
++        let path = (folder as NSString).appendingPathComponent(first)
++        var isDir: ObjCBool = false
++        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir), !isDir.boolValue else { return command }
++        let rest = parts.count > 1 ? " " + parts[1] : ""
++        if FileManager.default.isExecutableFile(atPath: path) { return "./" + first + rest }
++        return (first.hasSuffix(".py") ? "python3 " : "bash ") + first + rest
++    }
++
 +    /// Run a command in a new child terminal of the tab it was picked in:
 +    /// a shell in the same folder with the command typed and entered, so
 +    /// its output stays and the shell is there after it.
@@ -9615,8 +9632,9 @@ index 0000000..b892c7e
 +              let ghostty = (NSApp.delegate as? AppDelegate)?.ghostty else { NSSound.beep(); return }
 +        let row = rows.first { $0.controller?.window === window }
 +        var config = Ghostty.SurfaceConfiguration()
-+        if let folder = row.map({ $0.project ?? $0.detail }), !folder.isEmpty { config.workingDirectory = folder }
-+        config.initialInput = command + "\n"
++        let folder = row.map { $0.project ?? $0.detail } ?? ""
++        if !folder.isEmpty { config.workingDirectory = folder }
++        config.initialInput = Self.scriptCommand(command, in: folder) + "\n"
 +        guard let child = TerminalController.newTab(ghostty, from: window, withBaseConfig: config) else { return }
 +        if let row { children[ObjectIdentifier(child)] = row.parent ?? row.key }
 +        DockLog.sessions.notice("run in child: \(command, privacy: .public)")
