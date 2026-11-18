@@ -8067,10 +8067,10 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..c1868ed
+index 0000000..d68e8ff
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,1968 @@
+@@ -0,0 +1,1972 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -8939,6 +8939,9 @@ index 0000000..c1868ed
 +    /// The timer Claude Code shows while it works, "✻ Burrowing… (8m 37s ·
 +    /// ↓ 9.4k tokens)", or its hints then: "esc to interrupt", and "ctrl+b
 +    /// to run in background" in place of it while a command runs, and
++    /// "Metamorphosing… (running PreToolUse hooks… 1/2 · 1m 16s" while a
++    /// hook holds a tool call (the screen gate waiting for a pause in your
++    /// typing),
 +    /// "Waiting for API response · will retry in 1m 38s" while it waits out
 +    /// an API error to try again, or "Waiting for 1 background agent to
 +    /// finish" once a turn has ended with an agent still at work (its tool
@@ -8951,7 +8954,8 @@ index 0000000..c1868ed
 +            .suffix(20).joined(separator: "\n")
 +        return tail.contains("esc to interrupt") || tail.contains("to run in background")
 +            || tail.contains("Waiting for API response") || tail.contains("will retry in")
-+            || tail.range(of: #"… \(\d+[hms]"#, options: .regularExpression) != nil
++            || tail.range(of: #"… \([^)\n]*?\d+[hms]"#, options: .regularExpression) != nil
++            || tail.contains("running PreToolUse hooks") || tail.contains("running PostToolUse hooks")
 +            || tail.range(of: #"Waiting for \d+ background (agent|task)"#, options: .regularExpression) != nil
 +    }
 +
@@ -10660,10 +10664,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..d46f1e0
+index 0000000..352168b
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1713 @@
+@@ -0,0 +1,1714 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -11723,7 +11727,8 @@ index 0000000..d46f1e0
 +    private var accent: Color { row.tag.map(DockPalette.color) ?? DockPalette.blue }
 +
 +    private func subtitle(now: Date) -> String {
-+        let label = row.scripting ? (row.scripts == 1 ? "Waiting on a\(row.waitKind == "agent" ? "n" : "") \(row.waitKind)" : "Waiting on \(row.scripts) \(row.waitKind)s")
++        let gated = row.sessionId.map { sid in DockScreenGate.shared.waits.contains { $0.session_id == sid } } ?? false
++        let label = gated ? "Waiting for a pause in your typing" : row.scripting ? (row.scripts == 1 ? "Waiting on a\(row.waitKind == "agent" ? "n" : "") \(row.waitKind)" : "Waiting on \(row.scripts) \(row.waitKind)s")
 +            : DockPalette.label(row.status)
 +        var parts = [label]
 +        if let since = row.since { parts.append(elapsed(now.timeIntervalSince(since))) }
