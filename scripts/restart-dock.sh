@@ -227,55 +227,69 @@ function turn_ended() {
           else empty end' 2>/dev/null | tail -1 | grep -qx ended
 }
 
-function quiet_secs() {
-    local cwd="$1"
-    local sid="$2"
-    local file
-    file="$HOME/.claude/projects/$(sed 's/[^A-Za-z0-9]/-/g' <<<"$cwd")/$sid.jsonl"
-    # A session whose transcript saving is off looks quiet forever, so the
-    # hook's status counts too, unless the transcript shows the turn is over:
-    # an API error or Esc ends it without the hook hearing.
-    if grep -lq "\"session_id\":\"$sid\".*\"status\":\"running\"\|\"status\":\"running\".*\"session_id\":\"$sid\"" "$STATE_DIR"/sessions/*.json 2>/dev/null &&
-        ! turn_ended "$file"; then
-        echo 0
-        return
-    fi
-    [ -f "$file" ] || { echo 999999; return; }
-    echo $(($(date +%s) - $(stat -f %m "$file")))
-}
-
 # Waits until no session has been busy for QUIET_SECS and you have not
 # typed for INPUT_IDLE_SECS, both at once; checks every second, so a key
 # press or a session waking puts the countdown back.
+#
+# Each second costs a few processes however many sessions there are (one
+# grep, one stat, one ioreg, the sleep): a process per session per second
+# was 60 new processes a second with a dozen tabs open. A session counts
+# as busy while its transcript changed in the last QUIET_SECS, or while
+# the hook says it is running, unless the transcript shows the turn is
+# over (an API error or Esc ends it without the hook hearing; transcript
+# saving off looks quiet forever, so the hook's word counts too).
 function wait_until_quiet() {
     local sessions="$1"
-    local started last=""
-    started=$(date +%s)
+    local base=$(date +%s) last=""
+    local -a cwds=() sids=() files=() ended_at=() ended=()
+    local cwd sid flags n=0 i
+    while IFS=$'\t' read -r cwd sid flags; do
+        [ -z "$sid" ] && continue
+        cwds[n]="$cwd"; sids[n]="$sid"
+        files[n]="$HOME/.claude/projects/$(sed 's/[^A-Za-z0-9]/-/g' <<<"$cwd")/$sid.jsonl"
+        ended_at[n]=""; ended[n]=1
+        n=$((n + 1))
+    done <<<"$sessions"
     while true; do
-        local busy="" active="" left=0 idle typing
-        local cwd sid flags
-        while IFS=$'\t' read -r cwd sid flags; do
-            [ -z "$sid" ] && continue
-            local q
-            q=$(quiet_secs "$cwd" "$sid")
+        local now=$((base + SECONDS)) busy="" active="" left=0 idle=0 typing running mtimes
+        running=$(grep -h '"status":"running"' "$STATE_DIR"/sessions/*.json 2>/dev/null)
+        mtimes=$'\n'$(stat -f '%m %N' "${files[@]}" 2>/dev/null)$'\n'
+        for ((i = 0; i < n; i++)); do
+            local m q
+            m="${mtimes%%" ${files[i]}"$'\n'*}"
+            if [ "$m" = "$mtimes" ]; then m=""; else m="${m##*$'\n'}"; fi
+            q=$([ -n "$m" ] && echo $((now - m)) || echo 999999)
+            if [[ "$running" == *"\"session_id\":\"${sids[i]}\""* ]]; then
+                # Only read again when the transcript has changed.
+                if [ "${ended_at[i]}" != "$m" ]; then
+                    ended_at[i]="$m"
+                    turn_ended "${files[i]}" && ended[i]=1 || ended[i]=0
+                fi
+                [ "${ended[i]}" = 0 ] && q=0
+            fi
             [ "$q" -lt "$QUIET_SECS" ] || continue
-            busy="$busy $(basename "$cwd")"
-            [ "$q" -lt 5 ] && active="${active:+$active, }$(basename "$cwd")"
+            busy="$busy ${cwds[i]##*/}"
+            [ "$q" -lt 5 ] && active="${active:+$active, }${cwds[i]##*/}"
             [ $((QUIET_SECS - q)) -gt "$left" ] && left=$((QUIET_SECS - q))
-        done <<<"$sessions"
-        idle=$(input_idle_secs)
-        typing=$((INPUT_IDLE_SECS - ${idle:-$INPUT_IDLE_SECS}))
+        done
+        # Typing only matters once no session is active.
+        if [ -z "$active" ]; then
+            idle=$(input_idle_secs)
+            idle=${idle:-$INPUT_IDLE_SECS}
+        fi
+        typing=$((INPUT_IDLE_SECS - idle))
+        [ -n "$active" ] && typing=0
         [ -z "$busy" ] && [ "$typing" -le 0 ] && return 0
-        if [ $(($(date +%s) - started)) -gt "$GIVE_UP_SECS" ]; then
+        if [ $((now - base)) -gt "$GIVE_UP_SECS" ]; then
             log "gave up: still busy:$busy"
             return 1
         fi
         if [ -n "$active" ]; then
             status busy 0 "$active"
         elif [ "$typing" -gt "$left" ]; then
-            status typing $(($(date +%s) + typing))
+            status typing $((now + typing))
         else
-            status quiet $(($(date +%s) + left))
+            status quiet $((now + left))
         fi
         [ "$busy" != "$last" ] && [ -n "$busy" ] && log "waiting for:$busy"
         last="$busy"
@@ -283,9 +297,11 @@ function wait_until_quiet() {
     done
 }
 
-# Seconds since the last key press, click or mouse move.
+# Seconds since the last key press, click or mouse move (one ioreg, no awk).
 function input_idle_secs() {
-    ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print int($NF / 1000000000); exit}'
+    local out
+    out=$(ioreg -c IOHIDSystem 2>/dev/null)
+    [[ "$out" =~ \"HIDIdleTime\"\ =\ ([0-9]+) ]] && echo $((BASH_REMATCH[1] / 1000000000))
 }
 
 function wait_for_input_idle() {
