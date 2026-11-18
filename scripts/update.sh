@@ -103,10 +103,36 @@ function newer() {
     return 1
 }
 
+# A "commit" line per change in each release newer than version $1, newest
+# first, from the "## What's new" list release.sh writes into its notes.
+# False when there are none (older releases have no list).
+function release_changes() {
+    local installed="$1" json tag date body line n=0 inside
+    json=$(curl -sSL --proto '=https' --max-time 30 "https://api.github.com/repos/$REPO/releases?per_page=30" 2>/dev/null) ||
+        return 1
+    while IFS=$'\t' read -r tag date; do
+        newer "${tag#v}" "$installed" || continue
+        body=$(jq -r --arg t "$tag" '.[] | select(.tag_name == $t) | .body // ""' <<<"$json" 2>/dev/null)
+        inside=false
+        while IFS= read -r line; do
+            line=${line%$'\r'}
+            case "$line" in
+            "## What's new"*) inside=true ;;
+            "") ;;
+            "- "*) $inside || continue
+                n=$((n + 1))
+                [ "$n" -le 40 ] && printf 'commit\t%s\t%s\t%s\n' "$tag" "$date" "${line#- }" ;;
+            *) inside=false ;;
+            esac
+        done <<<"$body"
+    done < <(jq -r '.[] | select(.draft | not) | [.tag_name, .published_at] | @tsv' <<<"$json" 2>/dev/null)
+    [ "$n" -gt 0 ]
+}
+
 # The same lines as check(), from GitHub's latest release.
 function check_release() {
     local json code
-    json=$(curl -sSL --max-time 30 -w '\n%{http_code}' "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null)
+    json=$(curl -sSL --proto '=https' --max-time 30 -w '\n%{http_code}' "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null)
     code=${json##*$'\n'}
     json=${json%$'\n'*}
     case "$code" in
@@ -125,7 +151,8 @@ function check_release() {
     printf 'ahead\t0\n'
     if newer "${tag#v}" "${installed:-0}"; then
         printf 'behind\t1\n'
-        printf 'commit\t%s\t%s\tGhostty Dock %s\n' "$tag" "$date" "${tag#v}"
+        release_changes "${installed:-0}" ||
+            printf 'commit\t%s\t%s\tGhostty Dock %s\n' "$tag" "$date" "${tag#v}"
     else
         printf 'behind\t0\n'
     fi
