@@ -5153,7 +5153,7 @@ index 0000000..1a3f9cd
 +}
 diff --git a/macos/Sources/Features/Dock/DockHold.swift b/macos/Sources/Features/Dock/DockHold.swift
 new file mode 100644
-index 0000000..d6fa65f
+index 0000000..013418a
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockHold.swift
 @@ -0,0 +1,55 @@
@@ -5200,7 +5200,7 @@ index 0000000..d6fa65f
 +        try? "\(getpid())\n".write(to: holdDir.appendingPathComponent("quitting"), atomically: true, encoding: .utf8)
 +    }
 +
-+    private static var loginShell: String {
++    static var loginShell: String {
 +        if let pw = getpwuid(getuid()), let shell = pw.pointee.pw_shell {
 +            let s = String(cString: shell)
 +            if !s.isEmpty { return s }
@@ -5208,7 +5208,7 @@ index 0000000..d6fa65f
 +        return ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
 +    }
 +
-+    private static func quote(_ s: String) -> String {
++    static func quote(_ s: String) -> String {
 +        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
 +    }
 +}
@@ -8128,10 +8128,10 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..fa70298
+index 0000000..c80587d
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,2020 @@
+@@ -0,0 +1,2026 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -9675,7 +9675,13 @@ index 0000000..fa70298
 +        var config = Ghostty.SurfaceConfiguration()
 +        let folder = row.map { $0.project ?? $0.detail } ?? ""
 +        if !folder.isEmpty { config.workingDirectory = folder }
-+        config.initialInput = Self.scriptCommand(command, in: folder) + "\n"
++        // Run by the shell, not typed into it: typed before the prompt, the
++        // terminal echoed it once more above "Last login". Shown dimmed,
++        // then the shell stays for whatever comes next.
++        let shell = DockHold.loginShell
++        let line = Self.scriptCommand(command, in: folder)
++        let script = "printf '\\033[2m$ %s\\033[0m\\n' \(DockHold.quote(line)); \(line); exec \(DockHold.quote(shell)) -l"
++        config.command = "\(DockHold.quote(shell)) -lc \(DockHold.quote(script))"
 +        guard let child = TerminalController.newTab(ghostty, from: window, withBaseConfig: config) else { return }
 +        if let row { children[ObjectIdentifier(child)] = row.parent ?? row.key }
 +        DockLog.sessions.notice("run in child: \(command, privacy: .public)")
@@ -13155,10 +13161,10 @@ index 0000000..0a5e412
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..199fadc
+index 0000000..0796af7
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
-@@ -0,0 +1,405 @@
+@@ -0,0 +1,406 @@
 +import AppKit
 +import Combine
 +
@@ -13174,7 +13180,8 @@ index 0000000..199fadc
 +    }
 +
 +    struct Change: Identifiable, Equatable {
-+        var id: String { sha }
++        // A release's changes share its tag.
++        var id: String { sha + "\t" + title }
 +        let sha: String
 +        let date: Date?
 +        let title: String
