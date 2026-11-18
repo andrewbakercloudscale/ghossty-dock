@@ -91,12 +91,22 @@ function main() {
         command -v gh >/dev/null || { echo "Error: gh is required to publish" >&2; exit 1; }
         # Under a fixed name too, for get.sh's releases/latest/download link.
         cp "$zip" "$OUT/Ghostty-Dock.zip" || exit 1
-        gh release create "v$version" "$zip" "$OUT/Ghostty-Dock.zip" --target "$(git -C "$ROOT" rev-parse HEAD)" \
-            --title "Ghostty Dock $version" --notes "$(release_notes "$commit" "$signed")" || exit 1
+        # get.sh refuses a zip that does not match this.
+        (cd "$OUT" && shasum -a 256 "$(basename "$zip")" >"$zip.sha256" &&
+            shasum -a 256 Ghostty-Dock.zip >Ghostty-Dock.zip.sha256) || exit 1
+        # What changed since the last release, for the notes and the app's
+        # update banner (update.sh reads the "## What's new" list).
+        local prev changes=""
+        prev=$(gh release view --json targetCommitish -q .targetCommitish 2>/dev/null)
+        [ -n "$prev" ] && git -C "$ROOT" cat-file -e "$prev^{commit}" 2>/dev/null &&
+            changes=$(git -C "$ROOT" log --no-merges --format='- %s' "$prev..HEAD" | head -40)
+        gh release create "v$version" "$zip" "$zip.sha256" "$OUT/Ghostty-Dock.zip" "$OUT/Ghostty-Dock.zip.sha256" --target "$(git -C "$ROOT" rev-parse HEAD)" \
+            --title "Ghostty Dock $version" --notes "$(release_notes "$commit" "$signed" "$changes")" || exit 1
     fi
 }
 
 function release_notes() {
+    [ -n "${3:-}" ] && printf "## What's new\n\n%s\n\n" "$3"
     cat <<EOM
 Built from $1. Signed: $2. Needs a Mac with Apple silicon.
 
