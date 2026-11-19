@@ -8128,10 +8128,10 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..c80587d
+index 0000000..270e537
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,2026 @@
+@@ -0,0 +1,2031 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -9285,8 +9285,13 @@ index 0000000..c80587d
 +                : !title.isEmpty ? title
 +                : Self.folderName(pwd)
 +            let key = best?.sid ?? resuming ?? "dir:" + pwd
++            // A session being restarted keeps its place: its old tab turns
++            // into a shell for a moment before closing, and handing the
++            // place to that shell sent the new tab to the bottom.
 +            if let old = tabKeys[id], old.controller === controller, old.key != key,
-+               !liveSids.contains(old.key), !built.contains(where: { $0.key == key }) {
++               !liveSids.contains(old.key), !restarting.contains(old.key),
++               !tabKeys.contains(where: { $0.key != id && $0.value.key == old.key }),
++               !built.contains(where: { $0.key == key }) {
 +                carry(from: old.key, to: key)
 +            }
 +            tabKeys[id] = TabKey(key: key, controller: controller)
