@@ -8128,10 +8128,10 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..270e537
+index 0000000..cbcf9a2
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,2031 @@
+@@ -0,0 +1,2036 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -9039,6 +9039,11 @@ index 0000000..270e537
 +    static func backgroundWait(_ screen: String) -> (count: Int, kind: String)? {
 +        let tail = screen.split(separator: "\n").filter { $0.contains { !$0.isWhitespace } }
 +            .suffix(20).joined(separator: "\n")
++        // Newer Claude Code ends a turn with "· 1 shell still running".
++        if let r = tail.range(of: #"\d+ shells? still running"#, options: .regularExpression),
++           let n = Int(tail[r].prefix { $0.isNumber }), n > 0 {
++            return (n, "shell")
++        }
 +        guard let r = tail.range(of: #"Waiting for \d+ background (agent|task)"#, options: .regularExpression)
 +        else { return nil }
 +        let words = tail[r].split(separator: " ")
@@ -10790,7 +10795,7 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..6599ce8
+index 0000000..6a09929
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
 @@ -0,0 +1,1768 @@
@@ -11562,10 +11567,10 @@ index 0000000..6599ce8
 +                    .dockTip("Claude is starting in this tab")
 +            } else if row.scripting {
 +                Image(systemName: "hourglass")
-+                    .font(.system(size: 13, weight: .semibold))
-+                    .foregroundStyle(DockPalette.teal)
++                    .font(.system(size: 13, weight: .bold))
++                    .foregroundStyle(DockPalette.color(DockTag.orange))
 +                    .frame(width: 18, height: 18)
-+                    .dockTip("Its turn is over, but it is waiting on \(row.waitKind == "script" ? "a script" : "background \(row.waitKind)s") it started")
++                    .dockTip("Its turn is over, but \(row.waitKind == "script" ? "a script" : "background \(row.waitKind)s") it started \(row.waitKind == "script" ? "is" : "are") still running")
 +            } else {
 +                DockStatusDot(status: row.status).id(row.status)
 +            }
@@ -11587,9 +11592,9 @@ index 0000000..6599ce8
 +                }
 +                TimelineView(.periodic(from: .now, by: 30)) { ctx in
 +                    Text(row.failed ? "Didn't start · see the tab" : subtitle(now: ctx.date))
-+                        .font(.system(size: 10.5))
++                        .font(.system(size: 10.5, weight: row.scripting ? .semibold : .regular))
 +                        .foregroundStyle(row.failed ? DockPalette.color(DockTag.red)
-+                                         : row.scripting ? DockPalette.teal : DockPalette.color(row.status))
++                                         : row.scripting ? DockPalette.color(DockTag.orange) : DockPalette.color(row.status))
 +                        .lineLimit(1)
 +                }
 +                if let line = workspace?.summary {
@@ -11831,7 +11836,7 @@ index 0000000..6599ce8
 +
 +    private func subtitle(now: Date) -> String {
 +        let gated = row.sessionId.map { sid in DockScreenGate.shared.waits.contains { $0.session_id == sid } } ?? false
-+        let label = row.starting ? "Starting…" : gated ? "Waiting for a pause in your typing" : row.scripting ? (row.scripts == 1 ? "Waiting on a\(row.waitKind == "agent" ? "n" : "") \(row.waitKind)" : "Waiting on \(row.scripts) \(row.waitKind)s")
++        let label = row.starting ? "Starting…" : gated ? "Waiting for a pause in your typing" : row.scripting ? (row.waitKind == "shell" ? "\(row.scripts) shell\(row.scripts == 1 ? "" : "s") still running" : row.scripts == 1 ? "Waiting on a\(row.waitKind == "agent" ? "n" : "") \(row.waitKind)" : "Waiting on \(row.scripts) \(row.waitKind)s")
 +            : DockPalette.label(row.status)
 +        var parts = [label]
 +        if let since = row.since { parts.append(elapsed(now.timeIntervalSince(since))) }
