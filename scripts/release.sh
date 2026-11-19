@@ -6,7 +6,7 @@
 # Gatekeeper warning; otherwise it is signed only for this Mac and says so.
 # Publishing to GitHub Releases is a separate, explicit step (--publish).
 
-DEPENDENCIES=(ditto codesign git)
+DEPENDENCIES=(ditto codesign git shasum)
 SCRIPT_NAME=$(basename "$0")
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 APP="$HOME/Applications/Ghostty Dock.app"
@@ -68,6 +68,16 @@ function main() {
         echo "== sign: $DEVELOPER_ID"
         codesign --force --deep --options runtime --timestamp --sign "$DEVELOPER_ID" "$dir/Ghostty Dock.app" || exit 1
         signed="Developer ID"
+    fi
+    # get.sh installs only apps signed by a certificate in its SIGNERS list.
+    local certs leaf
+    certs=$(mktemp -d) && (cd "$certs" && codesign -d --extract-certificates=cert "$dir/Ghostty Dock.app" 2>/dev/null) &&
+        leaf=$(shasum -a 1 "$certs/cert0" | awk '{print $1}')
+    rm -rf "$certs"
+    if [ -z "$leaf" ] || ! grep -q "^ *$leaf" "$ROOT/get.sh"; then
+        echo "Error: the app is signed by a certificate get.sh does not trust (${leaf:-none})." >&2
+        echo "       Add its SHA-1 to SIGNERS in get.sh, commit, push and release once before switching to it." >&2
+        exit 1
     fi
 
     local zip="$OUT/Ghostty-Dock-$version.zip"

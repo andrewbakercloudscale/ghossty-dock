@@ -1,14 +1,13 @@
-#!/usr/bin/env bash
+#! /usr/bin/env bash
 
 # Installs Ghostty Dock from its latest GitHub release, with nothing to build.
-# Run only this one line; pasting this file's text into zsh fails with
-# "event not found" (zsh reads the "!" in the first line as history):
+# Run it with this one line rather than pasting the file's text into a shell:
 #
 #     curl -fsSL https://raw.githubusercontent.com/andrewbakercloudscale/ghossty-dock/main/get.sh | bash
 #
 # The zip is fetched over HTTPS only and checked against the SHA-256 the
-# release publishes beside it, and the app's signature must be intact,
-# before anything is unpacked.
+# release publishes beside it. The app's signature must be intact and made
+# by one of the certificates in SIGNERS, before anything is unpacked.
 #
 # Unpacks the release into ~/.local/share/ghostty-dock, runs its install.sh
 # and opens the app. Run it again to update. Downloaded with curl, the app
@@ -19,6 +18,13 @@ SCRIPT_NAME=$(basename "$0")
 REPO="andrewbakercloudscale/ghossty-dock"
 ZIP_URL="${GHOSTTY_DOCK_ZIP_URL:-https://github.com/$REPO/releases/latest/download/Ghostty-Dock.zip}"
 DEST="$HOME/.local/share/ghostty-dock"
+# SHA-1 of the certificates releases are signed with. They live here, in the
+# repo, not in the release: a swapped zip would also need a change to this
+# file. release.sh refuses to publish an app signed by anything else. Add a
+# new certificate here (and release once) before switching to it.
+SIGNERS=(
+    cd657e31a5b785053512ed8d8303656588a89dc4 # Ghostty Dock Local (release Mac)
+)
 APP="$HOME/Applications/Ghostty Dock.app"
 
 function usage() {
@@ -67,6 +73,21 @@ function verify_checksum() {
     say "Checksum matches ($got)"
 }
 
+# The app must be signed by a certificate in SIGNERS. A zip from
+# GHOSTTY_DOCK_ZIP_URL signed by anything else is installed with a warning.
+function verify_signer() {
+    local app="$1" req="" sha
+    for sha in "${SIGNERS[@]}"; do
+        req+="${req:+ or }certificate leaf = H\"$sha\""
+    done
+    codesign --verify --deep --strict -R "=$req" "$app" 2>/dev/null && return 0
+    if [ -n "${GHOSTTY_DOCK_ZIP_URL:-}" ]; then
+        printf '\033[0;33mWarning:\033[0m %s is not signed by a known Ghostty Dock certificate\n' "$ZIP_URL" >&2
+        return 0
+    fi
+    die "the app is not signed by a known Ghostty Dock certificate. Nothing was installed. If you updated from inside the app, get the newest installer: curl -fsSL https://raw.githubusercontent.com/$REPO/main/get.sh | bash"
+}
+
 function main() {
     local open=true
     while [ $# -gt 0 ]; do
@@ -100,6 +121,7 @@ function main() {
         die "the download does not hold Ghostty Dock"
     codesign --verify --deep --strict "$tmp/unzipped/Ghostty Dock/Ghostty Dock.app" 2>/dev/null ||
         die "the app's signature is broken: it was changed after it was built. Nothing was installed."
+    verify_signer "$tmp/unzipped/Ghostty Dock/Ghostty Dock.app"
 
     say "Unpacking into $DEST"
     mkdir -p "$(dirname "$DEST")" || die "could not create $(dirname "$DEST")"
