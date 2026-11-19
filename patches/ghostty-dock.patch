@@ -10790,10 +10790,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..97967c4
+index 0000000..6599ce8
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1775 @@
+@@ -0,0 +1,1768 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -10987,9 +10987,8 @@ index 0000000..97967c4
 +                    onClose: { model.closeTab(row) },
 +                    onUndock: { model.undock(row) },
 +                    onRestart: { model.whenTabsOpen { model.restart(row) } })
-+            // A child terminal is indented under its session.
-+            // A running session steps in from the left, so what's running
-+            // stands out down the list; the selected one steps in further.
++            // Only a child terminal is indented, under its session: a row
++            // stepping in for any other reason read as a child.
 +            .padding(.leading, indent(row))
 +            // A dotted elbow from the session above to each of its terminals,
 +            // starting under the session wherever it has stepped in to.
@@ -10998,8 +10997,6 @@ index 0000000..97967c4
 +                    DockChildLine(start: parentIndent(row), width: indent(row), moreBelow: moreBelow)
 +                }
 +            }
-+            .animation(.easeInOut(duration: 0.25), value: row.status == .running || row.scripting)
-+            .animation(.easeInOut(duration: 0.2), value: row.selected)
 +            .onTapGesture { model.select(row) }
 +            // Raised: a little larger and lifted, drawn above its neighbours.
 +            .scaleEffect(row.selected ? 1.025 : 1)
@@ -11011,14 +11008,10 @@ index 0000000..97967c4
 +            .overlay(alignment: .top) { dropLine(dropTarget == row.key).offset(y: -2) }
 +    }
 +
-+    /// A child terminal sits a little in under its session; a running
-+    /// row (or one waiting on a script it started) steps in from the left
-+    /// and the selected one further.
-+    /// A child moves with its session: when the session steps in, so does it.
++    /// A child terminal sits a little in under its session; nothing else
++    /// is indented, so an indent always means a child.
 +    static func indent(_ row: DockSessions.Row) -> CGFloat {
-+        let busy = row.status == .running || row.scripting
-+        return row.parent != nil ? 14 + (row.selected ? 10 : busy ? 6 : 0)
-+            : row.selected ? 30 : busy ? 16 : 0
++        row.parent != nil ? 14 : 0
 +    }
 +
 +    private func parentIndent(_ row: DockSessions.Row) -> CGFloat {
