@@ -5256,6 +5256,43 @@ index 0000000..4b8472f
 +        }, 1, &spec, nil, nil)
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockImagePaste.swift b/macos/Sources/Features/Dock/DockImagePaste.swift
+new file mode 100644
+index 0000000..b35bf4a
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockImagePaste.swift
+@@ -0,0 +1,31 @@
++import AppKit
++
++/// ⌘V pastes an image. Claude Code takes an image on Ctrl+V (it reads the
++/// clipboard itself), and ⌘V with only an image on the clipboard used to do
++/// nothing. So when the clipboard holds an image and no text or file, ⌘V
++/// presses Ctrl+V in the terminal instead.
++enum DockImagePaste {
++    static let imageTypes: [NSPasteboard.PasteboardType] = [
++        .png, .tiff, .init("public.jpeg"), .init("public.heic"), .init("com.compuserve.gif"),
++    ]
++
++    /// True when the clipboard is an image only: no file (a file pastes its
++    /// path) and no text (text pastes as text, even with a picture beside it).
++    static func isImageOnly(_ pasteboard: NSPasteboard) -> Bool {
++        guard pasteboard.availableType(from: imageTypes) != nil else { return false }
++        if let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL], !urls.isEmpty { return false }
++        if let text = pasteboard.string(forType: .string), !text.isEmpty { return false }
++        return true
++    }
++
++    /// Presses Ctrl+V in the surface if the clipboard is an image only.
++    @MainActor
++    @discardableResult
++    static func pasteIfImage(_ pasteboard: NSPasteboard, into view: Ghostty.SurfaceView) -> Bool {
++        guard isImageOnly(pasteboard), let surface = view.surfaceModel else { return false }
++        let v = UInt32(("v" as Unicode.Scalar).value)
++        surface.sendKeyEvent(.init(key: .v, action: .press, mods: .ctrl, unshiftedCodepoint: v))
++        surface.sendKeyEvent(.init(key: .v, action: .release, mods: .ctrl, unshiftedCodepoint: v))
++        return true
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockLayerAnimation.swift b/macos/Sources/Features/Dock/DockLayerAnimation.swift
 new file mode 100644
 index 0000000..db9ed48
@@ -14628,10 +14665,24 @@ index e19d671..ea8d897 100644
      }
  
 diff --git a/macos/Sources/Ghostty/Ghostty.App.swift b/macos/Sources/Ghostty/Ghostty.App.swift
-index 2f0644b..000bcdb 100644
+index 2f0644b..12cd654 100644
 --- a/macos/Sources/Ghostty/Ghostty.App.swift
 +++ b/macos/Sources/Ghostty/Ghostty.App.swift
-@@ -549,7 +549,12 @@ extension Ghostty {
+@@ -334,6 +334,13 @@ extension Ghostty {
+             // Get our pasteboard
+             guard let pasteboard = NSPasteboard.ghostty(location) else { return false }
+ 
++            // Ghostty Dock: an image alone on the clipboard pastes as Ctrl+V,
++            // the key Claude Code takes images on.
++            if location == GHOSTTY_CLIPBOARD_STANDARD, DockImagePaste.isImageOnly(pasteboard) {
++                DispatchQueue.main.async { DockImagePaste.pasteIfImage(pasteboard, into: surfaceView) }
++                return false
++            }
++
+             // Return false if there is no text-like clipboard content so
+             // performable paste bindings can pass through to the terminal.
+             guard let str = pasteboard.getOpinionatedStringContents() else { return false }
+@@ -549,7 +556,12 @@ extension Ghostty {
                  pwdChanged(app, target: target, v: action.action.pwd)
  
              case GHOSTTY_ACTION_OPEN_CONFIG:
@@ -14644,7 +14695,7 @@ index 2f0644b..000bcdb 100644
  
              case GHOSTTY_ACTION_FLOAT_WINDOW:
                  toggleFloatWindow(app, target: target, mode: action.action.float_window)
-@@ -621,7 +626,7 @@ extension Ghostty {
+@@ -621,7 +633,7 @@ extension Ghostty {
                  checkForUpdates(app)
  
              case GHOSTTY_ACTION_OPEN_URL:
@@ -14653,7 +14704,7 @@ index 2f0644b..000bcdb 100644
  
              case GHOSTTY_ACTION_UNDO:
                  return undo(app, target: target)
-@@ -700,7 +705,8 @@ extension Ghostty {
+@@ -700,7 +712,8 @@ extension Ghostty {
          }
  
          private static func openURL(
@@ -14663,7 +14714,7 @@ index 2f0644b..000bcdb 100644
          ) -> Bool {
              let action = Ghostty.Action.OpenURL(c: v)
  
-@@ -718,6 +724,15 @@ extension Ghostty {
+@@ -718,6 +731,15 @@ extension Ghostty {
                  url = URL(filePath: expandedPath)
              }
  
