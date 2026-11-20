@@ -10716,6 +10716,66 @@ index 0000000..29f3ed7
 +        }
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockShellBadge.swift b/macos/Sources/Features/Dock/DockShellBadge.swift
+new file mode 100644
+index 0000000..9e310ca
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockShellBadge.swift
+@@ -0,0 +1,54 @@
++import SwiftUI
++
++/// A bold orange badge on the terminal itself while the session's turn is
++/// over but a shell, script or background agent it started is still running.
++/// Claude Code only says so in a grey line of text that is easy to miss.
++struct DockShellBadge: View {
++    @ObservedObject private var sessions = DockSessions.shared
++    let surfaceView: Ghostty.SurfaceView
++    @State private var pulse = false
++
++    private var row: DockSessions.Row? {
++        sessions.rows.first { row in
++            guard let c = row.controller else { return false }
++            return (c.focusedSurface ?? c.surfaceTree.first) === surfaceView
++        }
++    }
++
++    var body: some View {
++        if let row, row.scripting {
++            label(row)
++                .font(.system(size: 13, weight: .bold))
++                .foregroundStyle(.white)
++                .padding(.horizontal, 12)
++                .padding(.vertical, 6)
++                .background(Capsule().fill(Color.orange))
++                .overlay(
++                    Capsule().stroke(Color.orange, lineWidth: 3)
++                        .scaleEffect(pulse ? 1.25 : 1)
++                        .opacity(pulse ? 0 : 0.8)
++                )
++                .shadow(color: .orange.opacity(0.6), radius: 8)
++                .padding(.top, 10)
++                .padding(.trailing, 14)
++                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
++                .allowsHitTesting(false)
++                .onAppear {
++                    withAnimation(.easeOut(duration: 1.4).repeatForever(autoreverses: false)) { pulse = true }
++                }
++                .onDisappear { pulse = false }
++                .help("Its turn is over, but what it started is still running")
++        }
++    }
++
++    private func label(_ row: DockSessions.Row) -> Text {
++        let n = row.scripts
++        let what: String
++        switch row.waitKind {
++        case "shell": what = "\(n) shell\(n == 1 ? "" : "s") still running"
++        case "script": what = n == 1 ? "A script is still running" : "\(n) scripts still running"
++        default: what = "\(n) background \(row.waitKind)\(n == 1 ? "" : "s") still running"
++        }
++        return Text(Image(systemName: "hourglass")) + Text("  " + what)
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockShortcuts.swift b/macos/Sources/Features/Dock/DockShortcuts.swift
 new file mode 100644
 index 0000000..ea8091f
@@ -14770,10 +14830,21 @@ index 160894b..0853534 100644
  
              // TODO: we'd probably do some config loading here... for now we'd
 diff --git a/macos/Sources/Ghostty/Surface View/SurfaceView.swift b/macos/Sources/Ghostty/Surface View/SurfaceView.swift
-index 47503dc..3070afa 100644
+index 47503dc..c914940 100644
 --- a/macos/Sources/Ghostty/Surface View/SurfaceView.swift	
 +++ b/macos/Sources/Ghostty/Surface View/SurfaceView.swift	
-@@ -218,7 +218,11 @@ extension Ghostty {
+@@ -212,13 +212,22 @@ extension Ghostty {
+                 // Show a highlight effect when this surface needs attention
+                 HighlightOverlay(highlighted: surfaceView.highlighted)
+ 
++                #if canImport(AppKit)
++                // Ghostty Dock: a shell or script it started is still running.
++                DockShellBadge(surfaceView: surfaceView)
++                #endif
++
+                 // If our surface is not healthy, then we render an error view over it.
+                 if !surfaceView.healthy {
+                     Rectangle().fill(ghostty.config.backgroundColor)
                      SurfaceRendererUnhealthyView()
                  } else if surfaceView.error != nil {
                      Rectangle().fill(ghostty.config.backgroundColor)
@@ -14785,7 +14856,7 @@ index 47503dc..3070afa 100644
                  }
  
                  // If we're part of a split view and don't have focus, we put a semi-transparent
-@@ -724,12 +728,25 @@ extension Ghostty {
+@@ -724,12 +733,25 @@ extension Ghostty {
              return try workingDirectory.withCString { cWorkingDir in
                  config.working_directory = cWorkingDir
  
