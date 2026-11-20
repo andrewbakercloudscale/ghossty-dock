@@ -56,6 +56,8 @@ function main() {
         echo "Error: the app was built from uncommitted changes ($commit); commit and rebuild" >&2
         exit 1
     fi
+    # A leak once grew the app to 14.5 GB; never ship one the static checks catch.
+    bash "$ROOT/tests/leak-test.sh" || { echo "Error: leak-test failed; fix it before releasing" >&2; exit 1; }
 
     local stage="$OUT/stage"
     rm -rf "$stage" && mkdir -p "$stage/Ghostty Dock" || exit 1
