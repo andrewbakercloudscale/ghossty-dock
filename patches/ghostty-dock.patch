@@ -8165,10 +8165,10 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..cbcf9a2
+index 0000000..3832a49
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,2036 @@
+@@ -0,0 +1,2055 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -8565,7 +8565,26 @@ index 0000000..cbcf9a2
 +                                               queue: .main) { [weak self] _ in self?.leftAt = Date() }
 +        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil,
 +                                               queue: .main) { [weak self] _ in self?.leftAt = nil }
++        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil,
++                                               queue: .main) { [weak self] note in
++            guard let window = note.object as? NSWindow else { return }
++            self?.childClosing(window)
++        }
 +        applySettings()
++    }
++
++    /// Closing the child terminal you are in goes back to its session, not
++    /// to whichever tab macOS picks next.
++    private func childClosing(_ window: NSWindow) {
++        guard let controller = window.windowController as? TerminalController,
++              let parentKey = children[ObjectIdentifier(controller)],
++              window.isKeyWindow || window.isMainWindow else { return }
++        if let selected = window.tabGroup?.selectedWindow, selected !== window { return }
++        DispatchQueue.main.async { [weak self] in
++            guard let self else { return }
++            self.refresh()
++            if let parent = self.rows.first(where: { $0.key == parentKey }) { self.select(parent) }
++        }
 +    }
 +
 +    private var restarter: String {
