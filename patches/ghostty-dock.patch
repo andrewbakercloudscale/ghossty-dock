@@ -10795,10 +10795,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..6a09929
+index 0000000..3afffa7
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1768 @@
+@@ -0,0 +1,1771 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -10992,9 +10992,10 @@ index 0000000..6a09929
 +                    onClose: { model.closeTab(row) },
 +                    onUndock: { model.undock(row) },
 +                    onRestart: { model.whenTabsOpen { model.restart(row) } })
-+            // Only a child terminal is indented, under its session: a row
-+            // stepping in for any other reason read as a child.
++            // A child terminal is indented under its session. A working or
++            // waiting row takes a small nudge, well short of a child's.
 +            .padding(.leading, indent(row))
++            .animation(.easeInOut(duration: 0.25), value: row.status == .running || row.scripting)
 +            // A dotted elbow from the session above to each of its terminals,
 +            // starting under the session wherever it has stepped in to.
 +            .background(alignment: .leading) {
@@ -11013,10 +11014,12 @@ index 0000000..6a09929
 +            .overlay(alignment: .top) { dropLine(dropTarget == row.key).offset(y: -2) }
 +    }
 +
-+    /// A child terminal sits a little in under its session; nothing else
-+    /// is indented, so an indent always means a child.
++    /// A child terminal sits 14pt in under its session. A row that is
++    /// working or waiting on a script nudges 6pt in, small enough that it
++    /// never reads as a child. A child moves with its session.
 +    static func indent(_ row: DockSessions.Row) -> CGFloat {
-+        row.parent != nil ? 14 : 0
++        let nudge: CGFloat = row.status == .running || row.scripting ? 6 : 0
++        return (row.parent != nil ? 14 : 0) + nudge
 +    }
 +
 +    private func parentIndent(_ row: DockSessions.Row) -> CGFloat {
