@@ -14907,3 +14907,19 @@ index 4d66622..0656fd9 100644
              (self.mouse.mods.shift and !self.mouseShiftCapture(false))))
      {
          // If we were previously over a link, we always update. We do this so that if the text
+diff --git a/src/apprt/embedded.zig b/src/apprt/embedded.zig
+index 0d5a4f8..08e5ba3 100644
+--- a/src/apprt/embedded.zig
++++ b/src/apprt/embedded.zig
+@@ -1675,7 +1675,10 @@ pub const CAPI = struct {
+         return true;
+     }
+ 
+-    export fn ghostty_surface_free_text(ptr: *Text) void {
++    /// The header declares (surface, text). Taking only the text read the
++    /// surface pointer as the text, so nothing was ever freed: every
++    /// screen read leaked its whole string (~10 KB, many per second).
++    export fn ghostty_surface_free_text(_: *Surface, ptr: *Text) void {
+         ptr.deinit();
+     }
+ 
