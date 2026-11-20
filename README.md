@@ -440,6 +440,7 @@ type a password if asked.
     bash tests/viewer-test.sh                        # the file viewer's page (macOS, after a build)
     swift test --package-path tests/dock-logic       # sidebar order, groups, cost (after a build)
     bash tests/patch-test.sh --latest                # the patch still applies to Ghostty
+    bash tests/leak-test.sh [--live]                 # memory leaks (--live measures the running app)
 
 GitHub Actions runs them all on every push, and the patch check every Monday
 against the newest Ghostty release.
