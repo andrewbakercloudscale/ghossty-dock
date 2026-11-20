@@ -10851,7 +10851,7 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..72ec045
+index 0000000..3116526
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
 @@ -0,0 +1,1775 @@
@@ -11072,13 +11072,13 @@ index 0000000..72ec045
 +    }
 +
 +    /// A child terminal sits 14pt in under its session. A row that is
-+    /// working or waiting on a script nudges 6pt in, small enough that it
-+    /// never reads as a child; selected, it goes 16pt, since the selected
++    /// working or waiting on a script steps in 14pt so it stands out down
++    /// the list; selected, it goes 22pt, since the selected
 +    /// row's raise (a little larger) otherwise eats the nudge. A child
 +    /// moves with its session.
 +    static func indent(_ row: DockSessions.Row) -> CGFloat {
 +        let busy = row.status == .running || row.scripting
-+        let nudge: CGFloat = busy ? (row.selected ? 16 : 6) : 0
++        let nudge: CGFloat = busy ? (row.selected ? 22 : 14) : 0
 +        return (row.parent != nil ? 14 : 0) + nudge
 +    }
 +
