@@ -10226,7 +10226,7 @@ index 0000000..3832a49
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..29f3ed7
+index 0000000..d8e504b
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
 @@ -0,0 +1,486 @@
@@ -10306,9 +10306,9 @@ index 0000000..29f3ed7
 +    static var manualOrder: [String] { UserDefaults.standard.stringArray(forKey: manualOrderKey) ?? [] }
 +    static var showCost: Bool { UserDefaults.standard.bool(forKey: showCostKey) }
 +    static var notifyWaiting: Bool { UserDefaults.standard.bool(forKey: notifyWaitingKey) }
-+    static var raiseWaiting: Bool { UserDefaults.standard.bool(forKey: raiseWaitingKey) }
++    static var raiseWaiting: Bool { UserDefaults.standard.object(forKey: raiseWaitingKey) as? Bool ?? true }
 +    static var showWorkspace: Bool { UserDefaults.standard.bool(forKey: showWorkspaceKey) }
-+    static var raiseFinished: Bool { UserDefaults.standard.bool(forKey: raiseFinishedKey) }
++    static var raiseFinished: Bool { UserDefaults.standard.object(forKey: raiseFinishedKey) as? Bool ?? true }
 +    static var raiseWhenAllQuiet: Bool { UserDefaults.standard.object(forKey: raiseWhenAllQuietKey) as? Bool ?? true }
 +    static var notifyFinished: Bool { UserDefaults.standard.bool(forKey: notifyFinishedKey) }
 +    static var showTabBar: Bool { UserDefaults.standard.bool(forKey: showTabBarKey) }
@@ -10340,8 +10340,8 @@ index 0000000..29f3ed7
 +    @AppStorage(DockSettings.showCostKey) private var showCost = true
 +    @AppStorage(DockSettings.showWorkspaceKey) private var showWorkspace = true
 +    @AppStorage(DockSettings.notifyWaitingKey) private var notifyWaiting = true
-+    @AppStorage(DockSettings.raiseWaitingKey) private var raiseWaiting = false
-+    @AppStorage(DockSettings.raiseFinishedKey) private var raiseFinished = false
++    @AppStorage(DockSettings.raiseWaitingKey) private var raiseWaiting = true
++    @AppStorage(DockSettings.raiseFinishedKey) private var raiseFinished = true
 +    @AppStorage(DockSettings.raiseWhenAllQuietKey) private var raiseWhenAllQuiet = true
 +    @AppStorage(DockSettings.notifyFinishedKey) private var notifyFinished = true
 +    @AppStorage(DockSettings.showBellKey) private var showBell = true
