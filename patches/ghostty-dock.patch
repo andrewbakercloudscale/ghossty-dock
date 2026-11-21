@@ -10911,10 +10911,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..7c6958c
+index 0000000..b20583c
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1775 @@
+@@ -0,0 +1,1790 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -10993,8 +10993,11 @@ index 0000000..7c6958c
 +    @State private var dropTarget: String?
 +    var onNewTab: () -> Void
 +
-+    static let width: CGFloat = 220
-+    static let widthRange: ClosedRange<Double> = 160...520
++    /// Wide enough out of the box for the header's row of buttons; at 220
++    /// a new install's icons were squashed together.
++    static let width: CGFloat = 320
++    /// Down to 240 the header still fits, with the count shortened.
++    static let widthRange: ClosedRange<Double> = 240...520
 +
 +    var body: some View {
 +        if show { sidebar }
@@ -11340,12 +11343,23 @@ index 0000000..7c6958c
 +        }
 +    }
 +
++    private func sessionCount(_ text: String) -> some View {
++        Text(text)
++            .font(.system(size: 12, weight: .semibold)).foregroundStyle(DockPalette.text)
++            .lineLimit(1).fixedSize()
++            .padding(.trailing, 4)
++            .help("\(model.rows.count) session\(model.rows.count == 1 ? "" : "s")")
++    }
++
 +    private var headerButtons: some View {
 +        HStack(spacing: 2) {
-+            Text("\(model.rows.count) Session\(model.rows.count == 1 ? "" : "s")")
-+                .font(.system(size: 12, weight: .semibold)).foregroundStyle(DockPalette.text)
-+                .lineLimit(1).fixedSize()
-+                .padding(.trailing, 4)
++            // "16 Sessions", or just "16" when the sidebar is too narrow
++            // for it and the buttons; the buttons never squash.
++            ViewThatFits(in: .horizontal) {
++                sessionCount("\(model.rows.count) Session\(model.rows.count == 1 ? "" : "s")")
++                sessionCount("\(model.rows.count)")
++            }
++            .layoutPriority(-1)
 +            DockHeaderButton(symbol: "calendar", size: 11, color: DockPalette.teal,
 +                             tip: "Daily Recap: today's spend, work, files and commits (⌘⇧Y)",
 +                             shownTip: $headerTip, tipColor: $headerTipColor) {
@@ -11562,6 +11576,7 @@ index 0000000..7c6958c
 +                    Text("\(badge)").font(.system(size: 10, weight: .bold)).monospacedDigit()
 +                }
 +            }
++            .fixedSize()
 +            .foregroundStyle(color)
 +            .padding(.vertical, 3)
 +            .padding(.horizontal, badge > 0 ? 5 : 3)
