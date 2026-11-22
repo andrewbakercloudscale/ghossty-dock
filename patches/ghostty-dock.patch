@@ -5526,7 +5526,7 @@ index 0000000..b9cfd97
 +}
 diff --git a/macos/Sources/Features/Dock/DockLog.swift b/macos/Sources/Features/Dock/DockLog.swift
 new file mode 100644
-index 0000000..6d9cbd4
+index 0000000..03c808d
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockLog.swift
 @@ -0,0 +1,179 @@
@@ -5675,7 +5675,7 @@ index 0000000..6d9cbd4
 +        DispatchQueue.global(qos: .background).asyncAfter(deadline: .now() + 300) {
 +            let fm = FileManager.default
 +            let dir = fm.homeDirectoryForCurrentUser.appendingPathComponent(".local/state/ghostty-dock")
-+            for name in ["restart-dock.log", "update.log", "move-to-dock.log", "sessions-snapshot.tsv"] {
++            for name in ["restart-dock.log", "update.log", "move-to-dock.log", "sessions-snapshot.tsv", "hold-exits.log"] {
 +                trim(dir.appendingPathComponent(name), keep: 2000)
 +            }
 +            let weekAgo = Date().addingTimeInterval(-7 * 86400)
@@ -8165,10 +8165,10 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..3832a49
+index 0000000..e96c025
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,2055 @@
+@@ -0,0 +1,2103 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -9873,6 +9873,7 @@ index 0000000..3832a49
 +    /// Remembers sessions whose tab went away other than by Undock or Restart.
 +    private func noticeClosed(_ now: [Row]) {
 +        let present = Set(now.map(\.id))
++        var gone: [Closed] = []
 +        for (id, row) in lastRows where !present.contains(id) {
 +            guard let sid = row.sessionId, !undocking.contains(sid), !restarting.contains(sid),
 +                  !now.contains(where: { $0.sessionId == sid }) else { continue }
@@ -9889,9 +9890,56 @@ index 0000000..3832a49
 +            }
 +            closed.append(c)
 +            DockHistory.shared.add(c)
++            gone.append(c)
++            DockLog.sessions.notice("session gone: \(c.name, privacy: .public) \(sid, privacy: .public) pid \(row.pid ?? 0) in \(c.folder, privacy: .public)")
 +            if closed.count > 20 { closed.removeFirst() }
 +        }
 +        lastRows = Dictionary(now.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
++        if gone.count >= Self.massExit { checkMassExit(gone) }
++    }
++
++    /// This many sessions ending in one refresh is not someone closing tabs.
++    private static let massExit = 3
++
++    /// Several sessions ended at once. Once the holders have logged how
++    /// their commands ended (hold-exits.log), and none of them was the app
++    /// hanging up on its tab (a window closed by hand), it was something
++    /// outside the app: macOS force-quitting an app the sessions shared a
++    /// coalition with, an update, a crash. They are then listed as missing,
++    /// so the sidebar offers Reopen, and the event is written to the log.
++    private func checkMassExit(_ gone: [Closed]) {
++        let at = Date()
++        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
++            guard let self else { return }
++            let log = self.stateDir.appendingPathComponent("hold-exits.log")
++            let text = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
++            let since = Int(at.timeIntervalSince1970) - 10
++            let recent = text.split(separator: "\n").suffix(200).filter { line in
++                guard let r = line.range(of: "epoch="),
++                      let e = Int(line[r.upperBound...].prefix { $0.isNumber }) else { return false }
++                return e >= since
++            }
++            let byHand = recent.contains { $0.hasSuffix("app-hung-up") }
++            let names = gone.map(\.name).joined(separator: ", ")
++            if byHand {
++                DockLog.sessions.notice("\(gone.count) sessions closed together, by hand: \(names, privacy: .public)")
++                return
++            }
++            let hows = recent.map { $0.components(separatedBy: " how=").last ?? "" }
++            DockLog.sessions.error("MASS EXIT: \(gone.count) sessions ended at once (\(names, privacy: .public)); holders: \(hows.joined(separator: "; "), privacy: .public)")
++            let stamp = ISO8601DateFormatter().string(from: at)
++            let line = "\(stamp) MASS EXIT \(gone.count) sessions: \(names) | holder exits: \(hows.joined(separator: "; "))\n"
++            if let h = try? FileHandle(forWritingTo: log) {
++                h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
++            }
++            let running = Set(self.rows.compactMap(\.sessionId))
++            var listed = (try? String(contentsOf: self.missingFile, encoding: .utf8)) ?? ""
++            for c in gone where !running.contains(c.sessionId) && !listed.contains("\t\(c.sessionId)\t") {
++                listed += "\(c.folder)\t\(c.sessionId)\t\(c.flags)\n"
++            }
++            DockLog.write(Data(listed.utf8), to: self.missingFile)
++            self.noticeMissing(self.readMissing())
++        }
 +    }
 +
 +    /// Resumes the last closed session in a new tab. False with none.

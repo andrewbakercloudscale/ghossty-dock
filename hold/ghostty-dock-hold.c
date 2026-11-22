@@ -65,6 +65,25 @@ static void set_dirs(void) {
     mkdir(hold_dir, 0700);
 }
 
+// One line per ended session in hold-exits.log, so a mass exit can be told
+// apart from a user close afterwards: how the command ended (exit code or
+// signal), whether the app had hung up on it, and how long it ran.
+static void log_exit(const char *name, pid_t child, time_t created, int st, int hung_up) {
+    char path[600], when[32], how[48];
+    snprintf(path, sizeof path, "%s/hold-exits.log", state_dir);
+    time_t now = time(NULL);
+    strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S", localtime(&now));
+    if (st == -1) snprintf(how, sizeof how, "unknown");
+    else if (WIFSIGNALED(st)) snprintf(how, sizeof how, "signal %d (%s)", WTERMSIG(st), strsignal(WTERMSIG(st)));
+    else if (WIFEXITED(st)) snprintf(how, sizeof how, "exit %d", WEXITSTATUS(st));
+    else snprintf(how, sizeof how, "status 0x%x", st);
+    FILE *f = fopen(path, "a");
+    if (!f) return;
+    fprintf(f, "%s epoch=%ld hold=%s holder=%d child=%d ran=%lds how=%s%s\n", when, (long)now, name,
+            (int)getpid(), (int)child, (long)(now - created), how, hung_up ? " app-hung-up" : "");
+    fclose(f);
+}
+
 static void sock_path(const char *name, char *out, size_t n) { snprintf(out, n, "%s/%s.sock", hold_dir, name); }
 
 static int write_all(int fd, const void *buf, size_t len) {
@@ -406,10 +425,10 @@ static void master(const char *name, int listen_fd, int ready_fd, struct winsize
     int hung_up = 0;
     time_t hup_at = 0;
     char buf[65536];
+    int st = -1;
 
     for (;;) {
         if (child_exited) {
-            int st;
             if (waitpid(child, &st, WNOHANG) == child) {
                 // Drain what it wrote last.
                 ssize_t r;
@@ -431,7 +450,6 @@ static void master(const char *name, int listen_fd, int ready_fd, struct winsize
                 keep(buf, (size_t)r);
                 if (client >= 0 && write_all(client, buf, (size_t)r) < 0) { close(client); client = -1; }
             } else if (r == 0 || (errno != EINTR && errno != EAGAIN)) {
-                int st;
                 waitpid(child, &st, 0);
                 break;
             }
@@ -521,6 +539,7 @@ static void master(const char *name, int listen_fd, int ready_fd, struct winsize
         }
     }
     if (client >= 0) close(client);
+    log_exit(name, child, created, st, hung_up);
     char path[600];
     sock_path(name, path, sizeof path);
     unlink(path);
