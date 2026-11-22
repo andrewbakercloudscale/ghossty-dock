@@ -104,7 +104,17 @@ reports each session's status.
 - **Restart** (↻, beside Undock; or right-click → Restart Session) stops claude
   and resumes the same session in a fresh tab at once. Same as
   `ghostty-dock-move --restart <session id>`.
-- Drag the sidebar's right edge to make it wider or narrower (double-click the edge to reset).
+- Drag the sidebar's right edge to make it wider or narrower, from 240 to 520 points
+  (double-click the edge to reset to 320). When it is narrow, "16 Sessions" shortens to "16" so
+  the header buttons keep their size.
+- **Busy rows step in**: a running session, or one waiting on a script, is
+  indented 20 points (28 when selected), so the busy ones stand out down the list.
+- **"Shell still running" badge**: while a session is waiting on a shell
+  command, script or background agent, a pulsing orange capsule at the top right
+  of its terminal says so ("2 shells still running"). Clicks go through it.
+- **⌘V pastes an image** into Claude Code: with only an image on the clipboard
+  (a screenshot, say), ⌘V sends Claude Code's own Ctrl-V, so you no longer
+  need to remember it. Text pastes as before.
 - Click a row's **Undock** icon (↗, beside ✕; or right-click → Undock) to move that session out
   to its own Ghostty window: claude is stopped and resumed there at once.
 - **Undocked**: Claude Code sessions in their own Ghostty windows are listed
@@ -218,7 +228,7 @@ reports each session's status.
 - **Child Terminal Here…** (right-click) opens a plain shell in the
   session's folder, for what you must type yourself (`sudo`, a password). It
   is listed under the session, with a dotted line, whatever the sort; `exit`
-  closes it. Right-click a child → **Stand on Its Own** to make it a row like
+  closes it, and you land back on its session. Right-click a child → **Stand on Its Own** to make it a row like
   any other, for good.
 - **Colour a session** with the 🎨 header button, right-click → Colourise
   (pick straight from the menu) or right-click → Colour…:
@@ -361,6 +371,7 @@ Five tabs: **Sidebar** (with Compaction), **Theme**, **Notifications**,
 | …only once no session is running | on | Holds the window back until every session is idle or waiting on you, so it comes up once, when there is nothing left to wait for. |
 | Reopen Claude sessions when Ghostty Dock starts | on | The app records its open sessions every 10 seconds; after a quit, crash or update they come back as tabs with `claude --resume`. Sessions already running elsewhere are skipped. |
 | Keep tabs running when Ghostty Dock quits | on | Every tab runs in a small holder (`ghostty-dock-hold`, inside the app) instead of in the app itself. Closing a tab ends what runs in it, as usual; a quit, crash or restart does not. Shells, dev servers and Claude sessions carry on, and the next app reattaches a tab to each, replaying the last 4 MB of its output so scrollback and search still work. Applies to tabs opened after you change it. |
+| Keep the Mac awake while sessions run | on | New, resumed and moved sessions start under `caffeinate -i`, so the Mac does not sleep mid-turn (the display still can). Saved as `CLAUDE_PANEL_CAFFEINATE` in `~/.config/claude-panel/options`. |
 | Open Ghostty Dock at login | off | Adds it to macOS Login Items. |
 | Version / About and Updates… | | The version, and an **Update…** button when GitHub has something newer. |
 | Edit Ghostty Config… | | Fonts, colours and keys live in Ghostty's own config file. |
@@ -373,9 +384,12 @@ ordinary macOS defaults (`defaults read consulting.cloudscale.ghosttydock`).
 **About** is the last tab of Settings (⚙︎ at the top of the sidebar, or Ghostty
 Dock → About Ghostty Dock, Help → About Ghostty Dock, or Check for Updates…). It shows the version
 (`1.0.<commits>` and the commit it was built from), who made it, and links.
-It checks GitHub 5 seconds after launch and every 6 hours; when there is
-something new, an **Update** button appears there, in Settings and at the top
-of the sidebar, and the sidebar's ⚙︎ turns green and flashes (click it for About). Update runs `scripts/update.sh --install` in the clone the app
+It checks GitHub 5 seconds after launch and every hour. When there is
+something new, a banner at the top of the sidebar has one **Update** button
+(no dialog) and a **What's new** link listing every change since your version.
+While it installs the banner shows progress; then it offers **Restart**, or
+**Try Again** if the install failed. The sidebar's ⚙︎ also turns green and
+flashes (click it for About). Update runs `scripts/update.sh --install` in the clone the app
 was built from: pull, rebuild, install, then restart once your sessions are
 quiet (they are resumed as tabs). Log: `~/.local/state/ghostty-dock/update.log`.
 
