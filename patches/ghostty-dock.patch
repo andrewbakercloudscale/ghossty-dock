@@ -14946,7 +14946,7 @@ index 47503dc..c914940 100644
                          let keys = Array(environmentVariables.keys)
                          let values = Array(environmentVariables.values)
 diff --git a/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift b/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift
-index 3129acf..e764ebb 100644
+index 3129acf..fe75e4b 100644
 --- a/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift	
 +++ b/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift	
 @@ -42,6 +42,10 @@ extension Ghostty {
@@ -15081,6 +15081,80 @@ index 3129acf..e764ebb 100644
          @IBAction func copy(_ sender: Any?) {
              guard let surface = self.surface else { return }
              let action = "copy_to_clipboard"
+@@ -2300,42 +2350,52 @@ extension Ghostty.SurfaceView {
+ /// We use this to cache our surface content. This probably should be extracted some day
+ /// to a more generic helper.
+ class CachedValue<T> {
++    // Ghostty Dock reads these from the main thread and from background
++    // queues many times a second. Upstream's version set `value` and
++    // `expiryTask` from its expiry Task on the cooperative pool while the
++    // main thread set them in get(), with no lock: the racing writes broke
++    // reference counts and the app aborted in swift_deallocClassInstance
++    // (crash 2026-11-23 08:21). Everything is now under one lock, and expiry
++    // is a deadline plus a timer that only clears a value it still owns.
++    private let lock = NSLock()
+     private var value: T?
++    private var expires: DispatchTime = .now()
++    private var generation = 0
+     private let fetch: () -> T
+     private let duration: Duration
+-    private var expiryTask: Task<Void, Never>?
+ 
+     init(duration: Duration, fetch: @escaping () -> T) {
+         self.duration = duration
+         self.fetch = fetch
+     }
+ 
+-    deinit {
+-        expiryTask?.cancel()
+-    }
+-
+     func get() -> T {
+-        if let value {
++        lock.lock()
++        if let value, DispatchTime.now() < expires {
++            lock.unlock()
+             return value
+         }
++        lock.unlock()
+ 
+-        // We don't have a value (or it expired). Fetch and store.
++        // Fetch outside the lock: it calls into the terminal.
+         let result = fetch()
+-        let now = ContinuousClock.now
+-        let expires = now + duration
+-        self.value = result
+-
+-        // Schedule a task to clear the value
+-        expiryTask = Task { [weak self] in
+-            do {
+-                try await Task.sleep(until: expires)
+-                self?.value = nil
+-                self?.expiryTask = nil
+-            } catch {
+-                // Task was cancelled, do nothing
+-            }
++        let (sec, atto) = duration.components
++        let nanos = Int(sec) * 1_000_000_000 + Int(atto / 1_000_000_000)
++
++        lock.lock()
++        value = result
++        expires = .now() + .nanoseconds(nanos)
++        generation += 1
++        let mine = generation
++        lock.unlock()
++
++        // Free the (possibly large) text once it has expired.
++        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .nanoseconds(nanos)) { [weak self] in
++            guard let self else { return }
++            self.lock.lock()
++            if self.generation == mine { self.value = nil }
++            self.lock.unlock()
+         }
+-
+         return result
+     }
+ }
 diff --git a/src/Surface.zig b/src/Surface.zig
 index 4d66622..0656fd9 100644
 --- a/src/Surface.zig
