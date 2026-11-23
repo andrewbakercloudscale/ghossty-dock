@@ -17,6 +17,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <libproc.h>
+#include <limits.h>
 #include <poll.h>
 #include <pwd.h>
 #include <signal.h>
@@ -28,6 +29,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/proc.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
@@ -68,6 +70,10 @@ static void set_dirs(void) {
 // One line per ended session in hold-exits.log, so a mass exit can be told
 // apart from a user close afterwards: how the command ended (exit code or
 // signal), whether the app had hung up on it, and how long it ran.
+extern char **environ;
+
+static char hold_label[128];  // set when running as a launchd job
+
 static void log_exit(const char *name, pid_t child, time_t created, int st, int hung_up) {
     char path[600], when[32], how[48];
     snprintf(path, sizeof path, "%s/hold-exits.log", state_dir);
@@ -414,8 +420,10 @@ static void master(const char *name, int listen_fd, int ready_fd, struct winsize
     signal(SIGCHLD, on_chld);
     signal(SIGPIPE, SIG_IGN);
     signal(SIGHUP, SIG_IGN);
-    write(ready_fd, "1", 1);
-    close(ready_fd);
+    if (ready_fd >= 0) {
+        write(ready_fd, "1", 1);
+        close(ready_fd);
+    }
 
     time_t created = time(NULL);
     int client = -1;
@@ -543,6 +551,15 @@ static void master(const char *name, int listen_fd, int ready_fd, struct winsize
     char path[600];
     sock_path(name, path, sizeof path);
     unlink(path);
+    if (hold_label[0]) {
+        // A job that ran once stays listed in launchd until removed.
+        char pl[600];
+        snprintf(pl, sizeof pl, "%s/%s.plist", hold_dir, name);
+        unlink(pl);
+        char *args[] = {"launchctl", "remove", hold_label, NULL};
+        pid_t pid;
+        posix_spawn(&pid, "/bin/launchctl", NULL, NULL, args, environ);
+    }
     exit(0);
 }
 
@@ -647,12 +664,179 @@ static void new_name(char *out, size_t n) {
     snprintf(out, n, "%02x%02x%02x%02x%02x%02x", b[0], b[1], b[2], b[3], b[4], b[5]);
 }
 
+// ---- Its own launchd job --------------------------------------------------
+//
+// macOS groups processes into coalitions, and force-quitting an app ends
+// everything in its coalition. A holder forked from the app stays in the
+// app's coalition for life, and so does whatever its session starts. On
+// 2026-11-22 21:05 one Chrome, started by a session, was force-quit from
+// the Dock, and macOS ended the 14 sessions sharing its coalition with it.
+// So the holder's server runs as a launchd job of its own: launchd gives
+// every job a fresh coalition, and nothing outside it can take it down.
+
+
+static void xml(FILE *f, const char *s) {
+    for (; *s; s++) {
+        if (*s == '&') fputs("&amp;", f);
+        else if (*s == '<') fputs("&lt;", f);
+        else if (*s == '>') fputs("&gt;", f);
+        else fputc(*s, f);
+    }
+}
+
+// XML 1.0 cannot carry most control characters; a variable that has one
+// is left out rather than breaking the whole job.
+static int xml_ok(const char *s) {
+    for (; *s; s++) {
+        unsigned char c = (unsigned char)*s;
+        if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') return 0;
+        if (c == 0x7f) return 0;
+    }
+    return 1;
+}
+
+static void plist_path(const char *name, char *out, size_t n) { snprintf(out, n, "%s/%s.plist", hold_dir, name); }
+
+static int launchctl(char *const args[]) {
+    pid_t pid;
+    if (posix_spawn(&pid, "/bin/launchctl", NULL, NULL, args, environ) != 0) return -1;
+    int st;
+    while (waitpid(pid, &st, 0) < 0) if (errno != EINTR) return -1;
+    return WIFEXITED(st) && WEXITSTATUS(st) == 0 ? 0 : -1;
+}
+
+static void job_label(const char *name, char *out, size_t n) {
+    snprintf(out, n, "consulting.cloudscale.ghosttydock.hold.%s", name);
+}
+
+static void job_remove(const char *label, int wait) {
+    char *args[] = {"launchctl", "remove", (char *)label, NULL};
+    if (wait) { launchctl(args); return; }
+    pid_t pid;
+    posix_spawn(&pid, "/bin/launchctl", NULL, NULL, args, environ);
+}
+
+// Starts `serve` as a launchd job; 0 once launchd has taken it.
+static int launch_server(const char *name, struct winsize ws, int login, char **argv) {
+    char self[PROC_PIDPATHINFO_MAXSIZE], cwd[PATH_MAX], path[600], label[128], tmp[620];
+    if (proc_pidpath(getpid(), self, sizeof self) <= 0) return -1;
+    if (!getcwd(cwd, sizeof cwd)) snprintf(cwd, sizeof cwd, "/");
+    plist_path(name, path, sizeof path);
+    job_label(name, label, sizeof label);
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE *f = fopen(tmp, "w");
+    if (!f) return -1;
+    fputs("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+          "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+          "<plist version=\"1.0\"><dict>\n", f);
+    fputs("<key>Label</key><string>", f); xml(f, label); fputs("</string>\n", f);
+    fputs("<key>ProgramArguments</key><array>", f);
+    char num[32];
+    const char *fixed[] = {self, "serve", name, login ? "1" : "0", NULL, NULL, "--"};
+    snprintf(num, sizeof num, "%u %u %u %u", ws.ws_row, ws.ws_col, ws.ws_xpixel, ws.ws_ypixel);
+    fixed[4] = num;
+    fixed[5] = "-";
+    for (int i = 0; i < 7; i++) {
+        if (i == 5) continue;
+        fputs("<string>", f); xml(f, fixed[i]); fputs("</string>", f);
+    }
+    for (char **a = argv; *a; a++) {
+        if (!xml_ok(*a)) { fclose(f); unlink(tmp); return -1; }
+        fputs("<string>", f); xml(f, *a); fputs("</string>", f);
+    }
+    fputs("</array>\n<key>WorkingDirectory</key><string>", f); xml(f, cwd); fputs("</string>\n", f);
+    fputs("<key>EnvironmentVariables</key><dict>", f);
+    for (char **e = environ; *e; e++) {
+        char *eq = strchr(*e, '=');
+        if (!eq || eq == *e || !xml_ok(*e)) continue;
+        if (strncmp(*e, "XPC_SERVICE_NAME=", 17) == 0) continue;
+        fputs("<key>", f); fwrite(*e, 1, (size_t)(eq - *e), f); fputs("</key><string>", f);
+        xml(f, eq + 1); fputs("</string>", f);
+    }
+    fputs("<key>GHOSTTY_DOCK_HOLD_LABEL</key><string>", f); xml(f, label); fputs("</string>", f);
+    fputs("</dict>\n", f);
+    // The tab's limits, not launchd's defaults (256 open files).
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY)
+        fprintf(f, "<key>SoftResourceLimits</key><dict><key>NumberOfFiles</key><integer>%llu</integer></dict>\n",
+                (unsigned long long)rl.rlim_cur);
+    // Interactive: not throttled as a background job would be.
+    fputs("<key>ProcessType</key><string>Interactive</string>\n"
+          "<key>RunAtLoad</key><true/>\n"
+          "<key>AbandonProcessGroup</key><true/>\n"
+          "</dict></plist>\n", f);
+    if (fclose(f) != 0 || rename(tmp, path) != 0) { unlink(tmp); return -1; }
+    char domain[32];
+    snprintf(domain, sizeof domain, "gui/%d", (int)getuid());
+    char *args[] = {"launchctl", "bootstrap", domain, path, NULL};
+    if (launchctl(args) != 0) { unlink(path); return -1; }
+    return 0;
+}
+
+// The launchd job: makes the socket the tab attaches to, then serves it.
+static int cmd_serve(int argc, char **argv) {
+    // serve <name> <login> "<rows> <cols> <xpix> <ypix>" -- <command...>
+    if (argc < 7 || strcmp(argv[5], "--") != 0) return 2;
+    const char *name = argv[2];
+    int login = strcmp(argv[3], "1") == 0;
+    struct winsize ws = {0};
+    unsigned r = 24, c = 80, x = 0, y = 0;
+    sscanf(argv[4], "%u %u %u %u", &r, &c, &x, &y);
+    ws.ws_row = (unsigned short)r; ws.ws_col = (unsigned short)c;
+    ws.ws_xpixel = (unsigned short)x; ws.ws_ypixel = (unsigned short)y;
+    const char *l = getenv("GHOSTTY_DOCK_HOLD_LABEL");
+    if (l) snprintf(hold_label, sizeof hold_label, "%s", l);
+    unsetenv("GHOSTTY_DOCK_HOLD_LABEL");
+    unsetenv("XPC_SERVICE_NAME");
+    char path[600];
+    sock_path(name, path, sizeof path);
+    int lfd = socket(AF_UNIX, SOCK_STREAM, 0);
+    struct sockaddr_un a = {.sun_family = AF_UNIX};
+    snprintf(a.sun_path, sizeof a.sun_path, "%s", path);
+    if (lfd < 0 || bind(lfd, (struct sockaddr *)&a, sizeof a) < 0 || listen(lfd, 8) < 0) {
+        if (hold_label[0]) job_remove(hold_label, 0);
+        return 1;
+    }
+    chmod(path, 0600);
+    fcntl(lfd, F_SETFD, FD_CLOEXEC);
+    // Start the program once its tab has come for it (or after 5s), so a
+    // program that ends at once is still seen ending, not missed.
+    struct pollfd pf = {lfd, POLLIN, 0};
+    poll(&pf, 1, 5000);
+    master(name, lfd, -1, ws, login, argv + 6);
+    return 0;
+}
+
+static int can_connect(const char *path) {
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return 0;
+    struct sockaddr_un a = {.sun_family = AF_UNIX};
+    snprintf(a.sun_path, sizeof a.sun_path, "%s", path);
+    int ok = connect(fd, (struct sockaddr *)&a, sizeof a) == 0;
+    close(fd);
+    return ok;
+}
+
 static int cmd_new(int login, char **argv) {
     char name[32], path[600];
     new_name(name, sizeof name);
     sock_path(name, path, sizeof path);
     struct winsize ws;
     winsize_of(&ws);
+
+    if (!getenv("GHOSTTY_DOCK_HOLD_NO_LAUNCHD") && launch_server(name, ws, login, argv) == 0) {
+        for (int i = 0; i < 100; i++) {
+            if (can_connect(path)) return client(name) == 0 ? 0 : 1;
+            usleep(30000);
+        }
+        // launchd took it but it never came up: take it back and fork.
+        char label[128], pl[600];
+        job_label(name, label, sizeof label);
+        job_remove(label, 1);
+        plist_path(name, pl, sizeof pl);
+        unlink(pl);
+        unlink(path);
+    }
 
     int lfd = socket(AF_UNIX, SOCK_STREAM, 0);
     struct sockaddr_un a = {.sun_family = AF_UNIX};
@@ -760,7 +944,6 @@ static int cmd_list(int detached_only, int kill_them) {
 // and its shell gets the app's permissions before and after a restart.
 extern int responsibility_get_pid_responsible_for_pid(pid_t);
 extern int responsibility_spawnattrs_setdisclaim(posix_spawnattr_t *, bool);
-extern char **environ;
 
 static void disclaim(char **argv) {
     if (responsibility_get_pid_responsible_for_pid(getpid()) == getpid()) return;
@@ -798,6 +981,7 @@ int main(int argc, char **argv) {
         unsetenv("GHOSTTY_DOCK_HOLD");
         return cmd_new(login, argv + i + 1);
     }
+    if (strcmp(cmd, "serve") == 0) return cmd_serve(argc, argv);
     if (strcmp(cmd, "attach") == 0 && argc == 3) {
         if (client(argv[2]) == 0) return 0;
         fprintf(stderr, "ghostty-dock-hold: %s has ended\n", argv[2]);

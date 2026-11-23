@@ -26,6 +26,9 @@ function main() {
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT
     clang -O2 -Wall -Werror -o "$tmp/hold" "$ROOT/hold/ghostty-dock-hold.c" || exit 1
+    # Run outside ~/Desktop: each build is a new unsigned "hold", and as its
+    # own launchd job it would get a macOS privacy prompt for the folder.
+    cd "$tmp" || exit 1
     HOLD="$tmp/hold" STATE="$tmp/state" python3 - <<'PY'
 import os, pty, time, subprocess, signal, select, sys, fcntl, termios, struct
 HOLD, st = os.environ["HOLD"], os.environ["STATE"]

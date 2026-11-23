@@ -496,14 +496,25 @@ function note_ended() {
 function recover_ended() {
     local last="$1"
     [ -s "$ENDED" ] || return 0
-    local history="$STATE_DIR/history.json" cwd sid flags at closed
+    local history="$STATE_DIR/history.json" cwd sid flags at closed together
+    local times
+    times=$(cut -f3 "$ENDED")
     while IFS=$'\t' read -r cwd sid at flags; do
         [ -n "$sid" ] && [ -d "$cwd" ] || continue
         [ "${at:-0}" -ge $((last - 300)) ] || continue
-        # History's closedAt counts from 2001 (Apple's reference date).
-        closed=$(jq -r --arg sid "$sid" '[.[]? | select(.sessionId == $sid) | .closedAt + 978307200 | floor] | max // 0' \
-            "$history" 2>/dev/null)
-        [ "${closed:-0}" -ge $((at - 120)) ] && continue
+        # Several sessions ending within seconds of each other is not tabs
+        # closed by hand: the app notes each in its history as it goes, which
+        # would otherwise read as closed. (2026-11-22: a force-quit of Chrome
+        # ended 14 at once and none were offered back.)
+        together=$(awk -v t="${at:-0}" '$1 >= t - 10 && $1 <= t + 10' <<<"$times" | grep -c .)
+        if [ "$together" -lt 3 ]; then
+            # History's closedAt counts from 2001 (Apple's reference date).
+            closed=$(jq -r --arg sid "$sid" '[.[]? | select(.sessionId == $sid) | .closedAt + 978307200 | floor] | max // 0' \
+                "$history" 2>/dev/null)
+            [ "${closed:-0}" -ge $((at - 120)) ] && continue
+        else
+            log "$(basename "$cwd") ended with $((together - 1)) other session(s) at once (mass exit), so not counted as closed by hand"
+        fi
         running_anywhere "$sid" && continue
         log "$(basename "$cwd") ended before the last save (shutdown?); recorded in $(basename "$MISSING")"
         record_missing "$cwd" "$sid" "$flags"
