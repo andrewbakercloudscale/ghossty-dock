@@ -41,6 +41,15 @@ function awake() {
     case "$opt" in [Ff][Aa][Ll][Ss][Ee]|0|[Nn][Oo]|[Oo][Ff][Ff]) ;; *) printf 'caffeinate -i ' ;; esac
 }
 
+# " --debug=<bridge> --debug-file <log>" so a resumed session records why
+# Remote Control fails to connect (the reason only reaches the debug log).
+# Bridge lines only; GHOSTTY_DOCK_RC_DEBUG=0 turns it off.
+function rcdebug() {
+    [ "${GHOSTTY_DOCK_RC_DEBUG:-1}" = 0 ] && return 0
+    printf ' --debug=bridge,bridge:init,bridge:api,bridge:session,bridge:repl,bridge:shutdown,remote-bridge --debug-file %s' \
+        "$HOME/.local/state/ghostty-dock/rc-debug/$1.log"
+}
+
 function usage() {
     cat <<EOM
 
@@ -214,7 +223,7 @@ function move_one() {
         log "$(basename "$cwd"): busy (active ${quiet}s ago), waiting"
         return 1
     fi
-    local cmd="$(awake)claude --resume $sid $flags"
+    local cmd="$(awake)claude$(rcdebug "$sid") --resume $sid $flags"
     log "$(basename "$cwd"): moving ($cmd)"
     $dry && return 0
 
@@ -422,7 +431,7 @@ function undock() {
         [ $(($(date +%s) - started)) -gt "$GIVE_UP_SECS" ] && { log "$(basename "$cwd"): gave up"; return 1; }
         sleep 20
     done
-    local cmd="$(awake)claude --resume $sid $flags"
+    local cmd="$(awake)claude$(rcdebug "$sid") --resume $sid $flags"
     log "$(basename "$cwd"): ${mode}ing ($cmd)"
     $dry && return 0
     printf '%s\t%s\t%s\n' "$sid" "$cwd" "$flags" >>"$STATE_DIR/sessions-snapshot.tsv"

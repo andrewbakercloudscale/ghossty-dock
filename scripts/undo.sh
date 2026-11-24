@@ -37,6 +37,15 @@ function awake() {
     case "$opt" in [Ff][Aa][Ll][Ss][Ee]|0|[Nn][Oo]|[Oo][Ff][Ff]) ;; *) printf 'caffeinate -i ' ;; esac
 }
 
+# " --debug=<bridge> --debug-file <log>" so a resumed session records why
+# Remote Control fails to connect (the reason only reaches the debug log).
+# Bridge lines only; GHOSTTY_DOCK_RC_DEBUG=0 turns it off.
+function rcdebug() {
+    [ "${GHOSTTY_DOCK_RC_DEBUG:-1}" = 0 ] && return 0
+    printf ' --debug=bridge,bridge:init,bridge:api,bridge:session,bridge:repl,bridge:shutdown,remote-bridge --debug-file %s' \
+        "$HOME/.local/state/ghostty-dock/rc-debug/$1.log"
+}
+
 function usage() {
     cat <<EOM
 
@@ -107,7 +116,7 @@ function reopen() {
         print_success "$name: already running"
         return
     fi
-    local cmd="$(awake)claude --resume $sid $flags"
+    local cmd="$(awake)claude$(rcdebug "$sid") --resume $sid $flags"
     if $list; then
         echo "  $name: $cmd"
         return

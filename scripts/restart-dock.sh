@@ -65,6 +65,15 @@ function awake() {
     case "$opt" in [Ff][Aa][Ll][Ss][Ee]|0|[Nn][Oo]|[Oo][Ff][Ff]) ;; *) printf 'caffeinate -i ' ;; esac
 }
 
+# " --debug=<bridge> --debug-file <log>" so a resumed session records why
+# Remote Control fails to connect (the reason only reaches the debug log).
+# Bridge lines only; GHOSTTY_DOCK_RC_DEBUG=0 turns it off.
+function rcdebug() {
+    [ "${GHOSTTY_DOCK_RC_DEBUG:-1}" = 0 ] && return 0
+    printf ' --debug=bridge,bridge:init,bridge:api,bridge:session,bridge:repl,bridge:shutdown,remote-bridge --debug-file %s' \
+        "$HOME/.local/state/ghostty-dock/rc-debug/$1.log"
+}
+
 function usage() {
     cat <<EOM
 
@@ -610,7 +619,7 @@ function session_items() {
         # Once only: never a second tab on a session already back.
         running_anywhere "$sid" && continue
         surface=$(session_surface "$sid")
-        printf '%s\t%s\t%s\n' "${surface:--}" "$cwd" "$(awake)claude --resume $sid $flags"
+        printf '%s\t%s\t%s\n' "${surface:--}" "$cwd" "$(awake)claude$(rcdebug "$sid") --resume $sid $flags"
     done <<<"$1"
 }
 
@@ -743,7 +752,7 @@ function resume_all() {
         running_anywhere "$sid" && continue
         log "$(basename "$cwd") did not start; trying again ($(conditions))"
         wait_for_display
-        "$OPENER" --command "$(awake)claude --resume $sid $flags" "$cwd" >>"$LOG" 2>&1 \
+        "$OPENER" --command "$(awake)claude$(rcdebug "$sid") --resume $sid $flags" "$cwd" >>"$LOG" 2>&1 \
             || log "$(basename "$cwd"): opening the tab failed"
     done <<<"$sessions"
     sleep 20

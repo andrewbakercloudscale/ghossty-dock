@@ -135,6 +135,23 @@ EOF
     HOME="$tmp/home" GHOSTTY_DOCK_API="$api" GHOSTTY_DOCK_TOKEN=tok GHOSTTY_DOCK_RC_GRACE=0 \
         python3 "$ROOT/bin/ghostty-dock-rc-titles" >/dev/null 2>&1
     check "a cleanly closed session is archived" "$(jq -r '._archived | last' "$t")" cse_E
+    # A session whose Remote Control failed to connect is logged, once.
+    local rlog="$tmp/home/.local/state/ghostty-dock/rc-titles.log" now
+    now=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+    printf '{"pid":%s,"cwd":"%s","sessionId":"f00dfeed-1"}' "$$" "$tmp/repos/plain" >"$tmp/home/.claude/sessions/6.json"
+    local tdir="$tmp/home/.claude/projects/$(printf '%s' "$tmp/repos/plain" | sed 's/[^A-Za-z0-9]/-/g')"
+    mkdir -p "$tdir" "$tmp/home/.local/state/ghostty-dock/rc-debug"
+    : >"$tmp/home/.local/state/ghostty-dock/rc-debug/f00dfeed-1.log"
+    { printf '{"type":"system","subtype":"informational","content":"Remote Control disconnected — old news","timestamp":"2020-01-01T00:00:00.000Z"}\n'
+      printf '{"type":"system","subtype":"informational","content":"Remote Control disconnected — Session creation failed — see debug log","timestamp":"%s"}\n' "$now"
+    } >"$tdir/f00dfeed-1.jsonl"
+    HOME="$tmp/home" GHOSTTY_DOCK_API="$api" GHOSTTY_DOCK_TOKEN=tok python3 "$ROOT/bin/ghostty-dock-rc-titles" >/dev/null 2>&1
+    HOME="$tmp/home" GHOSTTY_DOCK_API="$api" GHOSTTY_DOCK_TOKEN=tok python3 "$ROOT/bin/ghostty-dock-rc-titles" >/dev/null 2>&1
+    check "a Remote Control failure is logged once" "$(grep -c 'f00dfeed): Remote Control failed.*Session creation failed.*debug log .*f00dfeed-1.log' "$rlog")" 1
+    check "old failures are not dug up" "$(grep -c 'old news' "$rlog")" 0
+    printf '{"type":"system","subtype":"informational","content":"Remote Control disconnected — later news","timestamp":"2020-01-01T00:00:00.000Z"}\n' >>"$tdir/f00dfeed-1.jsonl"
+    HOME="$tmp/home" GHOSTTY_DOCK_API="$api" GHOSTTY_DOCK_TOKEN=tok python3 "$ROOT/bin/ghostty-dock-rc-titles" >/dev/null 2>&1
+    check "a new failure in a known session is logged" "$(grep -c 'later news' "$rlog")" 1
 
     echo "$PASSED passed, $FAILED failed"
     [ "$FAILED" -eq 0 ]

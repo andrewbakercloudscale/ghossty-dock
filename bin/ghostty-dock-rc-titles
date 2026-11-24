@@ -21,8 +21,10 @@ GHOSTTY_DOCK_RC_KEEP_ENDED=1 to keep ended entries.
 
 Overrides for tests: GHOSTTY_DOCK_API (base URL), GHOSTTY_DOCK_TOKEN.
 """
+import calendar
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -36,6 +38,8 @@ SEEN = os.path.join(HOME, ".local/state/ghostty-dock/rc-seen.json")
 GRACE = int(os.environ.get("GHOSTTY_DOCK_RC_GRACE", "300"))
 KEEP_ENDED = os.environ.get("GHOSTTY_DOCK_RC_KEEP_ENDED") == "1"
 DRY = "--dry-run" in sys.argv[1:]
+EVENTS = os.path.join(HOME, ".local/state/ghostty-dock/rc-events.json")
+RC_DEBUG = os.path.join(HOME, ".local/state/ghostty-dock/rc-debug")
 
 
 def log(msg):
@@ -121,6 +125,84 @@ def sessions():
     return found, ended - set(found)
 
 
+def transcript(cwd, sid):
+    enc = re.sub(r"[^A-Za-z0-9]", "-", cwd)
+    return os.path.join(HOME, ".claude/projects", enc, sid + ".jsonl")
+
+
+def note_rc_failures(now):
+    """Logs each "Remote Control disconnected — <why>" a live session shows,
+    with the session's bridge debug log (written by the launcher and the
+    restart scripts), so a session missing from the phone can be explained.
+    Reads only what each transcript gained since the last run."""
+    try:
+        offsets = json.load(open(EVENTS))
+        offsets = offsets if isinstance(offsets, dict) else {}
+    except (OSError, ValueError):
+        offsets = {}
+    d = os.path.join(HOME, ".claude/sessions")
+    kept = {}
+    for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        if not f.endswith(".json"):
+            continue
+        try:
+            o = json.load(open(os.path.join(d, f)))
+        except (OSError, ValueError):
+            continue
+        sid, cwd, pid = o.get("sessionId"), o.get("cwd"), o.get("pid")
+        if not (sid and cwd and isinstance(pid, int) and alive(pid)):
+            continue
+        path = transcript(cwd, sid)
+        first = sid not in offsets
+        start = offsets.get(sid, 0)
+        try:
+            size = os.path.getsize(path)
+            if size < start:
+                start, first = 0, False
+            with open(path, "rb") as t:
+                t.seek(start)
+                chunk = t.read()
+        except OSError:
+            continue
+        end = start + chunk.rfind(b"\n") + 1   # a partial last line waits
+        kept[sid] = end
+        for line in chunk[: end - start].split(b"\n"):
+            if b"Remote Control disconnected" not in line:
+                continue
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            msg = e.get("content")
+            if e.get("subtype") != "informational" or not isinstance(msg, str):
+                continue
+            try:
+                ts = calendar.timegm(time.strptime(e.get("timestamp", "")[:19], "%Y-%m-%dT%H:%M:%S"))
+            except ValueError:
+                continue
+            if first and now - ts > 900:   # first sight of a session: only recent news
+                continue
+            why = msg.split("Remote Control disconnected", 1)[1].strip(" —-")
+            dbg = os.path.join(RC_DEBUG, sid + ".log")
+            log(f"{o.get('name') or repo_name(cwd)} ({sid[:8]}): Remote Control failed at "
+                f"{time.strftime('%H:%M:%S', time.localtime(ts))}: {why}"
+                + (f"; debug log {dbg}" if os.path.exists(dbg) else "; no debug log"))
+    try:
+        with open(EVENTS + ".tmp", "w") as f:
+            json.dump(kept, f)
+        os.replace(EVENTS + ".tmp", EVENTS)
+    except OSError:
+        pass
+    # Debug logs of sessions gone for two weeks go.
+    try:
+        for f in os.listdir(RC_DEBUG):
+            fp = os.path.join(RC_DEBUG, f)
+            if f.endswith(".log") and now - os.path.getmtime(fp) > 14 * 86400:
+                os.remove(fp)
+    except OSError:
+        pass
+
+
 def load_seen():
     try:
         d = json.load(open(SEEN))
@@ -153,8 +235,9 @@ def ended_to_archive(live, ended, now):
 
 
 def main():
-    live, ended = sessions()
     now = int(time.time())
+    note_rc_failures(now)
+    live, ended = sessions()
     seen, due = ended_to_archive(live, ended, now)
     if KEEP_ENDED:
         due = []
