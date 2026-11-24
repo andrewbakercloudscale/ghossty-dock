@@ -62,6 +62,12 @@ class H(http.server.BaseHTTPRequestHandler):
         t = json.load(open(path))
         body = json.dumps({"response_shape": {"id": self._id(), "title": t.get(self._id())}}).encode()
         self.send_response(200); self.end_headers(); self.wfile.write(body)
+    def do_POST(self):
+        cid = self.path.split("/")[-2]
+        t = json.load(open(path))
+        t.setdefault("_archived", []).append(cid)
+        json.dump(t, open(path, "w"))
+        self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
     def do_PUT(self):
         t = json.load(open(path))
         t[self._id()] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))["title"]
@@ -100,6 +106,35 @@ EOF
     out=$(HOME="$tmp/home" GHOSTTY_DOCK_API="http://127.0.0.1:$(cat "$tmp/port")" GHOSTTY_DOCK_TOKEN=bad \
         python3 "$ROOT/bin/ghostty-dock-rc-titles" 2>&1)
     check "a refused login changes nothing" "$(echo "$out" | grep -c 'HTTP 401')" 3
+
+    # Ended sessions leave the phone's list once gone for the grace time.
+    local api="http://127.0.0.1:$(cat "$tmp/port")"
+    HOME="$tmp/home" GHOSTTY_DOCK_API="$api" GHOSTTY_DOCK_TOKEN=tok GHOSTTY_DOCK_RC_KEEP_ENDED=1 \
+        GHOSTTY_DOCK_RC_GRACE=0 python3 "$ROOT/bin/ghostty-dock-rc-titles" >/dev/null 2>&1
+    check "keep-ended archives nothing" "$(jq -r '._archived // [] | length' "$t")" 0
+    HOME="$tmp/home" GHOSTTY_DOCK_API="$api" GHOSTTY_DOCK_TOKEN=tok \
+        python3 "$ROOT/bin/ghostty-dock-rc-titles" >/dev/null 2>&1
+    check "an ended session waits out the grace time" "$(jq -r '._archived // [] | length' "$t")" 0
+    HOME="$tmp/home" GHOSTTY_DOCK_API="$api" GHOSTTY_DOCK_TOKEN=tok GHOSTTY_DOCK_RC_GRACE=0 \
+        python3 "$ROOT/bin/ghostty-dock-rc-titles" >/dev/null 2>&1
+    check "an ended session is archived" "$(jq -r '._archived | join(",")' "$t")" cse_D
+    HOME="$tmp/home" GHOSTTY_DOCK_API="$api" GHOSTTY_DOCK_TOKEN=tok GHOSTTY_DOCK_RC_GRACE=0 \
+        python3 "$ROOT/bin/ghostty-dock-rc-titles" >/dev/null 2>&1
+    check "it is archived once, not every run" "$(jq -r '._archived | length' "$t")" 1
+    # A live session that ends (its file now names a dead pid) goes too.
+    printf '{"pid":999998,"cwd":"%s","bridgeSessionId":"session_B"}' "$tmp/repos/plain" >"$tmp/home/.claude/sessions/2.json"
+    HOME="$tmp/home" GHOSTTY_DOCK_API="$api" GHOSTTY_DOCK_TOKEN=tok GHOSTTY_DOCK_RC_GRACE=0 \
+        python3 "$ROOT/bin/ghostty-dock-rc-titles" >/dev/null 2>&1
+    check "a session that ends is archived, live ones are not" "$(jq -r '._archived | join(",")' "$t")" "cse_D,cse_B"
+    # A clean exit removes the file; a session seen live before still goes.
+    rm -f "$tmp/home/.claude/sessions/2.json"
+    printf '{"pid":%s,"cwd":"%s","bridgeSessionId":"session_E"}' "$$" "$tmp/repos/plain" >"$tmp/home/.claude/sessions/5.json"
+    HOME="$tmp/home" GHOSTTY_DOCK_API="$api" GHOSTTY_DOCK_TOKEN=tok GHOSTTY_DOCK_RC_GRACE=0 \
+        python3 "$ROOT/bin/ghostty-dock-rc-titles" >/dev/null 2>&1
+    rm -f "$tmp/home/.claude/sessions/5.json"
+    HOME="$tmp/home" GHOSTTY_DOCK_API="$api" GHOSTTY_DOCK_TOKEN=tok GHOSTTY_DOCK_RC_GRACE=0 \
+        python3 "$ROOT/bin/ghostty-dock-rc-titles" >/dev/null 2>&1
+    check "a cleanly closed session is archived" "$(jq -r '._archived | last' "$t")" cse_E
 
     echo "$PASSED passed, $FAILED failed"
     [ "$FAILED" -eq 0 ]

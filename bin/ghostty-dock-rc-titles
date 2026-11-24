@@ -10,6 +10,13 @@ Ghostty Dock runs it every few minutes while its Remote Control names
 setting is on. It reads ~/.claude/sessions/<pid>.json for each live session
 and changes only titles that differ. Prints one line per change.
 
+It also archives the phone entry of a session that has ended (the same call
+Claude Code makes, POST /v1/code/sessions/<id>/archive), once it has been
+gone for GRACE seconds, so the phone lists only sessions that can answer. A
+resumed session gets an entry of its own, and one Claude reattaches to is
+unarchived by Claude. Only sessions this Mac ran are touched. Set
+GHOSTTY_DOCK_RC_KEEP_ENDED=1 to keep ended entries.
+
   ghostty-dock-rc-titles [--dry-run]
 
 Overrides for tests: GHOSTTY_DOCK_API (base URL), GHOSTTY_DOCK_TOKEN.
@@ -25,6 +32,9 @@ import urllib.request
 HOME = os.path.expanduser("~")
 API = os.environ.get("GHOSTTY_DOCK_API", "https://api.anthropic.com")
 LOG = os.path.join(HOME, ".local/state/ghostty-dock/rc-titles.log")
+SEEN = os.path.join(HOME, ".local/state/ghostty-dock/rc-seen.json")
+GRACE = int(os.environ.get("GHOSTTY_DOCK_RC_GRACE", "300"))
+KEEP_ENDED = os.environ.get("GHOSTTY_DOCK_RC_KEEP_ENDED") == "1"
 DRY = "--dry-run" in sys.argv[1:]
 
 
@@ -55,9 +65,9 @@ def token():
     return oauth.get("accessToken")
 
 
-def call(tok, method, cid, body=None):
+def call(tok, method, cid, body=None, action=""):
     req = urllib.request.Request(
-        f"{API}/v1/code/sessions/{cid}", method=method,
+        f"{API}/v1/code/sessions/{cid}{action}", method=method,
         data=json.dumps(body).encode() if body is not None else None,
         headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json",
                  "anthropic-version": "2023-06-01", "User-Agent": "ghostty-dock"})
@@ -90,8 +100,9 @@ def repo_name(cwd):
 
 
 def sessions():
+    """Live sessions {cid: cwd}, and the cids of ended ones whose files remain."""
     d = os.path.join(HOME, ".claude/sessions")
-    found = {}
+    found, ended = {}, set()
     for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
         if not f.endswith(".json"):
             continue
@@ -100,21 +111,78 @@ def sessions():
         except (OSError, ValueError):
             continue
         bridge, cwd, pid = o.get("bridgeSessionId") or "", o.get("cwd"), o.get("pid")
-        if not (bridge and cwd and isinstance(pid, int) and alive(pid)):
+        if not (bridge and cwd and isinstance(pid, int)):
             continue
         cid = "cse_" + bridge.split("_", 1)[1] if "_" in bridge else bridge
-        found[cid] = cwd
-    return found
+        if alive(pid):
+            found[cid] = cwd
+        else:
+            ended.add(cid)
+    return found, ended - set(found)
+
+
+def load_seen():
+    try:
+        d = json.load(open(SEEN))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_seen(seen):
+    try:
+        tmp = SEEN + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(seen, f)
+        os.replace(tmp, SEEN)
+    except OSError:
+        pass
+
+
+def ended_to_archive(live, ended, now):
+    """Updates rc-seen.json: when each session was last live, or first seen
+    ended. Returns the ended ones gone for GRACE, which leave the list."""
+    seen = load_seen()
+    for cid in live:
+        seen[cid] = now
+    for cid in ended:
+        seen.setdefault(cid, now)
+    due = [cid for cid, t in seen.items()
+           if cid not in live and isinstance(t, (int, float)) and now - t >= GRACE]
+    return seen, due
 
 
 def main():
-    live = sessions()
-    if not live:
+    live, ended = sessions()
+    now = int(time.time())
+    seen, due = ended_to_archive(live, ended, now)
+    if KEEP_ENDED:
+        due = []
+    if not live and not due:
+        save_seen(seen)
         return 0
     tok = token()
     if not tok:
+        save_seen(seen)
         log("no usable Claude login in the Keychain; titles left alone")
         return 1
+    for cid in due:
+        if DRY:
+            print(f"{cid}: ended, would archive (dry run)")
+            continue
+        st, _ = call(tok, "POST", cid, {}, "/archive")
+        if st in (200, 404, 409):
+            seen[cid] = "archived"   # archived, already archived, or gone
+            log(f"{cid}: ended, archived" + ("" if st == 200 else f" (HTTP {st})"))
+        elif st in (401, 403):
+            seen[cid] = "archived"   # not ours to archive: leave it be
+            log(f"{cid}: ended, archive refused (HTTP {st})")
+        else:
+            log(f"{cid}: ended, archive failed (HTTP {st}); will retry")
+    # An archived one is remembered while its file remains, so it is not
+    # archived again every run.
+    seen = {k: v for k, v in seen.items() if v != "archived" or k in ended}
+    save_seen(seen)
     for cid, cwd in live.items():
         want = repo_name(cwd)
         st, d = call(tok, "GET", cid)
