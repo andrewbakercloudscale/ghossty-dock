@@ -5293,6 +5293,251 @@ index 0000000..b35bf4a
 +        return true
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockImages.swift b/macos/Sources/Features/Dock/DockImages.swift
+new file mode 100644
+index 0000000..d648843
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockImages.swift
+@@ -0,0 +1,239 @@
++import AppKit
++import SwiftUI
++
++/// The images pasted into a session ("[Image #36]" in the terminal, which
++/// never draws them), read from its transcript so the sidebar can show them.
++/// Each transcript is read once, then only what it gained since.
++final class DockImages: ObservableObject {
++    static let shared = DockImages()
++
++    struct Pasted: Identifiable, Equatable {
++        let id: String          // "<session>-<n>"
++        let number: Int         // the N of [Image #N]
++        let said: String        // the message it came with
++        let when: Date?
++        let thumb: NSImage
++        let file: URL           // full size, for opening
++
++        static func == (a: Pasted, b: Pasted) -> Bool { a.id == b.id }
++    }
++
++    /// Newest last, the last `keep` per session.
++    @Published private(set) var images: [String: [Pasted]] = [:]
++    private var offsets: [String: UInt64] = [:]
++    private var reading: Set<String> = []
++    private let keep = 24
++    private let queue = DispatchQueue(label: "dock.images", qos: .utility)
++
++    private init() {
++        queue.async { Self.prune() }
++    }
++
++    private static let cache: URL = {
++        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
++            .appendingPathComponent("ghostty-dock/images", isDirectory: true)
++        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
++        return dir
++    }()
++
++    /// Reads what session <sid>'s transcript gained since the last call.
++    func refresh(_ sid: String) {
++        guard !reading.contains(sid), let url = DockSessions.shared.transcriptURL(sid) else { return }
++        reading.insert(sid)
++        let known = offsets[sid] ?? 0
++        queue.async { [weak self] in
++            guard let self else { return }
++            var found: [Pasted] = []
++            var start = known
++            var end = known
++            if let h = try? FileHandle(forReadingFrom: url) {
++                defer { try? h.close() }
++                let size = (try? h.seekToEnd()) ?? 0
++                if size < start { start = 0 }   // rewritten: read it again
++                end = start
++                try? h.seek(toOffset: start)
++                let data = (try? h.readToEnd()) ?? Data()
++                // A partial last line waits for the next read.
++                if let nl = data.lastIndex(of: 0x0A) {
++                    end = start + UInt64(nl - data.startIndex + 1)
++                    found = Self.parse(data[data.startIndex...nl], sid: sid)
++                }
++            }
++            let fresh = start == 0
++            DispatchQueue.main.async {
++                self.reading.remove(sid)
++                self.offsets[sid] = end
++                if fresh && end > 0 { self.images[sid] = [] }
++                guard !found.isEmpty else { return }
++                var all = (self.images[sid] ?? []) + found
++                if all.count > self.keep { all.removeFirst(all.count - self.keep) }
++                self.images[sid] = all
++            }
++        }
++    }
++
++    private static let iso: ISO8601DateFormatter = {
++        let f = ISO8601DateFormatter()
++        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
++        return f
++    }()
++
++    /// The images typed or pasted in by the person (not tool screenshots,
++    /// which come back inside tool results).
++    private static func parse(_ data: Data, sid: String) -> [Pasted] {
++        let marker = Data("\"type\":\"image\"".utf8)
++        var out: [Pasted] = []
++        for line in data.split(separator: 0x0A) where line.range(of: marker) != nil {
++            guard let o = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
++                  o["type"] as? String == "user", o["isMeta"] as? Bool != true,
++                  let content = (o["message"] as? [String: Any])?["content"] as? [[String: Any]]
++            else { continue }
++            let ids = (o["imagePasteIds"] as? [Int]) ?? []
++            let said = content.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }
++                .joined(separator: " ")
++                .replacingOccurrences(of: #"\[Image #\d+\]"#, with: "", options: .regularExpression)
++                .trimmingCharacters(in: .whitespacesAndNewlines)
++            let when = (o["timestamp"] as? String).flatMap(iso.date(from:))
++            var i = 0
++            for block in content where block["type"] as? String == "image" {
++                defer { i += 1 }
++                guard let src = block["source"] as? [String: Any], src["type"] as? String == "base64",
++                      let b64 = src["data"] as? String, let raw = Data(base64Encoded: b64),
++                      let thumb = thumbnail(raw) else { continue }
++                let n = i < ids.count ? ids[i] : 0
++                let uuid = (o["uuid"] as? String) ?? UUID().uuidString
++                let ext = (src["media_type"] as? String)?.split(separator: "/").last.map(String.init) ?? "png"
++                let file = cache.appendingPathComponent("\(sid.prefix(8))-\(uuid.prefix(8))-\(i).\(ext)")
++                if !FileManager.default.fileExists(atPath: file.path) { try? raw.write(to: file) }
++                out.append(Pasted(id: "\(uuid)-\(i)", number: n, said: said, when: when, thumb: thumb, file: file))
++            }
++        }
++        return out
++    }
++
++    /// A small copy, so a screenful of screenshots costs little memory.
++    private static func thumbnail(_ raw: Data) -> NSImage? {
++        guard let src = CGImageSourceCreateWithData(raw as CFData, nil),
++              let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, [
++                  kCGImageSourceCreateThumbnailFromImageAlways: true,
++                  kCGImageSourceThumbnailMaxPixelSize: 240,
++                  kCGImageSourceCreateThumbnailWithTransform: true,
++              ] as CFDictionary)
++        else { return nil }
++        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
++    }
++
++    /// Image files over a week old go.
++    static func prune() {
++        let fm = FileManager.default
++        for f in (try? fm.contentsOfDirectory(at: cache, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] {
++            let d = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
++            if Date().timeIntervalSince(d) > 7 * 86400 { try? fm.removeItem(at: f) }
++        }
++    }
++}
++
++/// A strip of the selected session's pasted images at the foot of the
++/// sidebar: the terminal shows only "[Image #N]". Click one to open it.
++struct DockImageStrip: View {
++    @ObservedObject private var model = DockSessions.shared
++    @ObservedObject private var store = DockImages.shared
++    @AppStorage("dock.images.open") private var open = true
++    @AppStorage(DockSettings.showImagesKey) private var enabled = true
++
++    private var sid: String? { model.rows.first(where: \.selected)?.sessionId }
++
++    var body: some View {
++        if enabled, let sid {
++            let shown = Array((store.images[sid] ?? []).reversed())
++            VStack(spacing: 0) {
++                if !shown.isEmpty {
++                    Divider().opacity(0.4)
++                    bar(count: shown.count)
++                    if open {
++                        ScrollView(.horizontal, showsIndicators: false) {
++                            LazyHStack(spacing: 6) {
++                                ForEach(shown) { tile($0) }
++                            }
++                            .padding(.horizontal, 10)
++                            .padding(.bottom, 8)
++                        }
++                        .frame(height: 84)
++                    }
++                }
++            }
++            // Read now and every few seconds while this session is selected.
++            .task(id: sid) {
++                while !Task.isCancelled {
++                    store.refresh(sid)
++                    try? await Task.sleep(nanoseconds: 3_000_000_000)
++                }
++            }
++        }
++    }
++
++    private func bar(count: Int) -> some View {
++        Button {
++            withAnimation(.easeOut(duration: 0.15)) { open.toggle() }
++        } label: {
++            HStack(spacing: 6) {
++                Image(systemName: "photo.on.rectangle").font(.system(size: 11, weight: .semibold))
++                    .foregroundStyle(DockPalette.mauve)
++                Text("Images").font(.system(size: 11.5, weight: .semibold))
++                    .foregroundStyle(DockPalette.text)
++                Text("\(count)").font(.system(size: 10.5, weight: .semibold)).monospacedDigit()
++                    .foregroundStyle(DockPalette.mauve)
++                    .padding(.horizontal, 6).padding(.vertical, 1)
++                    .background(Capsule().fill(DockPalette.mauve.opacity(0.15)))
++                Spacer()
++                Image(systemName: open ? "chevron.down" : "chevron.up").font(.system(size: 9, weight: .bold))
++                    .foregroundStyle(DockPalette.mauve)
++            }
++            .padding(.horizontal, 12).padding(.vertical, 7)
++            .contentShape(Rectangle())
++        }
++        .buttonStyle(.plain)
++        .dockTip("Images pasted into this session, newest first. Click one to open it")
++    }
++
++    private func tile(_ p: DockImages.Pasted) -> some View {
++        Button { NSWorkspace.shared.open(p.file) } label: {
++            Image(nsImage: p.thumb)
++                .resizable()
++                .aspectRatio(contentMode: .fill)
++                .frame(width: 96, height: 72)
++                .clipped()
++                .clipShape(RoundedRectangle(cornerRadius: 5))
++                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(DockPalette.grey.opacity(0.35), lineWidth: 1))
++                .overlay(alignment: .bottomLeading) {
++                    if p.number > 0 {
++                        Text("#\(p.number)")
++                            .font(.system(size: 9.5, weight: .bold)).monospacedDigit()
++                            .foregroundStyle(.white)
++                            .padding(.horizontal, 4).padding(.vertical, 1)
++                            .background(Capsule().fill(.black.opacity(0.55)))
++                            .padding(3)
++                    }
++                }
++        }
++        .buttonStyle(.plain)
++        .help(tip(p))
++        .contextMenu {
++            Button("Open") { NSWorkspace.shared.open(p.file) }
++            Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([p.file]) }
++            Button("Copy Image") {
++                if let img = NSImage(contentsOf: p.file) {
++                    NSPasteboard.general.clearContents()
++                    NSPasteboard.general.writeObjects([img])
++                }
++            }
++        }
++    }
++
++    private func tip(_ p: DockImages.Pasted) -> String {
++        var parts = [p.number > 0 ? "Image #\(p.number)" : "Image"]
++        if let w = p.when { parts.append(w.formatted(date: .omitted, time: .shortened)) }
++        let head = parts.joined(separator: " · ")
++        return p.said.isEmpty ? head : head + "\n" + String(p.said.prefix(160))
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockLayerAnimation.swift b/macos/Sources/Features/Dock/DockLayerAnimation.swift
 new file mode 100644
 index 0000000..db9ed48
@@ -10278,10 +10523,10 @@ index 0000000..767ee30
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..d8e504b
+index 0000000..96fae21
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,486 @@
+@@ -0,0 +1,491 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -10304,6 +10549,8 @@ index 0000000..d8e504b
 +    static let rowMetaKey = "dock.rowMeta"
 +    static let collapsedKey = "dock.collapsed"
 +    static let showCostKey = "dock.showCost"
++    /// The strip of the selected session's pasted images.
++    static let showImagesKey = "dock.showImages"
 +    static let notifyWaitingKey = "dock.notifyWaiting"
 +    static let raiseWaitingKey = "dock.raiseWaiting"
 +    static let showWorkspaceKey = "dock.showWorkspace"
@@ -10333,6 +10580,7 @@ index 0000000..d8e504b
 +            holdSessionsKey: true,
 +            groupingKey: Grouping.none.rawValue,
 +            showCostKey: true,
++            showImagesKey: true,
 +            notifyWaitingKey: true,
 +            showWorkspaceKey: true,
 +            notifyFinishedKey: true,
@@ -10390,6 +10638,7 @@ index 0000000..d8e504b
 +    @AppStorage(DockSettings.themeKey) private var theme = ""
 +    @AppStorage(DockSettings.groupingKey) private var grouping = DockSettings.Grouping.none
 +    @AppStorage(DockSettings.showCostKey) private var showCost = true
++    @AppStorage(DockSettings.showImagesKey) private var showImages = true
 +    @AppStorage(DockSettings.showWorkspaceKey) private var showWorkspace = true
 +    @AppStorage(DockSettings.notifyWaitingKey) private var notifyWaiting = true
 +    @AppStorage(DockSettings.raiseWaitingKey) private var raiseWaiting = true
@@ -10441,6 +10690,7 @@ index 0000000..d8e504b
 +                }
 +                Toggle("Show what each session has cost", isOn: $showCost)
 +                Toggle("Show git branch, pull request and ports", isOn: $showWorkspace)
++                Toggle("Show the selected session's pasted images", isOn: $showImages)
 +                Text("Drag a row by its grip (⋮⋮ on the right) to move it, or right-click → Move Up/Down; the sort becomes “As you drag them”. Right-click also renames, pins or colours it.")
 +                    .font(.callout)
 +                Toggle("Also show Ghostty's tab bar", isOn: $showTabBar)
@@ -10963,10 +11213,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..b20583c
+index 0000000..fe324d6
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1790 @@
+@@ -0,0 +1,1791 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -11097,6 +11347,7 @@ index 0000000..b20583c
 +                .padding(.horizontal, 6)
 +                .padding(.vertical, 4)
 +            }
++            DockImageStrip()
 +            DockHistoryPanel()
 +        }
 +        .frame(width: CGFloat(width.clamped(to: Self.widthRange)))
