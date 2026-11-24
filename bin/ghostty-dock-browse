@@ -3,6 +3,11 @@
 # $BROWSER in Ghostty Dock's terminals: a web page Claude Code (or gh, or
 # Python's webbrowser) opens goes to the browser beside the terminal it runs
 # in. Anything else, or with the app not answering, opens as it would have.
+#
+# Sign-in pages (OAuth, device login) go to the system browser instead: that
+# is where you are already signed in, with your passwords and passkeys, and
+# Google refuses sign-in from an embedded browser. GHOSTTY_DOCK_BROWSE=external
+# sends every page to the system browser.
 
 GHOSTTY_DOCK="${GHOSTTY_DOCK_BIN:-$HOME/.local/bin}/ghostty-dock"
 
@@ -15,7 +20,9 @@ function usage() {
 status=0
 for url in "$@"; do
     case $url in
+    *://*/oauth/* | *://*/oauth2/* | *://*/login/device*) ;;
     http://* | https://*)
+        [ "${GHOSTTY_DOCK_BROWSE:-}" = external ] && { open "$url" || status=1; continue; }
         "$GHOSTTY_DOCK" url "$url" >/dev/null 2>&1 && continue ;;
     esac
     open "$url" || status=1
