@@ -7,9 +7,14 @@ import DockCore
 final class SettingsStore: ObservableObject {
     static let makeRoomKey = "makeRoom"
     static var makeRoom: Bool { UserDefaults.standard.object(forKey: makeRoomKey) as? Bool ?? true }
+    /// Read by bin/ghostty-dock-browse (defaults read), so the key and the
+    /// default must match it.
+    static let linksBesideKey = "openLinksBeside"
+    static var linksBeside: Bool { UserDefaults.standard.object(forKey: linksBesideKey) as? Bool ?? true }
 
     @Published var hideGhosttyIcons: Bool { didSet { if hideGhosttyIcons != oldValue { applyHidden() } } }
     @Published var makeRoom: Bool { didSet { UserDefaults.standard.set(makeRoom, forKey: Self.makeRoomKey) } }
+    @Published var linksBeside: Bool { didSet { UserDefaults.standard.set(linksBeside, forKey: Self.linksBesideKey) } }
     @Published var startAtLogin: Bool { didSet { if startAtLogin != oldValue { applyLogin() } } }
     @Published private(set) var error: String?
 
@@ -23,6 +28,7 @@ final class SettingsStore: ObservableObject {
         let text = (try? String(contentsOf: GhosttyConfig.path, encoding: .utf8)) ?? ""
         hideGhosttyIcons = GhosttyConfig.isHidden(text)
         makeRoom = Self.makeRoom
+        linksBeside = Self.linksBeside
         startAtLogin = FileManager.default.fileExists(atPath: Self.agentPlist.path)
     }
 
@@ -87,6 +93,14 @@ struct SettingsView: View {
                 Text(WindowTracker.trusted
                      ? "When a Ghostty window reaches the left edge of the screen, it is moved right so the sidebar does not cover it."
                      : "Needs Accessibility permission (System Settings > Privacy & Security > Accessibility). Without it the sidebar covers the window's left edge.")
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Section {
+                Toggle("Open links from sessions in the browser beside the tab", isOn: $store.linksBeside)
+                Text(store.linksBeside
+                     ? "Pages a session opens (Claude Code, gh, Python) show in the dock's browser. Sign-in pages always go to your default browser."
+                     : "Pages a session opens go to your default browser. The browser beside a tab is still there for the agent's browser tools.")
                     .font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
             }

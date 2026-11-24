@@ -151,7 +151,9 @@ function test_browse() {
     mkdir -p "$bin"
     printf '#!/bin/sh\necho "dock $*" >>"%s"\n[ -z "$DOCK_DOWN" ]\n' "$log" >"$bin/ghostty-dock"
     printf '#!/bin/sh\necho "open $*" >>"%s"\n' "$log" >"$bin/open"
-    chmod +x "$bin/ghostty-dock" "$bin/open"
+    # The Settings toggle, read with defaults; never the real Mac's.
+    printf '#!/bin/sh\n[ -n "$BESIDE" ] && echo "$BESIDE"\n' >"$bin/defaults"
+    chmod +x "$bin/ghostty-dock" "$bin/open" "$bin/defaults"
 
     PATH="$bin:$PATH" GHOSTTY_DOCK_BIN="$bin" "$BROWSE" https://example.com/a "mailto:x@example.com"
     expect "a web link goes to the dock, anything else to open" "$(cat "$log")" \
@@ -160,6 +162,19 @@ function test_browse() {
     PATH="$bin:$PATH" GHOSTTY_DOCK_BIN="$bin" DOCK_DOWN=1 "$BROWSE" http://localhost:3000
     expect "with the app not answering it opens as before" "$(cat "$log")" \
         "$(printf 'dock url http://localhost:3000\nopen http://localhost:3000')"
+    rm -f "$log"
+    PATH="$bin:$PATH" GHOSTTY_DOCK_BIN="$bin" "$BROWSE" "https://claude.ai/oauth/authorize?x=1" https://github.com/login/device
+    expect "sign-in pages go to the system browser" "$(cat "$log")" \
+        "$(printf 'open https://claude.ai/oauth/authorize?x=1\nopen https://github.com/login/device')"
+    rm -f "$log"
+    PATH="$bin:$PATH" GHOSTTY_DOCK_BIN="$bin" BESIDE=0 "$BROWSE" https://example.com/a
+    expect "with the Settings toggle off every page goes to open" "$(cat "$log")" "open https://example.com/a"
+    rm -f "$log"
+    PATH="$bin:$PATH" GHOSTTY_DOCK_BIN="$bin" BESIDE=1 "$BROWSE" https://example.com/a
+    expect "with it on, to the dock" "$(cat "$log")" "dock url https://example.com/a"
+    rm -f "$log"
+    PATH="$bin:$PATH" GHOSTTY_DOCK_BIN="$bin" GHOSTTY_DOCK_BROWSE=external "$BROWSE" https://example.com/a
+    expect "GHOSTTY_DOCK_BROWSE=external does the same" "$(cat "$log")" "open https://example.com/a"
 }
 
 # ghostty-dock url: the request the app gets, and what it refuses itself.

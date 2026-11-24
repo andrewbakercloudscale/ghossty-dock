@@ -6,8 +6,9 @@
 #
 # Sign-in pages (OAuth, device login) go to the system browser instead: that
 # is where you are already signed in, with your passwords and passkeys, and
-# Google refuses sign-in from an embedded browser. GHOSTTY_DOCK_BROWSE=external
-# sends every page to the system browser.
+# Google refuses sign-in from an embedded browser. Every page goes to the
+# system browser when Settings has "Open links from sessions in the browser
+# beside the tab" off, or with GHOSTTY_DOCK_BROWSE=external.
 
 GHOSTTY_DOCK="${GHOSTTY_DOCK_BIN:-$HOME/.local/bin}/ghostty-dock"
 
@@ -18,11 +19,15 @@ function usage() {
 
 [ $# -gt 0 ] || usage
 status=0
+mode=${GHOSTTY_DOCK_BROWSE:-}
+if [ -z "$mode" ] && [ "$(defaults read consulting.cloudscale.ghosttydock openLinksBeside 2>/dev/null)" = 0 ]; then
+    mode=external
+fi
 for url in "$@"; do
     case $url in
     *://*/oauth/* | *://*/oauth2/* | *://*/login/device*) ;;
     http://* | https://*)
-        [ "${GHOSTTY_DOCK_BROWSE:-}" = external ] && { open "$url" || status=1; continue; }
+        [ "$mode" = external ] && { open "$url" || status=1; continue; }
         "$GHOSTTY_DOCK" url "$url" >/dev/null 2>&1 && continue ;;
     esac
     open "$url" || status=1
