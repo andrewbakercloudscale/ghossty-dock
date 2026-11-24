@@ -8165,10 +8165,10 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..e96c025
+index 0000000..767ee30
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,2103 @@
+@@ -0,0 +1,2107 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -9093,6 +9093,10 @@ index 0000000..e96c025
 +    /// "Waiting for 2 background agents to finish" in the screen's last
 +    /// lines: how many, and "agent" or "task".
 +    static func backgroundWait(_ screen: String) -> (count: Int, kind: String)? {
++        // Runs for every idle session twice a second: most screens say
++        // neither, so a plain search first skips splitting the whole screen.
++        guard screen.range(of: " still running") != nil || screen.range(of: "Waiting for ") != nil
++        else { return nil }
 +        let tail = screen.split(separator: "\n").filter { $0.contains { !$0.isWhitespace } }
 +            .suffix(20).joined(separator: "\n")
 +        // Newer Claude Code ends a turn with "· 1 shell still running".
