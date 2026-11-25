@@ -5295,10 +5295,10 @@ index 0000000..b35bf4a
 +}
 diff --git a/macos/Sources/Features/Dock/DockImages.swift b/macos/Sources/Features/Dock/DockImages.swift
 new file mode 100644
-index 0000000..d648843
+index 0000000..6e0c3f0
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockImages.swift
-@@ -0,0 +1,239 @@
+@@ -0,0 +1,334 @@
 +import AppKit
 +import SwiftUI
 +
@@ -5326,8 +5326,56 @@ index 0000000..d648843
 +    private let keep = 24
 +    private let queue = DispatchQueue(label: "dock.images", qos: .utility)
 +
++    /// An image on the clipboard that hasn't been pasted into a session yet.
++    struct Clip: Equatable {
++        let count: Int          // the pasteboard's changeCount when it was read
++        let at: Date
++        let thumb: NSImage
++        let file: URL
++
++        static func == (a: Clip, b: Clip) -> Bool { a.count == b.count }
++    }
++
++    @Published private(set) var clip: Clip?
++    private var clipCount = -1
++    private var clipTimer: Timer?
++
 +    private init() {
 +        queue.async { Self.prune() }
++        // Only the change count is checked each second; the image itself is
++        // read just when the clipboard changes.
++        clipTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
++            self?.checkClipboard()
++        }
++        checkClipboard()
++    }
++
++    private func checkClipboard() {
++        let pb = NSPasteboard.general
++        guard pb.changeCount != clipCount else { return }
++        clipCount = pb.changeCount
++        let types = pb.types ?? []
++        // Files copied in Finder carry their icon as an image: not wanted.
++        guard !types.contains(.fileURL),
++              let (raw, ext) = pb.data(forType: .png).map({ ($0, "png") })
++                ?? pb.data(forType: .tiff).map({ ($0, "tiff") })
++        else { clip = nil; return }
++        let count = clipCount
++        queue.async { [weak self] in
++            guard let thumb = Self.thumbnail(raw) else { return }
++            let file = Self.cache.appendingPathComponent("clipboard.\(ext)")
++            try? FileManager.default.removeItem(at: file)
++            try? raw.write(to: file)
++            DispatchQueue.main.async {
++                guard let self, self.clipCount == count else { return }
++                self.clip = Clip(count: count, at: Date(), thumb: thumb, file: file)
++            }
++        }
++    }
++
++    /// Our own "Copy Image" shouldn't come back as a new clipboard image.
++    func copied() {
++        clipCount = NSPasteboard.general.changeCount
 +    }
 +
 +    private static let cache: URL = {
@@ -5366,6 +5414,10 @@ index 0000000..d648843
 +                self.offsets[sid] = end
 +                if fresh && end > 0 { self.images[sid] = [] }
 +                guard !found.isEmpty else { return }
++                // Pasted into a session since it was copied: it's in the strip now.
++                if let c = self.clip, found.contains(where: { ($0.when ?? .distantPast) > c.at }) {
++                    self.clip = nil
++                }
 +                var all = (self.images[sid] ?? []) + found
 +                if all.count > self.keep { all.removeFirst(all.count - self.keep) }
 +                self.images[sid] = all
@@ -5447,13 +5499,15 @@ index 0000000..d648843
 +    var body: some View {
 +        if enabled, let sid {
 +            let shown = Array((store.images[sid] ?? []).reversed())
++            let clip = store.clip
 +            VStack(spacing: 0) {
-+                if !shown.isEmpty {
++                if !shown.isEmpty || clip != nil {
 +                    Divider().opacity(0.4)
-+                    bar(count: shown.count)
++                    bar(count: shown.count + (clip == nil ? 0 : 1))
 +                    if open {
 +                        ScrollView(.horizontal, showsIndicators: false) {
 +                            LazyHStack(spacing: 6) {
++                                if let clip { DockClipTile(clip: clip).id(clip.count) }
 +                                ForEach(shown) { tile($0) }
 +                            }
 +                            .padding(.horizontal, 10)
@@ -5526,6 +5580,7 @@ index 0000000..d648843
 +                if let img = NSImage(contentsOf: p.file) {
 +                    NSPasteboard.general.clearContents()
 +                    NSPasteboard.general.writeObjects([img])
++                    store.copied()
 +                }
 +            }
 +        }
@@ -5536,6 +5591,46 @@ index 0000000..d648843
 +        if let w = p.when { parts.append(w.formatted(date: .omitted, time: .shortened)) }
 +        let head = parts.joined(separator: " · ")
 +        return p.said.isEmpty ? head : head + "\n" + String(p.said.prefix(160))
++    }
++}
++
++/// The image waiting on the clipboard: first in the strip, with a flashing
++/// green border and a clipboard badge, until it's pasted or replaced.
++private struct DockClipTile: View {
++    let clip: DockImages.Clip
++    @State private var lit = false
++
++    var body: some View {
++        Button { NSWorkspace.shared.open(clip.file) } label: {
++            Image(nsImage: clip.thumb)
++                .resizable()
++                .aspectRatio(contentMode: .fill)
++                .frame(width: 96, height: 72)
++                .clipped()
++                .clipShape(RoundedRectangle(cornerRadius: 5))
++                .overlay(
++                    RoundedRectangle(cornerRadius: 5)
++                        .strokeBorder(DockPalette.alert, lineWidth: 2.5)
++                        .opacity(lit ? 1 : 0.25)
++                )
++                .overlay(alignment: .topTrailing) {
++                    Image(systemName: "doc.on.clipboard.fill")
++                        .font(.system(size: 10, weight: .bold))
++                        .foregroundStyle(.white)
++                        .padding(4)
++                        .background(Circle().fill(DockPalette.alert.opacity(0.9)))
++                        .padding(3)
++                }
++        }
++        .buttonStyle(.plain)
++        .help("On your clipboard, not pasted yet. Press ⌘V in a session to paste it")
++        .contextMenu {
++            Button("Open") { NSWorkspace.shared.open(clip.file) }
++            Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([clip.file]) }
++        }
++        .onAppear {
++            withAnimation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true)) { lit = true }
++        }
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockLayerAnimation.swift b/macos/Sources/Features/Dock/DockLayerAnimation.swift
