@@ -14960,10 +14960,10 @@ index 0000000..e82359a
 +}
 diff --git a/macos/Sources/Features/Dock/DockViewerPath.swift b/macos/Sources/Features/Dock/DockViewerPath.swift
 new file mode 100644
-index 0000000..25ab0f9
+index 0000000..e7c18cb
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockViewerPath.swift
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,55 @@
 +import Foundation
 +
 +/// Where a ⌘-clicked file name really is. Ghostty keeps the full stop that
@@ -14984,6 +14984,39 @@ index 0000000..25ab0f9
 +        let candidates = relative ? [folder.map { ($0 as NSString).appendingPathComponent(name) }, "/" + name] : [name]
 +        guard let found = candidates.compactMap({ $0 }).first(where: { files.fileExists(atPath: $0) }) else { return url }
 +        return URL(filePath: found)
++    }
++
++    /// The file or folder selected text names, for "Show in Finder": a full
++    /// path, ~/..., file://..., or one relative to the terminal's folder,
++    /// with quotes, sentence ends and a ":12" line number dropped, and a path
++    /// broken over lines joined again. Nil when nothing of that name exists.
++    static func existing(_ text: String, in folder: String?) -> String? {
++        let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard !raw.isEmpty, raw.count < 4096 else { return nil }
++        let lines = raw.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
++        let tries = [raw, lines.joined()]
++        let files = FileManager.default
++        for var t in tries {
++            if t.hasPrefix("file://"), let u = URL(string: t), u.isFileURL { t = u.path }
++            while let f = t.first, "'\"`(<[".contains(f) { t.removeFirst() }
++            while let l = t.last, trailing.contains(l) || ">]".contains(l) { t.removeLast() }
++            t = (t as NSString).expandingTildeInPath
++            var options = [t]
++            // A "path:12" or "path:12:4" names a line in it.
++            var cut = t
++            for _ in 0..<2 {
++                if let c = cut.lastIndex(of: ":"), !cut[cut.index(after: c)...].isEmpty,
++                   cut[cut.index(after: c)...].allSatisfy(\.isNumber) {
++                    cut = String(cut[..<c])
++                    options.append(cut)
++                }
++            }
++            for o in options where !o.isEmpty {
++                let full = o.hasPrefix("/") ? o : folder.map { ($0 as NSString).appendingPathComponent(o) }
++                if let full, files.fileExists(atPath: full) { return (full as NSString).standardizingPath }
++            }
++        }
++        return nil
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockViewerScheme.swift b/macos/Sources/Features/Dock/DockViewerScheme.swift
@@ -15792,7 +15825,7 @@ index 47503dc..c914940 100644
                          let keys = Array(environmentVariables.keys)
                          let values = Array(environmentVariables.values)
 diff --git a/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift b/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift
-index 3129acf..fe75e4b 100644
+index 3129acf..b3fde99 100644
 --- a/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift	
 +++ b/macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift	
 @@ -42,6 +42,10 @@ extension Ghostty {
@@ -15851,7 +15884,7 @@ index 3129acf..fe75e4b 100644
              let mods = Ghostty.ghosttyMods(event.modifierFlags)
              if ghostty_surface_mouse_button(
                  surface,
-@@ -1495,40 +1521,64 @@ extension Ghostty {
+@@ -1495,40 +1521,78 @@ extension Ghostty {
              // in a row without storing it all.
              var item: NSMenuItem
  
@@ -15863,6 +15896,15 @@ index 3129acf..fe75e4b 100644
 +                item.dockIcon("play.fill", .systemGreen)
 +                item.toolTip = command
 +                item.representedObject = command
++            }
++
++            // Ghostty Dock: a selected path that exists can be shown in Finder.
++            let picked = self.accessibilitySelectedText().flatMap { $0.isEmpty ? nil : $0 } ?? appSelection()
++            if let picked, let path = DockViewerPath.existing(picked, in: pwd) {
++                item = menu.addItem(withTitle: "Show in Finder", action: #selector(showSelectionInFinder(_:)), keyEquivalent: "")
++                item.dockIcon("folder", .systemBlue)
++                item.toolTip = path
++                item.representedObject = path
 +            }
 +
              // If we have a selection, add copy
@@ -15919,6 +15961,11 @@ index 3129acf..fe75e4b 100644
  
          // MARK: Menu Handlers
  
++        @objc func showSelectionInFinder(_ sender: NSMenuItem) {
++            guard let path = sender.representedObject as? String else { return }
++            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
++        }
++
 +        @objc func runSelection(_ sender: NSMenuItem) {
 +            guard let command = sender.representedObject as? String else { return }
 +            DockSessions.shared.runInChild(command, from: window)
@@ -15927,7 +15974,7 @@ index 3129acf..fe75e4b 100644
          @IBAction func copy(_ sender: Any?) {
              guard let surface = self.surface else { return }
              let action = "copy_to_clipboard"
-@@ -2300,42 +2350,52 @@ extension Ghostty.SurfaceView {
+@@ -2300,42 +2364,52 @@ extension Ghostty.SurfaceView {
  /// We use this to cache our surface content. This probably should be extracted some day
  /// to a more generic helper.
  class CachedValue<T> {
