@@ -5305,10 +5305,10 @@ index 0000000..b35bf4a
 +}
 diff --git a/macos/Sources/Features/Dock/DockImages.swift b/macos/Sources/Features/Dock/DockImages.swift
 new file mode 100644
-index 0000000..e18dddd
+index 0000000..e3a6ef1
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockImages.swift
-@@ -0,0 +1,351 @@
+@@ -0,0 +1,354 @@
 +import AppKit
 +import SwiftUI
 +
@@ -5639,6 +5639,11 @@ index 0000000..e18dddd
 +                    RoundedRectangle(cornerRadius: 5)
 +                        .strokeBorder(DockPalette.alert, lineWidth: 2.5)
 +                        .opacity(lit ? 1 : 0.25)
++                        // Only this border pulses. A repeatForever started
++                        // with withAnimation also caught the strip's own
++                        // open and close, so the chevron seemed to need
++                        // several clicks.
++                        .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true), value: lit)
 +                )
 +                .overlay(alignment: .topTrailing) {
 +                    Image(systemName: "doc.on.clipboard.fill")
@@ -5655,9 +5660,7 @@ index 0000000..e18dddd
 +            Button("Open") { NSWorkspace.shared.open(clip.file) }
 +            Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([clip.file]) }
 +        }
-+        .onAppear {
-+            withAnimation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true)) { lit = true }
-+        }
++        .onAppear { lit = true }
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockLayerAnimation.swift b/macos/Sources/Features/Dock/DockLayerAnimation.swift
