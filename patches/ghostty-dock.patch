@@ -13827,10 +13827,10 @@ index 0000000..0a5e412
 +}
 diff --git a/macos/Sources/Features/Dock/DockUpdates.swift b/macos/Sources/Features/Dock/DockUpdates.swift
 new file mode 100644
-index 0000000..0796af7
+index 0000000..5cf763c
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockUpdates.swift
-@@ -0,0 +1,406 @@
+@@ -0,0 +1,422 @@
 +import AppKit
 +import Combine
 +
@@ -13915,11 +13915,17 @@ index 0000000..0796af7
 +    private let logURL = FileManager.default.homeDirectoryForCurrentUser
 +        .appendingPathComponent(".local/state/ghostty-dock/update.log")
 +
-+    /// Checks 5 seconds after launch and every hour.
++    /// Checks 5 seconds after launch (nothing found earlier is kept across
++    /// a launch) and then once a day. The hourly tick only asks GitHub when
++    /// the last check was a day ago, so a Mac that slept through the day
++    /// still checks soon after it wakes.
 +    func start() {
 +        guard timer == nil else { return }
-+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.check() }
-+        timer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in self?.check() }
++        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
++            UserDefaults.standard.set(Date(), forKey: Self.checkedKey)
++            self?.check()
++        }
++        timer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in self?.dailyCheck() }
 +        checkInstalled()
 +        installedTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.checkInstalled() }
 +        statusTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.readRestartStatus() }
@@ -14076,6 +14082,16 @@ index 0000000..0796af7
 +        readRestartStatus()
 +        DockLog.restart.notice("restart once sessions are quiet")
 +        DockProcess.launch("/bin/bash", [restarter], log: DockLog.restart)
++    }
++
++    private static let checkedKey = "dock.updates.dailyCheck"
++
++    private func dailyCheck() {
++        let d = UserDefaults.standard
++        let last = d.object(forKey: Self.checkedKey) as? Date ?? .distantPast
++        guard Date().timeIntervalSince(last) >= 24 * 3600 else { return }
++        d.set(Date(), forKey: Self.checkedKey)
++        check()
 +    }
 +
 +    func check() {

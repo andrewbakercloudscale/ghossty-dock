@@ -384,7 +384,8 @@ ordinary macOS defaults (`defaults read consulting.cloudscale.ghosttydock`).
 **About** is the last tab of Settings (⚙︎ at the top of the sidebar, or Ghostty
 Dock → About Ghostty Dock, Help → About Ghostty Dock, or Check for Updates…). It shows the version
 (`1.0.<commits>` and the commit it was built from), who made it, and links.
-It checks GitHub 5 seconds after launch and every hour. When there is
+It checks GitHub 5 seconds after launch and then once a day; Check for
+Updates… checks at once. When there is
 something new, a banner at the top of the sidebar has one **Update** button
 (no dialog) and a **What's new** link listing every change since your version.
 While it installs the banner shows progress; then it offers **Restart**, or
