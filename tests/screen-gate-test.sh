@@ -60,8 +60,16 @@ function main() {
     local r
     r=$(run_gate 0 "$(hook_json mcp__claude-in-chrome__read_page)")
     check "read-only tool goes straight on" "$r" "0 "
-    r=$(run_gate 0 "$(hook_json mcp__claude-in-chrome__computer '{"action":"screenshot"}')")
-    check "screenshot goes straight on" "$r" "0 "
+    r=$(run_gate 0 "$(hook_json mcp__computer-use__screenshot)")
+    check "a desktop screenshot goes straight on" "$r" "0 "
+    # These bring a window up: Chrome fronts the tab it photographs, and
+    # Playwright opens its browser on its first call, whatever it is.
+    r=$(run_gate 30 "$(hook_json mcp__claude-in-chrome__computer '{"action":"screenshot"}' s7)")
+    check "a Chrome screenshot waits like any action" \
+        "$(case "${r%% *}" in 3 | 4) echo ok ;; *) echo "${r%% *}s" ;; esac)" "ok"
+    r=$(run_gate 30 "$(hook_json mcp__playwright__browser_snapshot '{}' s8)")
+    check "a Playwright snapshot waits like any action" \
+        "$(case "${r%% *}" in 3 | 4) echo ok ;; *) echo "${r%% *}s" ;; esac)" "ok"
 
     touch "$TMP/state/screen-gate-off"
     r=$(run_gate 0 "$(hook_json mcp__claude-in-chrome__navigate '{"url":"https://example.com"}')")

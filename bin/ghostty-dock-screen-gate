@@ -60,16 +60,26 @@ function idle_seconds() {
     fi
 }
 
-# Tools that only read: they never take the screen.
+# Tools that only read and never bring a window up. Not screenshots or
+# Playwright's snapshots: Chrome brings a tab to the front to photograph it,
+# and Playwright opens its browser window on whichever call comes first, so
+# those went ahead with no warning and the panel only showed for the next
+# action, after the browser had already taken the screen.
 function reads_only() {
     local tool="$1" action="$2"
+    case "$tool" in
+    mcp__playwright__*) return 1 ;;
+    mcp__computer-use__*)
+        case "$action" in screenshot | zoom | wait | cursor_position) return 0 ;; esac
+        case "${tool##*__}" in screenshot | list_*) return 0 ;; esac
+        return 1 ;;
+    esac
     case "${tool##*__}" in
         tabs_context | tabs_context_mcp | read_page | get_page_text | find | read_console_messages | \
-            read_network_requests | browser_snapshot | browser_console_messages | \
-            browser_network_requests | browser_take_screenshot | screenshot | list_*)
+            read_network_requests | list_*)
             return 0 ;;
     esac
-    case "$action" in screenshot | zoom | wait | cursor_position) return 0 ;; esac
+    case "$action" in wait | cursor_position) return 0 ;; esac
     return 1
 }
 
