@@ -288,6 +288,14 @@ reports each session's status.
   Its next actions within 30 seconds go straight on, and reading a page or
   taking a screenshot never waits. It is the `ghostty-dock-screen-gate`
   hook; without the app running it is a notification.
+- **Remote Control reconnects by itself** (Settings, App, on by default):
+  when a session's Remote Control drops because the server was unreachable
+  or the connection kept dropping, Ghostty Dock types `/remote-control` into
+  it once it is idle at an empty prompt and you are not typing in it. It
+  tries again after 1, 5, 15 and 30 minutes, up to 6 times in a row. Drops
+  that need you (another device took over, the session was ended elsewhere,
+  your login changed) are left alone. Each try is logged to
+  `~/.local/state/ghostty-dock/rc-reconnect.log`.
 - **Remote Control names** (Settings, off by default): every five minutes,
   each running session's title on the phone is set to its repo, so the
   phone's AI titles are undone. The title lives on Anthropic's server, and

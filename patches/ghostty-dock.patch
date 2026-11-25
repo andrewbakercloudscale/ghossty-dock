@@ -1,8 +1,8 @@
 diff --git a/macos/Sources/App/macOS/AppDelegate.swift b/macos/Sources/App/macOS/AppDelegate.swift
-index b02337e..c77e47a 100644
+index b02337e..b8d8424 100644
 --- a/macos/Sources/App/macOS/AppDelegate.swift
 +++ b/macos/Sources/App/macOS/AppDelegate.swift
-@@ -210,6 +210,15 @@ class AppDelegate: NSObject,
+@@ -210,6 +210,16 @@ class AppDelegate: NSObject,
          // Store our start time
          applicationLaunchTime = ProcessInfo.processInfo.systemUptime
  
@@ -13,12 +13,13 @@ index b02337e..c77e47a 100644
 +        DockPermissions.gateOnFullDiskAccess()
 +        DockSessions.shared.start()
 +        DockScreenGate.shared.start()
++        DockRemoteReconnect.shared.start()
 +        DockUpdates.shared.start()
 +
          // Check if secure input was enabled when we last quit.
          if UserDefaults.ghostty.bool(forKey: "SecureInput") != SecureInput.shared.enabled {
              toggleSecureInput(self)
-@@ -307,6 +316,9 @@ class AppDelegate: NSObject,
+@@ -307,6 +317,9 @@ class AppDelegate: NSObject,
              }
  
              ghostty_app_set_color_scheme(app, scheme)
@@ -28,7 +29,7 @@ index b02337e..c77e47a 100644
          }
  
          // Setup our menu
-@@ -356,7 +368,8 @@ class AppDelegate: NSObject,
+@@ -356,7 +369,8 @@ class AppDelegate: NSObject,
              // is possible to have other windows in a few scenarios:
              //   - if we're opening a URL since `application(_:openFile:)` is called before this.
              //   - if we're restoring from persisted state
@@ -38,7 +39,7 @@ index b02337e..c77e47a 100644
                  undoManager.disableUndoRegistration()
                  _ = TerminalController.newWindow(ghostty)
                  undoManager.enableUndoRegistration()
-@@ -427,6 +440,9 @@ class AppDelegate: NSObject,
+@@ -427,6 +441,9 @@ class AppDelegate: NSObject,
      }
  
      func applicationWillTerminate(_ notification: Notification) {
@@ -48,7 +49,7 @@ index b02337e..c77e47a 100644
          // We have no notifications we want to persist after death,
          // so remove them all now. In the future we may want to be
          // more selective and only remove surface-targeted notifications.
-@@ -574,6 +590,9 @@ class AppDelegate: NSObject,
+@@ -574,6 +591,9 @@ class AppDelegate: NSObject,
      }
  
      private func localEventKeyDown(_ event: NSEvent) -> NSEvent? {
@@ -58,7 +59,7 @@ index b02337e..c77e47a 100644
          // If the tab overview is visible and escape is pressed, close it.
          // This can't POSSIBLY be right and is probably a FirstResponder problem
          // that we should handle elsewhere in our program. But this works and it
-@@ -796,13 +815,9 @@ class AppDelegate: NSObject,
+@@ -796,13 +816,9 @@ class AppDelegate: NSObject,
          DispatchQueue.main.async { self.syncAppearance(config: config) }
  
          // Decide whether to hide/unhide app from dock and app switcher
@@ -75,7 +76,7 @@ index b02337e..c77e47a 100644
  
          // If we have configuration errors, we need to show them.
          let c = ConfigurationErrorsController.sharedInstance
-@@ -894,6 +909,20 @@ class AppDelegate: NSObject,
+@@ -894,6 +910,20 @@ class AppDelegate: NSObject,
          didReceive: UNNotificationResponse,
          withCompletionHandler: () -> Void
      ) {
@@ -96,7 +97,7 @@ index b02337e..c77e47a 100644
          ghostty.handleUserNotification(response: didReceive)
          withCompletionHandler()
      }
-@@ -903,7 +932,8 @@ class AppDelegate: NSObject,
+@@ -903,7 +933,8 @@ class AppDelegate: NSObject,
          willPresent: UNNotification,
          withCompletionHandler: (UNNotificationPresentationOptions) -> Void
      ) {
@@ -106,7 +107,7 @@ index b02337e..c77e47a 100644
          let options: UNNotificationPresentationOptions = shouldPresent ? [.banner, .sound] : []
          withCompletionHandler(options)
      }
-@@ -941,7 +971,7 @@ class AppDelegate: NSObject,
+@@ -941,7 +972,7 @@ class AppDelegate: NSObject,
      // MARK: - IB Actions
  
      @IBAction func openConfig(_ sender: Any?) {
@@ -115,7 +116,7 @@ index b02337e..c77e47a 100644
      }
  
      @IBAction func reloadConfig(_ sender: Any?) {
-@@ -949,7 +979,10 @@ class AppDelegate: NSObject,
+@@ -949,7 +980,10 @@ class AppDelegate: NSObject,
      }
  
      @IBAction func checkForUpdates(_ sender: Any?) {
@@ -127,7 +128,7 @@ index b02337e..c77e47a 100644
          // UpdateSimulator.happyPath.simulate(with: updateViewModel)
      }
  
-@@ -970,12 +1003,12 @@ class AppDelegate: NSObject,
+@@ -970,12 +1004,12 @@ class AppDelegate: NSObject,
      }
  
      @IBAction func showAbout(_ sender: Any?) {
@@ -143,7 +144,7 @@ index b02337e..c77e47a 100644
      }
  
      @IBAction func toggleSecureInput(_ sender: Any) {
-@@ -1104,6 +1137,8 @@ extension AppDelegate {
+@@ -1104,6 +1138,8 @@ extension AppDelegate {
          // Note: This COULD Be done all in the xib file, but I find it easier to
          // modify this stuff as code.
          self.menuAbout?.setImageIfDesired(systemSymbolName: "info.circle")
@@ -8124,6 +8125,209 @@ index 0000000..ea97919
 +        window?.makeKeyAndOrderFront(nil)
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockRemoteReconnect.swift b/macos/Sources/Features/Dock/DockRemoteReconnect.swift
+new file mode 100644
+index 0000000..3ed8e19
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockRemoteReconnect.swift
+@@ -0,0 +1,197 @@
++import AppKit
++import OSLog
++
++/// Brings a session's Remote Control back after it drops: when a session's
++/// transcript says "Remote Control disconnected — <why>" and the why is one
++/// that /remote-control fixes (the server unreachable, the connection
++/// dropping, "disabled after repeated failures"), /remote-control is typed
++/// into it once it sits at an empty prompt and you are not typing in it.
++///
++/// Not for drops that need you: another device took the session over, it
++/// was ended or archived elsewhere, or the login or account changed.
++/// Tries again after each new drop, waiting 1, 5, 15 then 30 minutes, and
++/// stops for a session after 6 tries in a row. A /remote-control in the
++/// transcript (yours or this) counts as handled. Logged to
++/// ~/.local/state/ghostty-dock/rc-reconnect.log.
++final class DockRemoteReconnect {
++    static let shared = DockRemoteReconnect()
++    static let enabledKey = "dock.rcReconnect"
++    static var enabled: Bool { UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true }
++
++    private struct Drop {
++        var why: String
++        var at: Date
++        var tries: Int
++        var next: Date
++    }
++
++    /// How far each transcript has been read, and the drops still to fix.
++    private var offsets: [String: UInt64] = [:]
++    private var drops: [String: Drop] = [:]
++    /// Tries so far for a session; reset by a quiet hour.
++    private var tries: [String: (count: Int, last: Date)] = [:]
++    private var timer: Timer?
++    private let queue = DispatchQueue(label: "dock.rc-reconnect", qos: .utility)
++    private static let waits: [TimeInterval] = [60, 300, 900, 1800]
++    private static let maxTries = 6
++    private static let logURL = FileManager.default.homeDirectoryForCurrentUser
++        .appendingPathComponent(".local/state/ghostty-dock/rc-reconnect.log")
++
++    func start() {
++        guard timer == nil else { return }
++        timer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in self?.tick() }
++    }
++
++    /// Whether a drop's reason is one /remote-control can fix by itself.
++    static func fixable(_ why: String) -> Bool {
++        let w = why.lowercased()
++        let needsYou = ["another connection took over", "ended or archived", "account or organization changed",
++                        "login was rejected", "/login"]
++        return !needsYou.contains { w.contains($0) }
++    }
++
++    private func tick() {
++        let model = DockSessions.shared
++        guard Self.enabled else { drops.removeAll(); return }
++        let live = model.rows.compactMap { row -> (String, URL)? in
++            guard let sid = row.sessionId, let url = model.transcriptURL(sid) else { return nil }
++            return (sid, url)
++        }
++        let known = offsets
++        queue.async { [weak self] in
++            var found: [String: (offset: UInt64, drop: (why: String, at: Date)?, handled: Bool)] = [:]
++            for (sid, url) in live {
++                found[sid] = Self.scan(url, from: known[sid])
++            }
++            DispatchQueue.main.async { MainActor.assumeIsolated { self?.apply(found) } }
++        }
++    }
++
++    @MainActor private func apply(_ found: [String: (offset: UInt64, drop: (why: String, at: Date)?, handled: Bool)]) {
++        let now = Date()
++        for (sid, f) in found {
++            offsets[sid] = f.offset
++            if f.handled { drops[sid] = nil }
++            if let d = f.drop {
++                guard Self.fixable(d.why) else {
++                    drops[sid] = nil
++                    log(sid, "not reconnecting, it needs you: \(d.why)")
++                    continue
++                }
++                var t = tries[sid] ?? (0, .distantPast)
++                if now.timeIntervalSince(t.last) > 3600 { t.count = 0 }
++                tries[sid] = t
++                guard t.count < Self.maxTries else {
++                    log(sid, "not reconnecting after \(t.count) tries in a row: \(d.why)")
++                    drops[sid] = nil
++                    continue
++                }
++                let wait = Self.waits[min(t.count, Self.waits.count - 1)]
++                drops[sid] = Drop(why: d.why, at: d.at, tries: t.count, next: max(now, d.at + wait))
++            }
++        }
++        // Sessions no longer open go.
++        offsets = offsets.filter { found[$0.key] != nil }
++        drops = drops.filter { found[$0.key] != nil }
++        tries = tries.filter { found[$0.key] != nil }
++        for (sid, drop) in drops where now >= drop.next { reconnect(sid, drop) }
++    }
++
++    /// Types /remote-control into the session if it is at an empty prompt
++    /// and you aren't typing in it; else it waits for the next look.
++    @MainActor private func reconnect(_ sid: String, _ drop: Drop) {
++        let model = DockSessions.shared
++        guard let row = model.rows.first(where: { $0.sessionId == sid }), model.canCompact(row),
++              let controller = row.controller,
++              let surface = controller.focusedSurface ?? controller.surfaceTree.first,
++              let model2 = surface.surfaceModel
++        else { return }
++        let screen = surface.cachedVisibleContents.get()
++        guard !DockSessions.working(screen), Self.emptyPrompt(screen) else { return }
++        // In the window you are using: only once you have stopped typing.
++        if NSApp.isActive, controller.window?.isKeyWindow == true, row.selected,
++           DockScreenGate.idleSeconds() < 30 { return }
++        model2.sendText("/remote-control")
++        model2.sendKeyEvent(Ghostty.Input.KeyEvent(key: .enter, action: .press, mods: []))
++        model2.sendKeyEvent(Ghostty.Input.KeyEvent(key: .enter, action: .release, mods: []))
++        drops[sid] = nil
++        let t = tries[sid] ?? (0, .distantPast)
++        tries[sid] = (t.count + 1, Date())
++        log(sid, "ran /remote-control (try \(t.count + 1)) after: \(drop.why)")
++    }
++
++    /// Claude Code's input line is "❯" alone when nothing is typed there.
++    static func emptyPrompt(_ screen: String) -> Bool {
++        let lines = DockSessions.lastLines(screen, 12).split(separator: "\n")
++        guard let input = lines.last(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("❯") })
++        else { return false }
++        return input.trimmingCharacters(in: .whitespaces) == "❯"
++    }
++
++    /// Reads what the transcript gained: the last drop in it, and whether a
++    /// /remote-control came after that drop. A transcript seen for the
++    /// first time is read from its last 512 KB, and only a drop in the last
++    /// 15 minutes counts, so old news isn't acted on.
++    private static func scan(_ url: URL, from start: UInt64?)
++        -> (offset: UInt64, drop: (why: String, at: Date)?, handled: Bool)
++    {
++        guard let h = try? FileHandle(forReadingFrom: url) else { return (start ?? 0, nil, false) }
++        defer { try? h.close() }
++        let size = (try? h.seekToEnd()) ?? 0
++        var from = start ?? (size > 512 * 1024 ? size - 512 * 1024 : 0)
++        if from > size { from = 0 }
++        guard size > from else { return (size, nil, false) }
++        try? h.seek(toOffset: from)
++        let data = (try? h.read(upToCount: Int(min(size - from, 16 * 1024 * 1024)))) ?? Data()
++        guard let cut = data.lastIndex(of: UInt8(ascii: "\n")) else { return (from, nil, false) }
++        let end = from + UInt64(cut - data.startIndex + 1)
++        var drop: (why: String, at: Date)?
++        var handled = false
++        let marker = Data("Remote Control disconnected".utf8)
++        let command = Data("<command-name>/remote-control</command-name>".utf8)
++        for line in data[data.startIndex..<cut].split(separator: UInt8(ascii: "\n")) {
++            if line.range(of: command) != nil, line.range(of: Data("\"type\":\"user\"".utf8)) != nil {
++                drop = nil
++                handled = true
++                continue
++            }
++            guard line.range(of: marker) != nil,
++                  let e = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
++                  e["subtype"] as? String == "informational",
++                  let msg = e["content"] as? String,
++                  let stamp = e["timestamp"] as? String,
++                  let at = iso.date(from: stamp)
++            else { continue }
++            if start == nil, Date().timeIntervalSince(at) > 900 { continue }
++            let why = msg.components(separatedBy: "Remote Control disconnected").last?
++                .trimmingCharacters(in: CharacterSet(charactersIn: " —-")) ?? msg
++            drop = (why, at)
++            handled = false
++        }
++        return (end, drop, handled)
++    }
++
++    private static let iso: ISO8601DateFormatter = {
++        let f = ISO8601DateFormatter()
++        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
++        return f
++    }()
++
++    private func log(_ sid: String, _ text: String) {
++        let name = DockSessions.shared.rows.first(where: { $0.sessionId == sid })?.name ?? sid
++        DockLog.sessions.notice("rc-reconnect \(name, privacy: .public): \(text, privacy: .public)")
++        let stamp = Date().formatted(.iso8601.year().month().day().time(includingFractionalSeconds: false)
++            .dateTimeSeparator(.space).timeSeparator(.colon))
++        let line = "\(stamp) \(name) (\(sid.prefix(8))): \(text)\n"
++        queue.async {
++            guard let data = line.data(using: .utf8) else { return }
++            if let h = try? FileHandle(forWritingTo: Self.logURL) {
++                defer { try? h.close() }
++                _ = try? h.seekToEnd()
++                try? h.write(contentsOf: data)
++            } else {
++                try? data.write(to: Self.logURL)
++            }
++        }
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockScreenGate.swift b/macos/Sources/Features/Dock/DockScreenGate.swift
 new file mode 100644
 index 0000000..520fa75
@@ -10727,10 +10931,10 @@ index 0000000..cec5895
 +}
 diff --git a/macos/Sources/Features/Dock/DockSettings.swift b/macos/Sources/Features/Dock/DockSettings.swift
 new file mode 100644
-index 0000000..96fae21
+index 0000000..10cfb04
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSettings.swift
-@@ -0,0 +1,491 @@
+@@ -0,0 +1,495 @@
 +import AppKit
 +import ServiceManagement
 +import SwiftUI
@@ -10836,6 +11040,7 @@ index 0000000..96fae21
 +    @AppStorage(DockSettings.dockBadgeKey) private var dockBadge = true
 +    @AppStorage(DockSettings.restoreSessionsKey) private var restoreSessions = true
 +    @AppStorage(DockSettings.remoteEverySessionKey) private var remoteEverySession = false
++    @AppStorage(DockRemoteReconnect.enabledKey) private var rcReconnect = true
 +    @State private var skipPermissions = DockBypass.enabled
 +    @State private var keepAwake = DockAwake.enabled
 +    @AppStorage(DockSettings.holdSessionsKey) private var holdSessions = true
@@ -11062,6 +11267,9 @@ index 0000000..96fae21
 +                    get: { keepAwake }, set: { keepAwake = $0; DockAwake.set($0) }))
 +                    .onAppear { keepAwake = DockAwake.enabled }
 +                Text("Sessions run under caffeinate -i, so the Mac does not go to sleep while Claude works. The screen still turns off, and closing the lid still sleeps it. New, restarted, moved and reopened sessions follow this; a running session changes when it is next restarted.")
++                    .font(.callout)
++                Toggle("Reconnect Remote Control when it drops", isOn: $rcReconnect)
++                Text("When a session's Remote Control disconnects because the server was unreachable or kept dropping, /remote-control is typed into it once it is idle at an empty prompt and you are not typing in it. It tries again after 1, 5, 15 and 30 minutes, up to 6 times in a row. Drops that need you (another device took over, the session was ended elsewhere, or your login changed) are left alone. Logged to ~/.local/state/ghostty-dock/rc-reconnect.log.")
 +                    .font(.callout)
 +                Toggle("Name every Remote Control session after its repo", isOn: $remoteEverySession)
 +                Text("Every five minutes, each running session's title on the phone is set to its repo, using your Claude login, so the phone's own titles are undone. Sessions are not restarted. The grey line under the title is the phone's and can't be changed.")
