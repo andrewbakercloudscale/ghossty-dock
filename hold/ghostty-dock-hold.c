@@ -336,11 +336,55 @@ static int shell_only(pid_t pgrp) {
     return 1;
 }
 
-static void replay(int fd, int pty, struct winsize ws) {
+// What is on its way to the tab. The tab's socket never blocks the holder:
+// output waits here, and a tab that falls this far behind is redrawn
+// from the kept output instead once it reads again.
+#define OQ_MAX (3 * RING_SIZE)
+static char *oq;
+static size_t oq_len, oq_off, oq_cap;
+
+static void oq_reset(void) { oq_len = oq_off = 0; }
+
+static int oq_add(const void *p, size_t n) {
+    if (oq_len - oq_off + n > OQ_MAX) { oq_reset(); return -1; }
+    if (oq_off && oq_len + n > oq_cap) {
+        memmove(oq, oq + oq_off, oq_len - oq_off);
+        oq_len -= oq_off;
+        oq_off = 0;
+    }
+    if (oq_len + n > oq_cap) {
+        size_t c = oq_cap ? oq_cap : 65536;
+        while (c < oq_len + n) c *= 2;
+        char *q = realloc(oq, c);
+        if (!q) { oq_reset(); return -1; }
+        oq = q;
+        oq_cap = c;
+    }
+    memcpy(oq + oq_len, p, n);
+    oq_len += n;
+    return 0;
+}
+
+// Sends what the tab takes now, without waiting.
+static void oq_flush(int fd) {
+    while (oq_off < oq_len) {
+        ssize_t w = write(fd, oq + oq_off, oq_len - oq_off);
+        if (w > 0) { oq_off += (size_t)w; continue; }
+        if (w < 0 && errno == EINTR) continue;
+        break;
+    }
+    if (oq_off == oq_len) {
+        oq_reset();
+        if (oq_cap > 1024 * 1024) { free(oq); oq = NULL; oq_cap = 0; }
+    }
+}
+
+// Queues the kept output and the modes for the tab; -1 when it is too far
+// behind to take it.
+static int replay(int pty, struct winsize ws) {
     size_t n;
     char *buf = kept(&n);
-    write_all(fd, "\x1b[0m", 4);
-    write_all(fd, buf, n);
+    if (oq_add("\x1b[0m", 4) < 0 || oq_add(buf, n) < 0) { free(buf); return -1; }
     char out[2048];
     size_t o = 0;
     o += (size_t)snprintf(out + o, sizeof out - o, "\x1b[0m\x1b[?2026l");
@@ -354,10 +398,12 @@ static void replay(int fd, int pty, struct winsize ws) {
     for (int i = 0; i < nkitty && o < sizeof out - 32; i++) o += (size_t)snprintf(out + o, sizeof out - o, "\x1b[>%du", kitty[i]);
     if (other_keys >= 0) o += (size_t)snprintf(out + o, sizeof out - o, "\x1b[>4;%dm", other_keys);
     if (keypad) o += (size_t)snprintf(out + o, sizeof out - o, "\x1b=");
-    write_all(fd, out, o);
-    if (title[0]) { write_all(fd, "\x1b]2;", 4); write_all(fd, title, strlen(title)); write_all(fd, "\x07", 1); }
-    if (cwd_osc[0]) { write_all(fd, "\x1b]7;", 4); write_all(fd, cwd_osc, strlen(cwd_osc)); write_all(fd, "\x07", 1); }
     free(buf);
+    if (oq_add(out, o) < 0) return -1;
+    if (title[0] && (oq_add("\x1b]2;", 4) < 0 || oq_add(title, strlen(title)) < 0
+                     || oq_add("\x07", 1) < 0)) return -1;
+    if (cwd_osc[0] && (oq_add("\x1b]7;", 4) < 0 || oq_add(cwd_osc, strlen(cwd_osc)) < 0
+                       || oq_add("\x07", 1) < 0)) return -1;
 
     // A program redraws on a size change; a shell would only print its prompt again.
     pid_t fg = tcgetpgrp(pty);
@@ -368,6 +414,7 @@ static void replay(int fd, int pty, struct winsize ws) {
         usleep(50000);
     }
     ioctl(pty, TIOCSWINSZ, &ws);
+    return 0;
 }
 
 static void cwd_of(pid_t pid, char *out, size_t n) {
@@ -432,6 +479,10 @@ static void master(const char *name, int listen_fd, int ready_fd, struct winsize
     size_t pend = 0;
     int hung_up = 0;
     time_t hup_at = 0;
+    // The tab fell too far behind (Ghostty busy, the Mac stalled). It is
+    // kept, never dropped: output goes only to the kept ring until it takes
+    // output again, and then the screen is redrawn from the ring.
+    int lagging = 0;
     char buf[65536];
     int st = -1;
 
@@ -441,14 +492,15 @@ static void master(const char *name, int listen_fd, int ready_fd, struct winsize
                 // Drain what it wrote last.
                 ssize_t r;
                 fcntl(pty, F_SETFL, O_NONBLOCK);
-                while ((r = read(pty, buf, sizeof buf)) > 0) if (client >= 0) write_all(client, buf, (size_t)r);
+                while ((r = read(pty, buf, sizeof buf)) > 0) if (client >= 0 && !lagging) oq_add(buf, (size_t)r);
                 break;
             }
             child_exited = 0;
         }
         if (hung_up && time(NULL) - hup_at > 5) kill(-child, SIGKILL);
 
-        struct pollfd pf[3] = {{listen_fd, POLLIN, 0}, {pty, POLLIN, 0}, {client, POLLIN, 0}};
+        struct pollfd pf[3] = {{listen_fd, POLLIN, 0}, {pty, POLLIN, 0},
+                               {client, (short)(POLLIN | (lagging || oq_len > oq_off ? POLLOUT : 0)), 0}};
         int np = client >= 0 ? 3 : 2;
         if (poll(pf, (nfds_t)np, 1000) < 0) { if (errno == EINTR) continue; break; }
 
@@ -456,11 +508,27 @@ static void master(const char *name, int listen_fd, int ready_fd, struct winsize
             ssize_t r = read(pty, buf, sizeof buf);
             if (r > 0) {
                 keep(buf, (size_t)r);
-                if (client >= 0 && write_all(client, buf, (size_t)r) < 0) { close(client); client = -1; }
+                if (client >= 0 && !lagging) {
+                    if (oq_add(buf, (size_t)r) < 0) lagging = 1;
+                    else oq_flush(client);
+                }
             } else if (r == 0 || (errno != EINTR && errno != EAGAIN)) {
                 waitpid(child, &st, 0);
                 break;
             }
+        }
+
+        if (np == 3 && (pf[2].revents & POLLOUT) && !(pf[2].revents & (POLLHUP | POLLERR))) {
+            if (lagging) {
+                // Taking output again: redraw it from the ring, as on a
+                // reattach. CAN ends any sequence the dropped output cut short.
+                lagging = 0;
+                oq_reset();
+                struct winsize w = {0};
+                ioctl(pty, TIOCGWINSZ, &w);
+                if (oq_add("\x18\x1b[0m\x1b[H\x1b[2J\x1b[3J", 16) < 0 || replay(pty, w) < 0) lagging = 1;
+            }
+            oq_flush(client);
         }
 
         if (np == 3 && (pf[2].revents & (POLLIN | POLLHUP | POLLERR))) {
@@ -486,6 +554,8 @@ static void master(const char *name, int listen_fd, int ready_fd, struct winsize
                 close(client);
                 client = -1;
                 pend = 0;
+                lagging = 0;
+                oq_reset();
                 // The tab told us whether it was closed or the app went away;
                 // a tab that died without saying is judged here the same way.
                 int keep_it = verdict == PKT_DETACH ||
@@ -536,21 +606,33 @@ static void master(const char *name, int listen_fd, int ready_fd, struct winsize
                 client = fd;
                 client_app = h.app;
                 pend = 0;
+                lagging = 0;
+                oq_reset();
                 struct winsize w = {.ws_row = h.rows, .ws_col = h.cols};
-                struct timeval none = {0, 0}, slow = {5, 0};
+                struct timeval none = {0, 0};
                 setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &none, sizeof none);
-                setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &slow, sizeof slow);
-                replay(fd, pty, w);
+                fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+                if (replay(pty, w) < 0) lagging = 1;
+                oq_flush(fd);
             } else {
                 close(fd);
             }
         }
     }
-    if (client >= 0) close(client);
-    log_exit(name, child, created, st, hung_up);
+    // The socket goes first: a tab that then finds it gone knows the program
+    // ended, and closes, rather than trying to attach again.
     char path[600];
     sock_path(name, path, sizeof path);
     unlink(path);
+    if (client >= 0) {
+        // The last output, given a moment to reach the tab.
+        fcntl(client, F_SETFL, fcntl(client, F_GETFL) & ~O_NONBLOCK);
+        struct timeval two = {2, 0};
+        setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &two, sizeof two);
+        if (oq_len > oq_off) write_all(client, oq + oq_off, oq_len - oq_off);
+        close(client);
+    }
+    log_exit(name, child, created, st, hung_up);
     if (hold_label[0]) {
         // A job that ran once stays listed in launchd until removed.
         char pl[600];
@@ -600,17 +682,132 @@ static void record_surface(const char *name) {
     }
 }
 
-static int client(const char *name) {
+static int query(const char *name, char type, char *out, size_t n);
+
+// Connects to the holder and says hello; the holder replays its output.
+static int attach_to(const char *name, pid_t app) {
     int fd = connect_to(name);
     if (fd < 0) return -1;
     int on = 1;
     setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof on);
-    record_surface(name);
-    pid_t app = find_app();
+    // Keys that cannot be handed over within this long mean the holder is
+    // not responding: the tab then asks what to do, never closes by itself.
+    struct timeval tv = {5, 0};
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
     struct winsize ws;
     winsize_of(&ws);
     struct hello h = {ws.ws_row, ws.ws_col, app};
     if (send_pkt(fd, PKT_HELLO, &h, sizeof h) < 0) { close(fd); return -1; }
+    return fd;
+}
+
+// After the holder's connection ended: 0 when the program ended (its socket
+// is gone) or another tab has it now, 1 when it is still running with no
+// tab, so this one attaches again, -1 when it does not answer.
+static int still_ours(const char *name) {
+    char line[2048] = "";
+    if (query(name, PKT_INFO, line, sizeof line) < 0) return 0;
+    if (!line[0]) return -1;
+    char *t = strchr(line, '\t');
+    t = t ? strchr(t + 1, '\t') : NULL;
+    return t && t[1] == '0' ? 1 : 0;
+}
+
+// Writes to the tab; gives up when the tab is being closed, so a terminal
+// that stopped reading never keeps a closed tab's process around.
+static int out(const void *buf, size_t len) {
+    const char *p = buf;
+    while (len > 0) {
+        ssize_t w = write(STDOUT_FILENO, p, len);
+        if (w > 0) { p += w; len -= (size_t)w; continue; }
+        if (w < 0 && errno == EINTR && !got_hup) continue;
+        return -1;
+    }
+    return 0;
+}
+static int say(const char *s) { return out(s, strlen(s)); }
+
+// Asks in the tab what to do with a session that is not responding, and
+// waits for an answer. Returns 1 to carry on, 0 to close the tab. With a
+// packet (fd >= 0), it keeps handing it over meanwhile and carries on by
+// itself once it is through; W only stops the question.
+static int ask_unresponsive(const char *name, const char *why, int fd, const char *pkt, size_t *off, size_t total) {
+    char msg[768];
+    snprintf(msg, sizeof msg,
+        "\x1b[0m\r\n\x1b[1;33m Ghostty Dock: %s \x1b[0m\r\n"
+        "  Press W to keep waiting, or K to close this tab and end the session.\r\n"
+        "  (Nothing is lost by waiting: the session keeps running.)\r\n", why);
+    if (say(msg) < 0) return 0;
+    int waiting = 0;
+    for (;;) {
+        struct pollfd pf[2] = {{STDIN_FILENO, POLLIN, 0}, {fd, POLLOUT, 0}};
+        int np = fd >= 0 ? 2 : 1;
+        if (poll(pf, (nfds_t)np, 1000) < 0 && (errno != EINTR || got_hup)) return 0;
+        if (got_hup) return 0;
+        // Keys first: what was typed into the stuck session is dropped here,
+        // apart from the answer.
+        if (pf[0].revents & (POLLIN | POLLHUP | POLLERR)) {
+            char keys[256];
+            ssize_t r = read(STDIN_FILENO, keys, sizeof keys);
+            if (r == 0 || (r < 0 && errno != EINTR)) return 0;
+            for (ssize_t i = 0; i < r; i++) {
+                char c = keys[i];
+                if (c == 'k' || c == 'K') {
+                    if (query(name, PKT_KILL, NULL, 0) < 0) {
+                        say(" Could not reach it; it is left running in the background.\r\n");
+                        sleep(2);
+                    }
+                    return 0;
+                }
+                if ((c == 'w' || c == 'W') && !waiting) {
+                    if (fd < 0) return 1;
+                    waiting = 1;
+                    say("\x1b[2m Waiting... (K still closes it)\x1b[0m\r\n");
+                }
+            }
+        }
+        if (np == 2 && (pf[1].revents & POLLOUT)) {
+            ssize_t w = send(fd, pkt + *off, total - *off, MSG_DONTWAIT);
+            if (w > 0) *off += (size_t)w;
+            else if (w < 0 && errno != EAGAIN && errno != EINTR) return 0;
+            if (*off == total) {
+                say("\x1b[1;32m Responding again. \x1b[0m\r\n");
+                return 1;
+            }
+            if (w <= 0) usleep(100000);
+        }
+    }
+}
+
+// Sends one packet, asking the user instead of giving up when the holder
+// does not take it. 0 sent, -1 the tab is to close, -2 the connection is
+// gone (the read side then finds it ended and attaches again).
+static int send_or_ask(const char *name, int fd, char type, const void *data, uint32_t len) {
+    char pkt[5 + 8192];
+    if (len > 8192) return -1;
+    pkt[0] = type;
+    pkt[1] = (char)(len & 0xff); pkt[2] = (char)((len >> 8) & 0xff);
+    pkt[3] = (char)((len >> 16) & 0xff); pkt[4] = (char)(len >> 24);
+    if (len) memcpy(pkt + 5, data, len);
+    size_t off = 0, total = 5 + (size_t)len;
+    while (off < total) {
+        ssize_t w = write(fd, pkt + off, total - off);
+        if (w > 0) { off += (size_t)w; continue; }
+        if (w < 0 && errno == EINTR && !got_hup) continue;
+        if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (!ask_unresponsive(name, "this session is not responding to keys", fd, pkt, &off, total)) return -1;
+            continue;
+        }
+        return got_hup ? -1 : -2;
+    }
+    return 0;
+}
+
+static int client(const char *name) {
+    pid_t app = find_app();
+    int fd = attach_to(name, app);
+    if (fd < 0) return -1;
+    record_surface(name);
 
     if (isatty(STDIN_FILENO) && tcgetattr(STDIN_FILENO, &saved_tio) == 0) {
         tio_saved = 1;
@@ -628,26 +825,57 @@ static int client(const char *name) {
     signal(SIGPIPE, SIG_IGN);
 
     char buf[65536];
+    int fails = 0;
     for (;;) {
         if (got_hup) break;
         if (got_winch) {
             got_winch = 0;
+            struct winsize ws;
             winsize_of(&ws);
             uint16_t sz[2] = {ws.ws_row, ws.ws_col};
-            send_pkt(fd, PKT_WINSIZE, sz, sizeof sz);
+            if (send_or_ask(name, fd, PKT_WINSIZE, sz, sizeof sz) == -1) break;
         }
         struct pollfd pf[2] = {{STDIN_FILENO, POLLIN, 0}, {fd, POLLIN, 0}};
         if (poll(pf, 2, -1) < 0) { if (errno == EINTR) continue; break; }
         if (pf[1].revents & (POLLIN | POLLHUP | POLLERR)) {
             ssize_t r = read(fd, buf, sizeof buf);
-            // The program ended, or another tab took over.
-            if (r <= 0) { close(fd); return 0; }
-            if (write_all(STDOUT_FILENO, buf, (size_t)r) < 0) break;
+            if (r < 0 && errno == EINTR) continue;
+            if (r > 0) {
+                fails = 0;
+                if (out(buf, (size_t)r) < 0) break;
+                continue;
+            }
+            // The holder's end closed. The program ended, or another tab
+            // took over: close, as any terminal does. Anything else and the
+            // tab stays: it attaches again, and asks when it cannot.
+            close(fd);
+            fd = -1;
+            for (;;) {
+                int ours = still_ours(name);
+                if (ours == 0) return 0;
+                if (ours == 1 && fails < 3) {
+                    fails++;
+                    say("\x1b[0m\x1b[H\x1b[2J\x1b[3J");
+                    fd = attach_to(name, app);
+                    if (fd >= 0) break;
+                }
+                if (!ask_unresponsive(name, "lost touch with this session's holder", -1, NULL, NULL, 0)) {
+                    if (fd >= 0) close(fd);
+                    return 0;
+                }
+                fails = 0;
+            }
+            continue;
         }
         if (pf[0].revents & (POLLIN | POLLHUP | POLLERR)) {
             ssize_t r = read(STDIN_FILENO, buf, 8192);
+            if (r < 0 && errno == EINTR) continue;
             if (r <= 0) break;
-            if (send_pkt(fd, PKT_INPUT, buf, (uint32_t)r) < 0) { close(fd); return 0; }
+            if (send_or_ask(name, fd, PKT_INPUT, buf, (uint32_t)r) == -1) {
+                // Asked and told to close: the session was ended (or left).
+                close(fd);
+                return 0;
+            }
         }
     }
     // The terminal went away: the tab was closed, or the app is going.

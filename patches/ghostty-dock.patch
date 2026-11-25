@@ -8767,10 +8767,10 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..cec5895
+index 0000000..6a54337
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,2158 @@
+@@ -0,0 +1,2165 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -9004,6 +9004,8 @@ index 0000000..cec5895
 +    private static let startingSecs: TimeInterval = 120
 +    private struct TabKey {
 +        let key: String
++        /// The folder it was in, so a tab's colour only follows its own work.
++        let folder: String
 +        weak var controller: TerminalController?
 +    }
 +    /// Session id to its transcript's creation date; nil while not found.
@@ -10006,13 +10008,18 @@ index 0000000..cec5895
 +            // A session being restarted keeps its place: its old tab turns
 +            // into a shell for a moment before closing, and handing the
 +            // place to that shell sent the new tab to the bottom.
++            // Only within one folder: a session id handed to another
++            // session in a different folder (a tab whose holder let go, then
++            // reused) gave one project's colour to another.
++            let folder = best?.project ?? pwd
 +            if let old = tabKeys[id], old.controller === controller, old.key != key,
++               old.key.hasPrefix("dir:") || old.folder == folder,
 +               !liveSids.contains(old.key), !restarting.contains(old.key),
 +               !tabKeys.contains(where: { $0.key != id && $0.value.key == old.key }),
 +               !built.contains(where: { $0.key == key }) {
 +                carry(from: old.key, to: key)
 +            }
-+            tabKeys[id] = TabKey(key: key, controller: controller)
++            tabKeys[id] = TabKey(key: key, folder: folder, controller: controller)
 +            let m = meta[key]
 +            var status = best?.status ?? .shell
 +            // Claude's own count of what it is waiting on, when it shows one:

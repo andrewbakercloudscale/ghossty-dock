@@ -2,7 +2,8 @@
 
 # Drives hold/ghostty-dock-hold through a tab's life in pseudo-terminals:
 # start, the app going away, reattach with the output replayed, a second tab
-# taking over, the tab closed, the program ending. No Ghostty.
+# taking over, the tab closed, the program ending, a tab that stops reading,
+# a holder that stops responding. No Ghostty.
 
 SCRIPT_NAME=$(basename "$0")
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -120,6 +121,56 @@ fake.kill()
 pid, fd = spawn(["new", "--", "/nonexistent/prog"])
 read(fd); os.waitpid(pid, 0)
 check("a program that cannot start leaves no holder", lst() == "")
+
+# A tab that stops taking output (Ghostty busy, the Mac stalled) is kept,
+# never closed: once it reads again it is redrawn from the kept output.
+fake = app(); env["GHOSTTY_DOCK_SURFACE"] = "S5"
+pid, fd = spawn(["new", "--", "/usr/bin/yes", "spam-spam-spam-spam-spam-spam-spam"])
+read(fd, 0.5)
+time.sleep(10)
+out = read(fd, 3)
+check("a tab that stops reading is not closed", os.waitpid(pid, os.WNOHANG)[0] == 0 and "\t1\t" in lst())
+check("and is redrawn when it reads again", b"\x1b[2J" in out and b"spam" in read(fd, 1))
+subprocess.run([HOLD, "kill-detached"], env=env)
+subprocess.run([HOLD, "kill", lst().split("\t")[0]], env=env)
+os.kill(pid, signal.SIGKILL); os.waitpid(pid, 0); time.sleep(1.5); fake.kill()
+
+# A holder that stops taking keys: the tab asks, waits when told to, and
+# carries on when the holder recovers.
+fake = app(); env["GHOSTTY_DOCK_SURFACE"] = "S6"
+pid, fd = spawn(["new", "--", "/bin/sh", "-c", "stty raw -echo; echo ready; cat >/dev/null"])
+read(fd)
+holder = int(lst().split("\t")[1])
+os.kill(holder, signal.SIGSTOP)
+os.set_blocking(fd, False)
+end = time.time() + 3
+while time.time() < end:
+    try: os.write(fd, b"x" * 512)
+    except BlockingIOError: time.sleep(0.05)
+os.set_blocking(fd, True)
+out = read(fd, 7)
+check("an unresponsive session is asked about, not closed",
+      b"not responding" in out and os.waitpid(pid, os.WNOHANG)[0] == 0)
+os.write(fd, b"W"); read(fd, 0.5)
+os.kill(holder, signal.SIGCONT)
+time.sleep(2)
+check("waiting keeps the tab and the session", os.waitpid(pid, os.WNOHANG)[0] == 0 and "\t1\t" in lst())
+
+# K closes the tab and ends the session.
+os.kill(holder, signal.SIGSTOP)
+os.set_blocking(fd, False)
+end = time.time() + 3
+while time.time() < end:
+    try: os.write(fd, b"y" * 512)
+    except BlockingIOError: time.sleep(0.05)
+os.set_blocking(fd, True)
+read(fd, 7)
+os.write(fd, b"K")
+time.sleep(3)
+os.kill(holder, signal.SIGCONT)
+time.sleep(2)
+check("K closes the tab and ends the session", os.waitpid(pid, os.WNOHANG)[0] == pid and lst() == "")
+fake.kill()
 
 print(f"{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
