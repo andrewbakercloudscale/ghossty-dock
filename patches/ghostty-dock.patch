@@ -3942,10 +3942,10 @@ index 0000000..38589ea
 +}
 diff --git a/macos/Sources/Features/Dock/DockCost.swift b/macos/Sources/Features/Dock/DockCost.swift
 new file mode 100644
-index 0000000..9cadce2
+index 0000000..2bb8414
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockCost.swift
-@@ -0,0 +1,232 @@
+@@ -0,0 +1,242 @@
 +import Foundation
 +
 +/// What a Claude Code session has cost so far, from its transcript, priced as
@@ -4157,8 +4157,18 @@ index 0000000..9cadce2
 +    func prune(keeping transcripts: [URL]) {
 +        let keep = Set(transcripts.map(\.path))
 +        let dirs = transcripts.map { $0.deletingPathExtension().appendingPathComponent("subagents").path + "/" }
++        // A closed session's file is never read again, so its spends are
++        // dropped here once they're from before today; then it goes too.
++        let midnight = Calendar.current.startOfDay(for: Date())
++        for (path, state) in files where state.spends.contains(where: { $0.date < midnight }) {
++            files[path]?.spends.removeAll { $0.date < midnight }
++        }
 +        files = files.filter { path, state in
 +            keep.contains(path) || dirs.contains { path.hasPrefix($0) } || !state.spends.isEmpty
++        }
++        // The ids only ever grow; past this, keep just the files still held.
++        if counted.count > 100_000 {
++            counted = Set(files.values.flatMap(\.lastKeys))
 +        }
 +    }
 +
@@ -5295,10 +5305,10 @@ index 0000000..b35bf4a
 +}
 diff --git a/macos/Sources/Features/Dock/DockImages.swift b/macos/Sources/Features/Dock/DockImages.swift
 new file mode 100644
-index 0000000..6e0c3f0
+index 0000000..59de866
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockImages.swift
-@@ -0,0 +1,334 @@
+@@ -0,0 +1,352 @@
 +import AppKit
 +import SwiftUI
 +
@@ -5356,13 +5366,16 @@ index 0000000..6e0c3f0
 +        clipCount = pb.changeCount
 +        let types = pb.types ?? []
 +        // Files copied in Finder carry their icon as an image: not wanted.
-+        guard !types.contains(.fileURL),
-+              let (raw, ext) = pb.data(forType: .png).map({ ($0, "png") })
-+                ?? pb.data(forType: .tiff).map({ ($0, "tiff") })
++        guard !types.contains(.fileURL), types.contains(.png) || types.contains(.tiff)
 +        else { clip = nil; return }
 +        let count = clipCount
++        // The image can be tens of MB, sent over from the app that copied
++        // it: fetched off the main thread.
 +        queue.async { [weak self] in
-+            guard let thumb = Self.thumbnail(raw) else { return }
++            guard pb.changeCount == count,
++                  let (raw, ext) = pb.data(forType: .png).map({ ($0, "png") })
++                    ?? pb.data(forType: .tiff).map({ ($0, "tiff") }),
++                  let thumb = Self.thumbnail(raw) else { return }
 +            let file = Self.cache.appendingPathComponent("clipboard.\(ext)")
 +            try? FileManager.default.removeItem(at: file)
 +            try? raw.write(to: file)
@@ -5401,16 +5414,23 @@ index 0000000..6e0c3f0
 +                if size < start { start = 0 }   // rewritten: read it again
 +                end = start
 +                try? h.seek(toOffset: start)
-+                let data = (try? h.readToEnd()) ?? Data()
-+                // A partial last line waits for the next read.
-+                if let nl = data.lastIndex(of: 0x0A) {
-+                    end = start + UInt64(nl - data.startIndex + 1)
-+                    found = Self.parse(data[data.startIndex...nl], sid: sid)
++                // In pieces: a transcript with images can be 100s of MB.
++                // A partial last line waits for the next piece, or read.
++                var carry = Data()
++                while let chunk = try? h.read(upToCount: 4 << 20), !chunk.isEmpty {
++                    var data = carry
++                    data.append(chunk)
++                    guard let nl = data.lastIndex(of: 0x0A) else { carry = data; continue }
++                    found += Self.parse(data[data.startIndex...nl], sid: sid)
++                    if found.count > self.keep { found.removeFirst(found.count - self.keep) }
++                    end += UInt64(nl - data.startIndex + 1)
++                    carry = Data(data[(nl + 1)...])
 +                }
 +            }
 +            let fresh = start == 0
 +            DispatchQueue.main.async {
 +                self.reading.remove(sid)
++                self.forgetClosed()
 +                self.offsets[sid] = end
 +                if fresh && end > 0 { self.images[sid] = [] }
 +                guard !found.isEmpty else { return }
@@ -5423,6 +5443,14 @@ index 0000000..6e0c3f0
 +                self.images[sid] = all
 +            }
 +        }
++    }
++
++    /// Closed sessions' thumbnails go (about 5 MB for a full strip).
++    private func forgetClosed() {
++        let open = Set(DockSessions.shared.rows.compactMap(\.sessionId))
++        guard images.keys.contains(where: { !open.contains($0) }) else { return }
++        images = images.filter { open.contains($0.key) }
++        offsets = offsets.filter { open.contains($0.key) }
 +    }
 +
 +    private static let iso: ISO8601DateFormatter = {
@@ -5866,10 +5894,10 @@ index 0000000..b9cfd97
 +}
 diff --git a/macos/Sources/Features/Dock/DockLog.swift b/macos/Sources/Features/Dock/DockLog.swift
 new file mode 100644
-index 0000000..03c808d
+index 0000000..f86488f
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockLog.swift
-@@ -0,0 +1,179 @@
+@@ -0,0 +1,197 @@
 +import Foundation
 +import os
 +
@@ -5917,10 +5945,14 @@ index 0000000..03c808d
 +        var text: String { String(decoding: output, as: UTF8.self) }
 +    }
 +
-+    /// Output read on other threads, handed over once both are done.
++    /// Output gathered as it comes, from dispatch's readers.
 +    private final class Box: @unchecked Sendable {
-+        var out = Data()
-+        var err = Data()
++        private let lock = NSLock()
++        private var _out = Data()
++        private var _err = Data()
++        var out: Data { lock.withLock { _out } }
++        var err: Data { lock.withLock { _err } }
++        func add(_ d: Data, err: Bool) { lock.withLock { if err { _err.append(d) } else { _out.append(d) } } }
 +    }
 +
 +    /// Runs a program and waits up to `timeout` seconds. Nil when it could
@@ -5950,22 +5982,36 @@ index 0000000..03c808d
 +            return nil
 +        }
 +        let box = Box()
-+        group.enter()
-+        DispatchQueue.global(qos: .utility).async {
-+            box.out = out.fileHandleForReading.readDataToEndOfFile()
-+            group.leave()
++        // Read as data comes (no thread blocked per pipe): something the
++        // program left running can hold its output open after it exits,
++        // and a blocking read would then wait, and hold a thread, forever.
++        let eof = DispatchGroup()
++        for (pipe, isErr) in [(out, false), (err, true)] {
++            eof.enter()
++            pipe.fileHandleForReading.readabilityHandler = { h in
++                let d = h.availableData
++                if d.isEmpty {
++                    h.readabilityHandler = nil
++                    eof.leave()
++                } else {
++                    box.add(d, err: isErr)
++                }
++            }
 +        }
-+        group.enter()
-+        DispatchQueue.global(qos: .utility).async {
-+            box.err = err.fileHandleForReading.readDataToEndOfFile()
-+            group.leave()
++        func stopReading() {
++            out.fileHandleForReading.readabilityHandler = nil
++            err.fileHandleForReading.readabilityHandler = nil
 +        }
 +        if group.wait(timeout: .now() + timeout) == .timedOut {
 +            p.terminate()
 +            if group.wait(timeout: .now() + 2) == .timedOut, p.isRunning { kill(p.processIdentifier, SIGKILL) }
++            stopReading()
 +            log.error("\(name, privacy: .public) ran over \(Int(timeout))s and was stopped")
 +            return nil
 +        }
++        // It has exited: the rest of its output follows at once, unless
++        // something it started still holds the pipe.
++        if eof.wait(timeout: .now() + 2) == .timedOut { stopReading() }
 +        let status = p.terminationStatus
 +        if status != 0 && !quiet.contains(status) {
 +            log.error("\(name, privacy: .public) failed (exit \(status)): \(tail(box.err), privacy: .public)")
@@ -6051,10 +6097,10 @@ index 0000000..03c808d
 +}
 diff --git a/macos/Sources/Features/Dock/DockLogin.swift b/macos/Sources/Features/Dock/DockLogin.swift
 new file mode 100644
-index 0000000..532f7df
+index 0000000..d7daf7d
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockLogin.swift
-@@ -0,0 +1,216 @@
+@@ -0,0 +1,219 @@
 +import AppKit
 +import Combine
 +
@@ -6111,8 +6157,11 @@ index 0000000..532f7df
 +        let last = readAt
 +        DispatchQueue.global(qos: .utility).async { [weak self] in
 +            guard let m = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date,
-+                  last.map({ m > $0 }) ?? true,
-+                  let data = try? Data(contentsOf: url),
++                  last.map({ m > $0 }) ?? true else { return }
++            // Read once per write, even when it holds no account (an API
++            // key, signed out, or caught mid-write): not again every 10 s.
++            DispatchQueue.main.async { self?.readAt = m }
++            guard let data = try? Data(contentsOf: url),
 +                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
 +                  let oauth = json["oauthAccount"] as? [String: Any],
 +                  let id = (oauth["accountUuid"] ?? oauth["emailAddress"]) as? String
@@ -6711,10 +6760,10 @@ index 0000000..3b10b65
 +}
 diff --git a/macos/Sources/Features/Dock/DockOverview.swift b/macos/Sources/Features/Dock/DockOverview.swift
 new file mode 100644
-index 0000000..ddb67af
+index 0000000..04b8d6b
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockOverview.swift
-@@ -0,0 +1,223 @@
+@@ -0,0 +1,227 @@
 +import AppKit
 +import SwiftUI
 +
@@ -6726,6 +6775,8 @@ index 0000000..ddb67af
 +    @Published private(set) var screens: [String: String] = [:]
 +    private var timer: Timer?
 +    static let lines = 9
++    /// Its window: screens aren't read while it's minimised or covered.
++    weak var window: NSWindow?
 +
 +    func start() {
 +        guard timer == nil else { return }
@@ -6739,6 +6790,7 @@ index 0000000..ddb67af
 +    }
 +
 +    private func read() {
++        if let window, !(window.isVisible && window.occlusionState.contains(.visible)) { return }
 +        var next: [String: String] = [:]
 +        for row in DockSessions.shared.rows {
 +            guard let view = row.controller.flatMap({ $0.focusedSurface ?? $0.surfaceTree.first }) else { continue }
@@ -6932,6 +6984,7 @@ index 0000000..ddb67af
 +            w.setFrameAutosaveName("GhosttyDockOverview")
 +            if !w.setFrameUsingName("GhosttyDockOverview") { w.center() }
 +            window = w
++            model.window = w
 +        }
 +        if let point, window?.isVisible == false { window?.place(near: point) }
 +        NSApp.activate(ignoringOtherApps: true)
@@ -8218,10 +8271,10 @@ index 0000000..520fa75
 +}
 diff --git a/macos/Sources/Features/Dock/DockScripts.swift b/macos/Sources/Features/Dock/DockScripts.swift
 new file mode 100644
-index 0000000..0abffdd
+index 0000000..bdeee02
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockScripts.swift
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,48 @@
 +import Darwin
 +import Foundation
 +
@@ -8241,7 +8294,10 @@ index 0000000..0abffdd
 +    static func count(_ pid: Int32) -> Int {
 +        if let c = cache[pid], Date().timeIntervalSince(c.at) < 5 { return c.count }
 +        let n = children(of: pid).filter { isClaudeShell(args($0)) }.count
-+        cache[pid] = (Date(), n)
++        let now = Date()
++        // Keyed by pid: ended sessions' entries go, so it doesn't only grow.
++        if cache.count > 64 { cache = cache.filter { now.timeIntervalSince($0.value.at) < 60 } }
++        cache[pid] = (now, n)
 +        return n
 +    }
 +
@@ -8505,10 +8561,10 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..767ee30
+index 0000000..cec5895
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,2107 @@
+@@ -0,0 +1,2158 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -8900,7 +8956,7 @@ index 0000000..767ee30
 +            self?.resumeStaleLogins()
 +        }
 +        NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil,
-+                                               queue: .main) { [weak self] _ in self?.applySettings() }
++                                               queue: .main) { [weak self] _ in self?.settingsChanged() }
 +        NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil,
 +                                               queue: .main) { [weak self] _ in self?.leftAt = Date() }
 +        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil,
@@ -9249,6 +9305,32 @@ index 0000000..767ee30
 +        NSRunningApplication(processIdentifier: u.pid)?.activate()
 +    }
 +
++    private var settingsWork: DispatchWorkItem?
++    private var refreshQueued = false
++
++    /// Every defaults write lands here, @AppStorage ones too: dragging the
++    /// sidebar's edge writes its width per mouse move. Settle first.
++    private func settingsChanged() {
++        settingsWork?.cancel()
++        let work = DispatchWorkItem { [weak self] in
++            self?.settingsWork = nil
++            self?.applySettings()
++        }
++        settingsWork = work
++        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
++    }
++
++    /// One refresh for a burst of hook writes (the half-second timer
++    /// refreshes anyway).
++    private func refreshSoon() {
++        guard !refreshQueued else { return }
++        refreshQueued = true
++        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
++            self?.refreshQueued = false
++            self?.refresh()
++        }
++    }
++
 +    /// Settings take effect at once, in every window.
 +    private func applySettings() {
 +        if DockSettings.jumpHotKey != (jumpKey != nil) {
@@ -9421,13 +9503,41 @@ index 0000000..767ee30
 +    /// Only the screen's last lines, where they are: the same words higher
 +    /// up are old output or a reply quoting them.
 +    static func working(_ screen: String) -> Bool {
-+        let tail = screen.split(separator: "\n").filter { $0.contains { !$0.isWhitespace } }
-+            .suffix(20).joined(separator: "\n")
++        let tail = lastLines(screen)
 +        return tail.contains("esc to interrupt") || tail.contains("to run in background")
 +            || tail.contains("Waiting for API response") || tail.contains("will retry in")
 +            || tail.range(of: #"… \([^)\n]*?\d+[hms]"#, options: .regularExpression) != nil
 +            || tail.contains("running PreToolUse hooks") || tail.contains("running PostToolUse hooks")
 +            || tail.range(of: #"Waiting for \d+ background (agent|task)"#, options: .regularExpression) != nil
++    }
++
++    private static let iso: ISO8601DateFormatter = {
++        let f = ISO8601DateFormatter()
++        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
++        return f
++    }()
++
++    /// The screen's last `count` non-blank lines, found from the end: the
++    /// whole screen isn't split for them twice a second per session.
++    static func lastLines(_ screen: String, _ count: Int = 20) -> String {
++        let u = screen.utf8
++        var lines: [Substring] = []
++        var end = u.endIndex
++        var i = u.endIndex
++        func take(_ from: String.Index) {
++            let line = screen[from..<end]
++            if line.contains(where: { !$0.isWhitespace }) { lines.append(line) }
++        }
++        while i > u.startIndex, lines.count < count {
++            let prev = u.index(before: i)
++            if u[prev] == UInt8(ascii: "\n") {
++                take(i)
++                end = prev
++            }
++            i = prev
++        }
++        if lines.count < count { take(u.startIndex) }
++        return lines.reversed().joined(separator: "\n")
 +    }
 +
 +    /// "Waiting for 2 background agents to finish" in the screen's last
@@ -9437,8 +9547,7 @@ index 0000000..767ee30
 +        // neither, so a plain search first skips splitting the whole screen.
 +        guard screen.range(of: " still running") != nil || screen.range(of: "Waiting for ") != nil
 +        else { return nil }
-+        let tail = screen.split(separator: "\n").filter { $0.contains { !$0.isWhitespace } }
-+            .suffix(20).joined(separator: "\n")
++        let tail = lastLines(screen)
 +        // Newer Claude Code ends a turn with "· 1 shell still running".
 +        if let r = tail.range(of: #"\d+ shells? still running"#, options: .regularExpression),
 +           let n = Int(tail[r].prefix { $0.isNumber }), n > 0 {
@@ -9492,8 +9601,7 @@ index 0000000..767ee30
 +        let end = (try? h.seekToEnd()) ?? 0
 +        try? h.seek(toOffset: end > 65536 ? end - 65536 : 0)
 +        guard let data = try? h.readToEnd() else { return false }
-+        let f = ISO8601DateFormatter()
-+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
++        let f = Self.iso
 +        for line in data.split(separator: UInt8(ascii: "\n")).reversed() {
 +            guard let o = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
 +                  let type = o["type"] as? String, type == "user" || type == "assistant",
@@ -9510,8 +9618,7 @@ index 0000000..767ee30
 +        let end = (try? h.seekToEnd()) ?? 0
 +        try? h.seek(toOffset: end > 65536 ? end - 65536 : 0)
 +        guard let data = try? h.readToEnd() else { return false }
-+        let f = ISO8601DateFormatter()
-+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
++        let f = Self.iso
 +        // Written after the hook last said busy.
 +        func current(_ o: [String: Any]) -> Bool {
 +            guard let at = (o["timestamp"] as? String).flatMap(f.date) else { return true }
@@ -10593,7 +10700,7 @@ index 0000000..767ee30
 +        guard fd >= 0 else { return }
 +        let src = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .rename, .delete],
 +                                                            queue: .main)
-+        src.setEventHandler { [weak self] in self?.refresh() }
++        src.setEventHandler { [weak self] in self?.refreshSoon() }
 +        src.setCancelHandler { close(fd) }
 +        src.resume()
 +        watcher = src
@@ -11308,10 +11415,10 @@ index 0000000..ea8091f
 +}
 diff --git a/macos/Sources/Features/Dock/DockSidebarView.swift b/macos/Sources/Features/Dock/DockSidebarView.swift
 new file mode 100644
-index 0000000..fe324d6
+index 0000000..e8d24fa
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSidebarView.swift
-@@ -0,0 +1,1791 @@
+@@ -0,0 +1,1812 @@
 +import AppKit
 +import SwiftUI
 +import UniformTypeIdentifiers
@@ -12345,7 +12452,22 @@ index 0000000..fe324d6
 +            .labelStyle(.titleAndIcon)
 +    }
 +
++    /// Menus are rebuilt with every row render: draw each icon once.
++    private static var icons: [String: NSImage] = [:]
++    private static var swatches: [DockTag: NSImage] = [:]
++
 +    static func icon(_ symbol: String, _ color: NSColor) -> NSImage {
++        let key = symbol + "|" + (color.usingColorSpace(.sRGB).map {
++            "\($0.redComponent),\($0.greenComponent),\($0.blueComponent),\($0.alphaComponent)"
++        } ?? color.description)
++        if let hit = icons[key] { return hit }
++        let img = drawIcon(symbol, color)
++        if icons.count > 200 { icons.removeAll() }
++        icons[key] = img
++        return img
++    }
++
++    private static func drawIcon(_ symbol: String, _ color: NSColor) -> NSImage {
 +        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
 +            .applying(.init(paletteColors: [color]))
 +        guard let sym = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
@@ -12358,12 +12480,15 @@ index 0000000..fe324d6
 +    /// A dot of the tag's colour for the menu: menus tint symbol images,
 +    /// so it is drawn and not a template.
 +    static func swatch(_ tag: DockTag) -> NSImage {
++        if let hit = swatches[tag] { return hit }
++        // The colour is read when drawn, so a theme change still shows.
 +        let img = NSImage(size: NSSize(width: 12, height: 12), flipped: false) { r in
 +            NSColor(DockPalette.color(tag)).setFill()
 +            NSBezierPath(ovalIn: r.insetBy(dx: 1, dy: 1)).fill()
 +            return true
 +        }
 +        img.isTemplate = false
++        swatches[tag] = img
 +        return img
 +    }
 +
@@ -12697,8 +12822,11 @@ index 0000000..fe324d6
 +        content
 +            .onHover { inside in
 +                pending?.cancel()
++                // The work item holds this view's state and the state holds
++                // it: let go once it has run or been cancelled, or both leak.
++                pending = nil
 +                if inside {
-+                    let work = DispatchWorkItem { shown = true }
++                    let work = DispatchWorkItem { shown = true; pending = nil }
 +                    pending = work
 +                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
 +                } else {
@@ -14112,10 +14240,10 @@ index 0000000..0796af7
 +}
 diff --git a/macos/Sources/Features/Dock/DockViewer.swift b/macos/Sources/Features/Dock/DockViewer.swift
 new file mode 100644
-index 0000000..d4b0ede
+index 0000000..e82359a
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockViewer.swift
-@@ -0,0 +1,346 @@
+@@ -0,0 +1,352 @@
 +import AppKit
 +import UniformTypeIdentifiers
 +import WebKit
@@ -14259,6 +14387,8 @@ index 0000000..d4b0ede
 +    let view: WKWebView
 +    private var source: DispatchSourceFileSystemObject?
 +    private var pending: DispatchWorkItem?
++    /// Tries in a row the file wasn't there: waits longer each time.
++    private var missing = 0
 +
 +    var label: String { url.lastPathComponent }
 +
@@ -14293,9 +14423,13 @@ index 0000000..d4b0ede
 +        let fd = Darwin.open(url.path, O_EVTONLY)
 +        guard fd >= 0 else {
 +            // Gone for a moment while it is replaced: look again shortly.
-+            schedule(after: 0.5) { [weak self] in self?.watch(); self?.reload() }
++            // Deleted for good: back off to every 30 s, not twice a second.
++            missing += 1
++            let wait = min(30, 0.5 * pow(2, Double(min(missing, 7) - 1)))
++            schedule(after: wait) { [weak self] in self?.watch(); self?.reload() }
 +            return
 +        }
++        missing = 0
 +        let s = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd,
 +                                                          eventMask: [.write, .extend, .delete, .rename],
 +                                                          queue: .main)
