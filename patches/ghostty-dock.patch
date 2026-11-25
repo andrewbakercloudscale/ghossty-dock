@@ -4687,7 +4687,7 @@ index 0000000..fee8caa
 +}
 diff --git a/macos/Sources/Features/Dock/DockHistory.swift b/macos/Sources/Features/Dock/DockHistory.swift
 new file mode 100644
-index 0000000..1a3f9cd
+index 0000000..63ac31e
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockHistory.swift
 @@ -0,0 +1,470 @@
@@ -4999,29 +4999,29 @@ index 0000000..1a3f9cd
 +        }
 +    }
 +
++    // The whole bar toggles, not just its left: a tap on a full-width
++    // shape, with a system tooltip that never covers the chevron (the
++    // drawn tip sat over the right half and the clicks there were lost).
 +    private func bar(count: Int) -> some View {
-+        Button {
-+            withAnimation(.easeOut(duration: 0.15)) { open.toggle() }
-+        } label: {
-+            HStack(spacing: 6) {
-+                // Coloured like the header's buttons, so it reads as one.
-+                Image(systemName: "clock.arrow.circlepath").font(.system(size: 11, weight: .semibold))
-+                    .foregroundStyle(DockPalette.teal)
-+                Text("History").font(.system(size: 11.5, weight: .semibold))
-+                    .foregroundStyle(DockPalette.text)
-+                Text("\(count)").font(.system(size: 10.5, weight: .semibold)).monospacedDigit()
-+                    .foregroundStyle(DockPalette.teal)
-+                    .padding(.horizontal, 6).padding(.vertical, 1)
-+                    .background(Capsule().fill(DockPalette.teal.opacity(0.15)))
-+                Spacer()
-+                Image(systemName: open ? "chevron.down" : "chevron.up").font(.system(size: 9, weight: .bold))
-+                    .foregroundStyle(DockPalette.teal)
-+            }
-+            .padding(.horizontal, 12).padding(.vertical, 7)
-+            .contentShape(Rectangle())
++        HStack(spacing: 6) {
++            // Coloured like the header's buttons, so it reads as one.
++            Image(systemName: "clock.arrow.circlepath").font(.system(size: 11, weight: .semibold))
++                .foregroundStyle(DockPalette.teal)
++            Text("History").font(.system(size: 11.5, weight: .semibold))
++                .foregroundStyle(DockPalette.text)
++            Text("\(count)").font(.system(size: 10.5, weight: .semibold)).monospacedDigit()
++                .foregroundStyle(DockPalette.teal)
++                .padding(.horizontal, 6).padding(.vertical, 1)
++                .background(Capsule().fill(DockPalette.teal.opacity(0.15)))
++            Spacer()
++            Image(systemName: open ? "chevron.down" : "chevron.up").font(.system(size: 9, weight: .bold))
++                .foregroundStyle(DockPalette.teal)
 +        }
-+        .buttonStyle(.plain)
-+        .dockTip("Sessions closed in the last 3 months")
++        .padding(.horizontal, 12).padding(.vertical, 7)
++        .frame(maxWidth: .infinity)
++        .contentShape(Rectangle())
++        .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { open.toggle() } }
++        .help("Sessions closed in the last 3 months")
 +    }
 +
 +    /// What was said is searched once typing pauses, in every session listed
@@ -5305,7 +5305,7 @@ index 0000000..b35bf4a
 +}
 diff --git a/macos/Sources/Features/Dock/DockImages.swift b/macos/Sources/Features/Dock/DockImages.swift
 new file mode 100644
-index 0000000..e3a6ef1
+index 0000000..348d5d3
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockImages.swift
 @@ -0,0 +1,354 @@
@@ -5554,28 +5554,28 @@ index 0000000..e3a6ef1
 +        }
 +    }
 +
++    // The whole bar toggles, not just its left: a tap on a full-width
++    // shape, with a system tooltip that never covers the chevron (the
++    // drawn tip sat over the right half and the clicks there were lost).
 +    private func bar(count: Int) -> some View {
-+        Button {
-+            withAnimation(.easeOut(duration: 0.15)) { open.toggle() }
-+        } label: {
-+            HStack(spacing: 6) {
-+                Image(systemName: "photo.on.rectangle").font(.system(size: 11, weight: .semibold))
-+                    .foregroundStyle(DockPalette.mauve)
-+                Text("Images").font(.system(size: 11.5, weight: .semibold))
-+                    .foregroundStyle(DockPalette.text)
-+                Text("\(count)").font(.system(size: 10.5, weight: .semibold)).monospacedDigit()
-+                    .foregroundStyle(DockPalette.mauve)
-+                    .padding(.horizontal, 6).padding(.vertical, 1)
-+                    .background(Capsule().fill(DockPalette.mauve.opacity(0.15)))
-+                Spacer()
-+                Image(systemName: open ? "chevron.down" : "chevron.up").font(.system(size: 9, weight: .bold))
-+                    .foregroundStyle(DockPalette.mauve)
-+            }
-+            .padding(.horizontal, 12).padding(.vertical, 7)
-+            .contentShape(Rectangle())
++        HStack(spacing: 6) {
++            Image(systemName: "photo.on.rectangle").font(.system(size: 11, weight: .semibold))
++                .foregroundStyle(DockPalette.mauve)
++            Text("Images").font(.system(size: 11.5, weight: .semibold))
++                .foregroundStyle(DockPalette.text)
++            Text("\(count)").font(.system(size: 10.5, weight: .semibold)).monospacedDigit()
++                .foregroundStyle(DockPalette.mauve)
++                .padding(.horizontal, 6).padding(.vertical, 1)
++                .background(Capsule().fill(DockPalette.mauve.opacity(0.15)))
++            Spacer()
++            Image(systemName: open ? "chevron.down" : "chevron.up").font(.system(size: 9, weight: .bold))
++                .foregroundStyle(DockPalette.mauve)
 +        }
-+        .buttonStyle(.plain)
-+        .dockTip("The last two images pasted into this session, newest first. Click one to open it")
++        .padding(.horizontal, 12).padding(.vertical, 7)
++        .frame(maxWidth: .infinity)
++        .contentShape(Rectangle())
++        .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { open.toggle() } }
++        .help("The last two images pasted into this session, newest first. Click one to open it")
 +    }
 +
 +    private func tile(_ p: DockImages.Pasted) -> some View {
