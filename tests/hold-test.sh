@@ -61,7 +61,7 @@ def lst(*a): return subprocess.run([HOLD, "list", *a], env=env, capture_output=T
 
 fake = app()
 pid, fd = spawn(["new", "--", "/bin/sh", "-c", "printf '\\033[?2004h\\033]2;mytitle\\007'; echo hello; cat"])
-check("runs the program", b"hello" in read(fd))
+check("runs the program", b"hello" in read(fd, 3))
 os.write(fd, b"abc\r")
 check("passes keys to it", b"abc" in read(fd))
 check("lists it as attached", "\t1\t" in lst())
@@ -171,6 +171,9 @@ os.kill(holder, signal.SIGCONT)
 time.sleep(2)
 check("K closes the tab and ends the session", os.waitpid(pid, os.WNOHANG)[0] == pid and lst() == "")
 fake.kill()
+
+stalls = open(st + "/hold-stalls.log").read() if os.path.exists(st + "/hold-stalls.log") else ""
+check("stalls are written down", "not taking output" in stalls and "tab asked" in stalls and "answer: K" in stalls)
 
 print(f"{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

@@ -22,6 +22,7 @@
 #include <pwd.h>
 #include <signal.h>
 #include <spawn.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -87,6 +88,23 @@ static void log_exit(const char *name, pid_t child, time_t created, int st, int 
     if (!f) return;
     fprintf(f, "%s epoch=%ld hold=%s holder=%d child=%d ran=%lds how=%s%s\n", when, (long)now, name,
             (int)getpid(), (int)child, (long)(now - created), how, hung_up ? " app-hung-up" : "");
+    fclose(f);
+}
+
+// A tab that stopped taking output or keys, for finding out why (the app's
+// own stalls are in stalls.log beside it).
+static void log_stall(const char *name, const char *fmt, ...) {
+    char path[600], when[32], text[256];
+    snprintf(path, sizeof path, "%s/hold-stalls.log", state_dir);
+    time_t now = time(NULL);
+    strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S", localtime(&now));
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(text, sizeof text, fmt, ap);
+    va_end(ap);
+    FILE *f = fopen(path, "a");
+    if (!f) return;
+    fprintf(f, "%s hold=%s pid=%d %s\n", when, name, (int)getpid(), text);
     fclose(f);
 }
 
@@ -341,9 +359,15 @@ static int shell_only(pid_t pgrp) {
 // from the kept output instead once it reads again.
 #define OQ_MAX (3 * RING_SIZE)
 static char *oq;
+static const char *hold_name = "";
 static size_t oq_len, oq_off, oq_cap;
 
 static void oq_reset(void) { oq_len = oq_off = 0; }
+
+// Since when output has been waiting for a tab that takes none, and whether
+// that was written down.
+static time_t stuck_since;
+static int stuck_logged;
 
 static int oq_add(const void *p, size_t n) {
     if (oq_len - oq_off + n > OQ_MAX) { oq_reset(); return -1; }
@@ -373,7 +397,11 @@ static void oq_flush(int fd) {
         if (w < 0 && errno == EINTR) continue;
         break;
     }
+    if (oq_off < oq_len && !stuck_since) stuck_since = time(NULL);
     if (oq_off == oq_len) {
+        if (stuck_logged) log_stall(hold_name, "tab taking output again after %lds", (long)(time(NULL) - stuck_since));
+        stuck_since = 0;
+        stuck_logged = 0;
         oq_reset();
         if (oq_cap > 1024 * 1024) { free(oq); oq = NULL; oq_cap = 0; }
     }
@@ -430,6 +458,7 @@ static void on_chld(int sig) { (void)sig; child_exited = 1; }
 struct hello { uint16_t rows, cols; int32_t app; };
 
 static void master(const char *name, int listen_fd, int ready_fd, struct winsize ws, int login, char **argv) {
+    hold_name = name;
     ring = malloc(RING_SIZE);
     if (!ring) exit(1);
     int pty;
@@ -498,6 +527,10 @@ static void master(const char *name, int listen_fd, int ready_fd, struct winsize
             child_exited = 0;
         }
         if (hung_up && time(NULL) - hup_at > 5) kill(-child, SIGKILL);
+        if (client >= 0 && stuck_since && !stuck_logged && time(NULL) - stuck_since >= 3) {
+            stuck_logged = 1;
+            log_stall(name, "tab not taking output for 3s+ (%zu KB waiting)", (oq_len - oq_off) / 1024);
+        }
 
         struct pollfd pf[3] = {{listen_fd, POLLIN, 0}, {pty, POLLIN, 0},
                                {client, (short)(POLLIN | (lagging || oq_len > oq_off ? POLLOUT : 0)), 0}};
@@ -509,7 +542,10 @@ static void master(const char *name, int listen_fd, int ready_fd, struct winsize
             if (r > 0) {
                 keep(buf, (size_t)r);
                 if (client >= 0 && !lagging) {
-                    if (oq_add(buf, (size_t)r) < 0) lagging = 1;
+                    if (oq_add(buf, (size_t)r) < 0) {
+                        lagging = 1;
+                        log_stall(name, "tab fell %d MB behind: it is redrawn when it reads again", OQ_MAX >> 20);
+                    }
                     else oq_flush(client);
                 }
             } else if (r == 0 || (errno != EINTR && errno != EAGAIN)) {
@@ -556,6 +592,9 @@ static void master(const char *name, int listen_fd, int ready_fd, struct winsize
                 pend = 0;
                 lagging = 0;
                 oq_reset();
+                if (stuck_logged) log_stall(name, "tab went while not taking output (%lds)", (long)(time(NULL) - stuck_since));
+                stuck_since = 0;
+                stuck_logged = 0;
                 // The tab told us whether it was closed or the app went away;
                 // a tab that died without saying is judged here the same way.
                 int keep_it = verdict == PKT_DETACH ||
@@ -608,6 +647,9 @@ static void master(const char *name, int listen_fd, int ready_fd, struct winsize
                 pend = 0;
                 lagging = 0;
                 oq_reset();
+                if (stuck_logged) log_stall(name, "tab replaced while not taking output (%lds)", (long)(time(NULL) - stuck_since));
+                stuck_since = 0;
+                stuck_logged = 0;
                 struct winsize w = {.ws_row = h.rows, .ws_col = h.cols};
                 struct timeval none = {0, 0};
                 setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &none, sizeof none);
@@ -737,6 +779,7 @@ static int ask_unresponsive(const char *name, const char *why, int fd, const cha
         "\x1b[0m\r\n\x1b[1;33m Ghostty Dock: %s \x1b[0m\r\n"
         "  Press W to keep waiting, or K to close this tab and end the session.\r\n"
         "  (Nothing is lost by waiting: the session keeps running.)\r\n", why);
+    log_stall(name, "tab asked: %s", why);
     if (say(msg) < 0) return 0;
     int waiting = 0;
     for (;;) {
@@ -753,6 +796,7 @@ static int ask_unresponsive(const char *name, const char *why, int fd, const cha
             for (ssize_t i = 0; i < r; i++) {
                 char c = keys[i];
                 if (c == 'k' || c == 'K') {
+                    log_stall(name, "answer: K, close the tab and end the session");
                     if (query(name, PKT_KILL, NULL, 0) < 0) {
                         say(" Could not reach it; it is left running in the background.\r\n");
                         sleep(2);
@@ -760,6 +804,7 @@ static int ask_unresponsive(const char *name, const char *why, int fd, const cha
                     return 0;
                 }
                 if ((c == 'w' || c == 'W') && !waiting) {
+                    log_stall(name, "answer: W, keep waiting");
                     if (fd < 0) return 1;
                     waiting = 1;
                     say("\x1b[2m Waiting... (K still closes it)\x1b[0m\r\n");
@@ -772,6 +817,7 @@ static int ask_unresponsive(const char *name, const char *why, int fd, const cha
             else if (w < 0 && errno != EAGAIN && errno != EINTR) return 0;
             if (*off == total) {
                 say("\x1b[1;32m Responding again. \x1b[0m\r\n");
+                log_stall(name, "responding again");
                 return 1;
             }
             if (w <= 0) usleep(100000);
