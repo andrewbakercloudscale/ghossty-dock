@@ -15,8 +15,9 @@
 # seconds records the open sessions, and --restore reopens them when the app
 # starts after a quit or crash.
 
-SCRIPT_NAME=$(basename "$0")
-SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+# Without basename and dirname: the app runs this every few seconds.
+SCRIPT_NAME=${0##*/}
+SCRIPT_DIR=$(cd "$([[ "$0" == */* ]] && echo "${0%/*}" || echo .)" && pwd)
 STATE_DIR="$HOME/.local/state/ghostty-dock"
 LOG="$STATE_DIR/restart-dock.log"
 SAVED="$STATE_DIR/open-sessions.tsv"
@@ -113,8 +114,19 @@ function log() {
     echo "$(date '+%H:%M:%S') $*" | tee -a "$LOG"
 }
 
+# Every process as "<pid> <ppid> <tty> <etime> <command>". save takes one
+# look and each step reads it (PROCS): it was four ps of the whole Mac every
+# 10 s, each a tenth of a second or more of system time with 900 running.
+function procs() {
+    if [ -n "${PROCS:-}" ]; then
+        printf '%s\n' "$PROCS"
+    else
+        ps -axo pid=,ppid=,tty=,etime=,command=
+    fi
+}
+
 function app_pid() {
-    ps -axo pid=,command= | awk -v bin="$APP_BIN" '{ pid = $1; $1 = ""; sub(/^ /, "") } index($0, bin) == 1 && (length($0) == length(bin) || substr($0, length(bin) + 1, 1) == " ") { print pid; exit }'
+    procs | awk -v bin="$APP_BIN" '{ pid = $1; $1 = $2 = $3 = $4 = ""; sub(/^ +/, "") } index($0, bin) == 1 && (length($0) == length(bin) || substr($0, length(bin) + 1, 1) == " ") { print pid; exit }'
 }
 
 # Prints the pid of every claude under any of the given pids, however it was
@@ -122,12 +134,12 @@ function app_pid() {
 function claudes_under() {
     local roots="$*"
     [ -z "$roots" ] && return 0
-    ps -axo pid=,ppid=,command= | awk -v roots="$roots" '
+    procs | awk -v roots="$roots" '
         BEGIN { n = split(roots, r, " "); for (i = 1; i <= n; i++) root[r[i]] = 1 }
         { parent[$1] = $2; cmd[$1] = $0 }
         END {
             for (p in cmd) {
-                if (cmd[p] !~ /^ *[0-9]+ +[0-9]+ +([^ ]*\/)?claude( |$)/) continue
+                if (cmd[p] !~ /^ *[0-9]+ +[0-9]+ +[^ ]+ +[^ ]+ +([^ ]*\/)?claude( |$)/) continue
                 # A headless claude -p (a git hook or build script) belongs to no tab.
                 if (cmd[p] ~ / (-p|--print)( |$)/) continue
                 q = p
@@ -143,8 +155,13 @@ function holders() {
     "$HOLD" list "$@" 2>/dev/null | sort -t$'\t' -k5n
 }
 
+# Without sort, cut and tr: save asks every time.
 function holder_pids() {
-    holders | cut -f2 | tr '\n' ' '
+    [ -x "$HOLD" ] || return 0
+    local name pid rest
+    while IFS=$'\t' read -r name pid rest; do
+        [ -n "$pid" ] && printf '%s ' "$pid"
+    done < <("$HOLD" list 2>/dev/null)
 }
 
 # The session a claude pid is on, from the hook's state: for claudes started
@@ -202,7 +219,8 @@ function load_bypass_opt() {
             [[ "$line" == CLAUDE_PANEL_BYPASS_PERMISSIONS=* ]] && opt="${line#*=}"
         done <"$HOME/.config/claude-panel/options"
     opt="${opt//[\"\' ]/}"
-    BYPASS_OPT=$(tr '[:upper:]' '[:lower:]' <<<"$opt")
+    # Lowercase without tr: bash 3.2 has no ${opt,,}.
+    case "$opt" in [Ff][Aa][Ll][Ss][Ee] | 0 | [Nn][Oo] | [Oo][Ff][Ff]) BYPASS_OPT=off ;; *) BYPASS_OPT="$opt" ;; esac
 }
 
 function with_bypass() {
@@ -380,7 +398,7 @@ function claude_table() {
         hooks=$(grep -Ho '"session_id":"[^"]*"\|"claude_pid":[0-9]*' $files 2>/dev/null)
     fi
     # macOS awk takes no newlines in -v, so the hook lines come as a file.
-    ps -axo pid=,ppid=,command= | awk -v roots="$roots" '
+    procs | awk -v roots="$roots" '
         BEGIN { n = split(roots, r, " "); for (i = 1; i <= n; i++) root[r[i]] = 1 }
         FILENAME != "-" {
             if ($0 == "") next
@@ -391,7 +409,7 @@ function claude_table() {
             if (pid != "" && sid != "" && !(pid in hook)) { hook[pid] = sid; pid = "x" }
             next
         }
-        { parent[$1] = $2; line = $0; sub(/^ *[0-9]+ +[0-9]+ +/, "", line); cmd[$1] = line }
+        { parent[$1] = $2; line = $0; sub(/^ *[0-9]+ +[0-9]+ +[^ ]+ +[^ ]+ +/, "", line); cmd[$1] = line }
         END {
             for (p in cmd) {
                 if (cmd[p] !~ /^([^ ]*\/)?claude( |$)/) continue
@@ -408,7 +426,7 @@ function claude_table() {
 # True while a restart is quitting the app and reopening its sessions; a
 # marker left by one that died is ignored after 10 minutes.
 function restarting() {
-    [ -n "$(find "$RESTARTING" -mmin -10 2>/dev/null)" ]
+    [ -e "$RESTARTING" ] && [ -n "$(find "$RESTARTING" -mmin -10 2>/dev/null)" ]
 }
 
 # A claude in a terminal whose SessionStart hook never recorded it (it timed
@@ -418,12 +436,13 @@ function restarting() {
 function backfill_status() {
     local hook="$HOME/.local/bin/ghostty-dock-hook" sessions="$STATE_DIR/sessions"
     [ -x "$hook" ] || return 0
-    local recorded line cpid tty etime sid env cwd var
-    recorded=$(cat "$sessions"/*.json 2>/dev/null | grep -o '"session_id":"[^"]*"')
-    while read -r cpid tty etime line; do
+    local recorded="" read_recorded=false line cpid _ppid tty etime sid env cwd var
+    while read -r cpid _ppid tty etime line; do
         [ -n "$cpid" ] && [ "$tty" != "??" ] || continue
         [[ "$line" =~ ^claude\ .*--(session-id|resume)\ ([0-9a-f-]{36})(\ |$) ]] || continue
         sid="${BASH_REMATCH[2]}"
+        # Read only once there is a claude to check it for.
+        $read_recorded || { recorded=$(cat "$sessions"/*.json 2>/dev/null | grep -o '"session_id":"[^"]*"'); read_recorded=true; }
         [[ "$recorded" == *"\"session_id\":\"$sid\""* ]] && continue
         # etime is [[dd-]hh:]mm:ss: under 30 s, its own hook may still come.
         [[ "$etime" =~ ^00:([0-2][0-9])$ ]] && continue
@@ -438,22 +457,33 @@ function backfill_status() {
             '{hook_event_name: "SessionStart", source: "resume", session_id: $sid, cwd: $cwd}' |
             env "${vars[@]}" GHOSTTY_DOCK_TEST_LINEAGE="$cpid - $tty" "$hook" >/dev/null 2>&1
         log "recorded $(basename "$cwd"): its SessionStart hook did not ($sid)"
-    done < <(ps -axo pid=,tty=,etime=,comm=,args= | awk '$4 == "claude" { $4 = ""; print }' | sed -E 's/  +/ /')
+    done < <(procs | awk '$5 == "claude"')
     return 0
 }
 
 function save() {
     restarting && return 0
+    # One look at every process for the whole save (see procs).
+    local PROCS
+    PROCS=$(ps -axo pid=,ppid=,tty=,etime=,command=)
     local pid
     pid=$(app_pid)
     [ -z "$pid" ] && return 0
-    local me
-    me="$pid $(ps -o lstart= -p "$pid" 2>/dev/null)"
+    local me owner
+    # In C: the app and a script run from a terminal can have different
+    # locales, and each took the other's list for another Mac's, restored
+    # it and wrote its own (2026-11-26).
+    me="$pid $(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null)"
+    # IFS=: ps pads lstart with spaces, which read would trim.
+    [ -f "$SAVED_BY" ] && IFS= read -r owner <"$SAVED_BY"
+    # Written in the locale's format before that: still this app's.
+    [ -n "$owner" ] && [ "$owner" != "$me" ] && [ "${owner%% *}" = "$pid" ] &&
+        [ "$owner" = "$pid $(ps -o lstart= -p "$pid" 2>/dev/null)" ] && owner="$me"
     # Moving to a new Mac: the app there ran before the old one's state was
     # copied in, so its first --save wrote over the copied list and the
     # sessions were never reopened. A list this app did not write is
     # restored first.
-    if [ -s "$SAVED" ] && [ "$(cat "$SAVED_BY" 2>/dev/null)" != "$me" ]; then
+    if [ -s "$SAVED" ] && [ "$owner" != "$me" ]; then
         if restore_enabled; then
             restore_foreign
         else
@@ -882,7 +912,10 @@ function main() {
     # Sessions we start must not inherit a Claude Code parent marker
     # (CLAUDE_CODE_CHILD_SESSION turns off their transcript saving), nor the
     # Ghostty Dock ids of the tab this runs in (its row would be overwritten).
-    unset CLAUDECODE CLAUDE_PID GHOSTTY_DOCK_SURFACE DOCK_TAB_ID $(compgen -e | grep "^CLAUDE_CODE_")
+    unset CLAUDECODE CLAUDE_PID GHOSTTY_DOCK_SURFACE DOCK_TAB_ID
+    # Without a grep: the app runs this every few seconds.
+    local var
+    for var in $(compgen -e); do [[ "$var" == CLAUDE_CODE_* ]] && unset "$var"; done
     local now=false
     local fresh=false
     local dry=false
@@ -895,7 +928,7 @@ function main() {
         --dry-run) dry=true; foreground=true ;;
         --foreground) foreground=true ;;
         --save)
-            mkdir -p "$STATE_DIR" || exit 1
+            [ -d "$STATE_DIR" ] || mkdir -p "$STATE_DIR" || exit 1
             save
             exit 0
             ;;

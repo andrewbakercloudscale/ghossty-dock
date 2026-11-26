@@ -146,7 +146,7 @@ function test_foreign_saved() {
     save
     expect "a list another app wrote is reopened" "$(cat "$reopened" 2>/dev/null)" "$HOME"$'\t'"sid-old"$'\t'"--flag"
     expect "then this app's own list replaces it" "$(cat "$SAVED")" ""
-    expect "and is marked as this app's" "$(cat "$SAVED_BY")" "$$ $(ps -o lstart= -p $$)"
+    expect "and is marked as this app's" "$(cat "$SAVED_BY")" "$$ $(LC_ALL=C ps -o lstart= -p $$)"
     rm -f "$reopened"
     printf '%s\tsid-mine\t\n' "$HOME" >"$SAVED"
     save

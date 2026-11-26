@@ -10,8 +10,9 @@
 # A session that is busy is waited for, never interrupted. Run it detached
 # (--detach) when the calling session is one of those being moved.
 
-SCRIPT_NAME=$(basename "$0")
-SELF="$(cd "$(dirname "$0")" && pwd)/$SCRIPT_NAME"
+# Without basename and dirname: the app runs this every few seconds.
+SCRIPT_NAME=${0##*/}
+SELF="$(cd "$([[ "$0" == */* ]] && echo "${0%/*}" || echo .)" && pwd)/$SCRIPT_NAME"
 STATE_DIR="$HOME/.local/state/ghostty-dock"
 LOG="$STATE_DIR/move-to-dock.log"
 # One "<job>.pid" per move running: all, g<ghostty pid>, u<session id> or
@@ -470,7 +471,10 @@ function main() {
     # Sessions we start must not inherit a Claude Code parent marker
     # (CLAUDE_CODE_CHILD_SESSION turns off their transcript saving), nor the
     # Ghostty Dock ids of the tab this runs in (its row would be overwritten).
-    unset CLAUDECODE CLAUDE_PID GHOSTTY_DOCK_SURFACE DOCK_TAB_ID $(compgen -e | grep "^CLAUDE_CODE_")
+    unset CLAUDECODE CLAUDE_PID GHOSTTY_DOCK_SURFACE DOCK_TAB_ID
+    # Without a grep: the app runs this every few seconds.
+    local var
+    for var in $(compgen -e); do [[ "$var" == CLAUDE_CODE_* ]] && unset "$var"; done
     local dry=false
     local detach=false
     local only=""

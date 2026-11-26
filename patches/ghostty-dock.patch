@@ -8329,6 +8329,50 @@ index 0000000..3ed8e19
 +        }
 +    }
 +}
+diff --git a/macos/Sources/Features/Dock/DockSaveSchedule.swift b/macos/Sources/Features/Dock/DockSaveSchedule.swift
+new file mode 100644
+index 0000000..3636924
+--- /dev/null
++++ b/macos/Sources/Features/Dock/DockSaveSchedule.swift
+@@ -0,0 +1,38 @@
++import Foundation
++
++/// When the app runs `ghostty-dock-restart --save`, which records the open
++/// sessions so a quit or crash can reopen them. Each save looks at every
++/// process on the Mac: a dozen processes and up to half a second of CPU.
++/// Every 10 s that was 2 to 6 new processes a second (2026-11-26), so the
++/// app saves when its sessions change, and otherwise once a minute for what
++/// it does not see (a claude whose start hook never ran).
++struct DockSaveSchedule {
++    /// How often the app checks whether a save is due.
++    static let tick: TimeInterval = 10
++    /// The longest between saves when nothing changes.
++    static let heartbeat: TimeInterval = 60
++
++    private(set) var last: String?
++    private(set) var at: Date?
++
++    /// True when the sessions differ from the last save's, or it was a
++    /// heartbeat ago (or there has been none).
++    func due(_ fingerprint: String, now: Date = Date()) -> Bool {
++        guard let last, let at else { return true }
++        return fingerprint != last || now.timeIntervalSince(at) >= Self.heartbeat
++    }
++
++    mutating func saved(_ fingerprint: String, at now: Date = Date()) {
++        last = fingerprint
++        at = now
++    }
++
++    /// What a save records, in one string: each tab's session, folder and
++    /// claude, in no particular order.
++    static func fingerprint(_ sessions: [(key: String, sessionId: String?, project: String?, pid: Int32?)]) -> String {
++        sessions
++            .map { "\($0.key)|\($0.sessionId ?? "")|\($0.project ?? "")|\($0.pid.map(String.init) ?? "")" }
++            .sorted()
++            .joined(separator: "\n")
++    }
++}
 diff --git a/macos/Sources/Features/Dock/DockScreenGate.swift b/macos/Sources/Features/Dock/DockScreenGate.swift
 new file mode 100644
 index 0000000..520fa75
@@ -8768,10 +8812,10 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..6a54337
+index 0000000..1fc4de4
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,2165 @@
+@@ -0,0 +1,2192 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -9197,6 +9241,7 @@ index 0000000..6a54337
 +    }
 +    private var saveTimer: Timer?
 +    private var saving = false
++    private var saveSchedule = DockSaveSchedule()
 +    private var listing = false
 +
 +    /// Records the open sessions every few seconds, and reopens the ones
@@ -9220,10 +9265,16 @@ index 0000000..6a54337
 +                    _ = DockProcess.run(DockHold.binary, ["kill-detached"], timeout: 30, log: DockLog.restart)
 +                }
 +            }
-+            self.saveTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
++            self.saveTimer = Timer.scheduledTimer(withTimeInterval: DockSaveSchedule.tick, repeats: true) { [weak self] _ in
 +                // One at a time: a slow save must not stack up behind itself.
 +                guard let self, !self.saving else { return }
 +                DockLayout.save()
++                // Only when the sessions changed, or once a minute.
++                let sessions = DockSaveSchedule.fingerprint(self.rows.map {
++                    (key: $0.key, sessionId: $0.sessionId, project: $0.project, pid: $0.pid)
++                })
++                guard self.saveSchedule.due(sessions) else { return }
++                self.saveSchedule.saved(sessions)
 +                self.saving = true
 +                DispatchQueue.global(qos: .utility).async {
 +                    _ = DockProcess.run("/bin/bash", [restarter, "--save"], timeout: 60, log: DockLog.restart)
@@ -9237,12 +9288,32 @@ index 0000000..6a54337
 +        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/ghostty-dock-move").path
 +    }
 +
++    /// The stock Ghostty ghostty-dock-move docks windows from (GHOSTTY_APP).
++    private static func stockGhosttyRunning() -> Bool {
++        NSWorkspace.shared.runningApplications.contains {
++            $0.bundleURL?.standardizedFileURL.path == "/Applications/Ghostty.app"
++        }
++    }
++
++    /// A dock, undock or restart job's lock in ghostty-dock-move's LOCK_DIR.
++    private static func moveJobsPending() -> Bool {
++        let dir = FileManager.default.homeDirectoryForCurrentUser
++            .appendingPathComponent(".local/state/ghostty-dock/moving")
++        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
++        return names.contains { $0.hasSuffix(".pid") }
++    }
++
 +    private func refreshMovable() {
 +        let mover = mover
 +        guard !listing, FileManager.default.isExecutableFile(atPath: mover) else { return }
 +        listing = true
++        // Every 5 s: without a stock Ghostty open or a move under way there
++        // is nothing to list, so no bash and pgreps (2026-11-26, CPU).
++        let needed = Self.stockGhosttyRunning() || Self.moveJobsPending()
 +        DispatchQueue.global(qos: .utility).async { [weak self] in
-+            let text = DockProcess.run("/bin/bash", [mover, "--list"], timeout: 30, log: DockLog.sessions)?.text
++            let text = needed
++                ? DockProcess.run("/bin/bash", [mover, "--list"], timeout: 30, log: DockLog.sessions)?.text
++                : ""
 +            guard let text else {
 +                DispatchQueue.main.async { self?.listing = false }
 +                return
