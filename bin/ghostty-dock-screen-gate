@@ -10,6 +10,13 @@
 # agent has the screen, its next actions in a row go straight through.
 #
 # Never in Claude's way beyond the wait: any failure lets the tool run.
+#
+# A command can bring a browser up too (open https://…, a script that calls
+# webbrowser.open), which no browser tool's hook sees: the page was already
+# in front when the panel came up for the next browser action. So Bash
+# commands that open a page wait the same way, and with --open this is the
+# BROWSER Claude Code's commands use, so a script's page waits for the pause
+# before it opens.
 
 DEPENDENCIES=(jq ioreg)
 SCRIPT_NAME=$(basename "$0")
@@ -27,6 +34,7 @@ Claude Code PreToolUse hook for Ghostty Dock: waits for a pause in your
 typing before an agent drives the browser or the screen.
 
 usage: ${SCRIPT_NAME} < hook.json
+       ${SCRIPT_NAME} --open URL     (as BROWSER: open URL once you pause)
 
 files in ${STATE_DIR}:
     screen-gate-off        present: no waiting
@@ -97,45 +105,48 @@ function describe() {
     ' <<<"$1" 2>/dev/null
 }
 
+# A Bash command that brings a browser to the front: open or xdg-open with
+# an address or a browser app, Python's webbrowser, gh's --web. Sets URL to
+# the first address in it.
+function opens_page() {
+    local c="$1" w='(^|[[:space:];&|(`])'
+    URL=""
+    [[ $c =~ (https?|file)://[^[:space:]\"\'\)\;\&\|]+ ]] && URL="${BASH_REMATCH[0]}"
+    [[ $c =~ ${w}(open|xdg-open)[[:space:]][^\;\&\|]*(https?|file):// ]] && return 0
+    [[ $c =~ ${w}open[[:space:]][^\;\&\|]*-a[[:space:]]*[\"\']?(Google\ Chrome|Safari|Firefox|Arc|Brave|Microsoft\ Edge|Chromium) ]] && return 0
+    [[ $c =~ webbrowser\.open|-m[[:space:]]+webbrowser ]] && return 0
+    [[ $c =~ ${w}gh[[:space:]]+(browse|[^\;\&\|]*[[:space:]](--web|-w)([[:space:]]|$)) ]] && return 0
+    return 1
+}
+
+# Why the wait ended without going ahead; set by wait_for_pause.
+REASON=""
+
 function deny() {
     jq -cn --arg why "$1" '{hookSpecificOutput: {hookEventName: "PreToolUse",
         permissionDecision: "deny", permissionDecisionReason: $why}}'
     exit 0
 }
 
-function main() {
-    [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] && usage
-    for cmd in "${DEPENDENCIES[@]}"; do
-        command -v "$cmd" >/dev/null 2>&1 || exit 0
-    done
-    [ -e "$STATE_DIR/screen-gate-off" ] && exit 0
-
-    local input tool action sid cwd
-    input=$(cat)
-    # One jq for all four fields: this runs before every browser action.
-    { IFS= read -r tool; IFS= read -r action; IFS= read -r sid; IFS= read -r cwd; } < <(
-        jq -r '.tool_name // "", .tool_input.action // "", .session_id // "unknown", .cwd // ""' \
-            <<<"$input" 2>/dev/null)
-    [ -n "$tool" ] || exit 0
-    reads_only "$tool" "$action" && exit 0
-
-    sid="${sid//[^A-Za-z0-9_-]/}"
-    mkdir -p "$GATE_DIR" 2>/dev/null || exit 0
+# Waits for the pause, or the lease, for session $1 in folder $2 about to do
+# $3. Returns 0 to go ahead, 1 (with REASON) when not.
+function wait_for_pause() {
+    local sid="${1//[^A-Za-z0-9_-]/}" cwd="$2" what="$3"
+    mkdir -p "$GATE_DIR" 2>/dev/null || return 0
     local lease="$GATE_DIR/lease-$sid" now
     now=$(date +%s)
     if [ -f "$lease" ] && ((now - $(stat -f %m "$lease" 2>/dev/null || echo 0) < LEASE)); then
         touch "$lease"
-        exit 0
+        return 0
     fi
 
     if [ -z "$QUIET" ]; then
         QUIET=$(tr -dc 0-9 <"$STATE_DIR/screen-gate-seconds" 2>/dev/null)
         QUIET="${QUIET:-10}"
     fi
-    ((QUIET > 0)) || { touch "$lease"; exit 0; }
+    ((QUIET > 0)) || { touch "$lease"; return 0; }
 
-    local what name wait="$GATE_DIR/$sid.json"
-    what=$(describe "$input")
+    local name wait="$GATE_DIR/$sid.json"
     name=$(basename "${cwd:-Claude}")
     [ "${cwd%/}" = "${HOME%/}" ] && name="Home"
     jq -cn --arg sid "$sid" --arg name "$name" --arg what "$what" --argjson quiet "$QUIET" \
@@ -143,7 +154,7 @@ function main() {
         '{session_id: $sid, name: $name, what: $what, quiet: $quiet, started: $started, pid: $pid}' \
         >"$wait.tmp" 2>/dev/null && mv -f "$wait.tmp" "$wait"
     rm -f "$GATE_DIR/$sid.go" "$GATE_DIR/$sid.stop"
-    trap 'rm -f "$wait" "$wait.tmp"' EXIT
+    trap "rm -f '$wait' '$wait.tmp'" EXIT   # expanded now: \$wait is local
 
     if ! pgrep -qx ghostty 2>/dev/null; then
         osascript -e 'on run argv
@@ -159,7 +170,8 @@ function main() {
     while :; do
         if [ -e "$GATE_DIR/$sid.stop" ]; then
             rm -f "$GATE_DIR/$sid.stop"
-            deny "The user said not now to using the screen ($what). Carry on without it, or ask them when they are ready."
+            REASON="The user said not now to using the screen ($what). Carry on without it, or ask them when they are ready."
+            return 1
         fi
         [ -e "$GATE_DIR/$sid.go" ] && break
         if ((SECONDS >= next)); then
@@ -169,13 +181,67 @@ function main() {
             next=$((SECONDS + QUIET - IDLE))
         fi
         if ((SECONDS - start >= GIVE_UP)); then
-            deny "The user kept typing for $((GIVE_UP / 60)) minutes, so the screen was not free ($what). Ask them before using it."
+            REASON="The user kept typing for $((GIVE_UP / 60)) minutes, so the screen was not free ($what). Ask them before using it."
+            return 1
         fi
         sleep 1
     done
     rm -f "$GATE_DIR/$sid.go"
     touch "$lease"
-    exit 0
+    return 0
+}
+
+# BROWSER for Claude Code's commands: open the page once the user pauses.
+# gh passes its "%s" through as well as the address, so that is skipped.
+# Outside Claude Code, or switched off, it just opens.
+function open_url() {
+    local url="" a
+    for a in "$@"; do [ "$a" = "%s" ] || { url="$a"; break; }; done
+    [ -n "$url" ] || exit 1
+    local opener="${GHOSTTY_DOCK_TEST_OPENER:-open}"
+    if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [ ! -e "$STATE_DIR/screen-gate-off" ] &&
+        command -v jq >/dev/null 2>&1; then
+        GIVE_UP=100   # inside the command's own 2-minute timeout
+        if ! wait_for_pause "$CLAUDE_CODE_SESSION_ID" "$PWD" "Browser: open ${url:0:70}"; then
+            echo "Did not open $url: $REASON" >&2
+            exit 1
+        fi
+    fi
+    exec "$opener" "$url"
+}
+
+function main() {
+    [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] && usage
+    if [ "${1:-}" = "--open" ]; then
+        shift
+        open_url "$@"
+    fi
+    for cmd in "${DEPENDENCIES[@]}"; do
+        command -v "$cmd" >/dev/null 2>&1 || exit 0
+    done
+    [ -e "$STATE_DIR/screen-gate-off" ] && exit 0
+
+    local input tool action sid cwd
+    input=$(cat)
+    # Every Bash command comes here too: most are done without a jq.
+    [[ $input == *mcp__* || $input == *open* || $input == *webbrowser* || $input == *gh* ]] || exit 0
+    # One jq for all four fields: this runs before every browser action.
+    { IFS= read -r tool; IFS= read -r action; IFS= read -r sid; IFS= read -r cwd; } < <(
+        jq -r '.tool_name // "", .tool_input.action // "", .session_id // "unknown", .cwd // ""' \
+            <<<"$input" 2>/dev/null)
+    [ -n "$tool" ] || exit 0
+    local what
+    if [ "$tool" = "Bash" ]; then
+        opens_page "$(jq -r '.tool_input.command // ""' <<<"$input" 2>/dev/null)" || exit 0
+        what="Browser: open ${URL:-a page}"
+        [ ${#what} -gt 80 ] && what="${what:0:79}…"
+    else
+        reads_only "$tool" "$action" && exit 0
+        what=$(describe "$input")
+    fi
+
+    if wait_for_pause "$sid" "$cwd" "$what"; then exit 0; fi
+    deny "$REASON"
 }
 
 main "$@"

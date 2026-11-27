@@ -140,7 +140,9 @@ function install_hooks() {
     # "running" from the prompt, and PostToolUse clears a question once answered.
     # SessionStart also tells a session in a dock tab about the browser.
     # The screen gate holds an agent about to drive a browser or the mouse
-    # until you pause typing, so its timeout is long.
+    # until you pause typing, so its timeout is long. It also holds a Bash
+    # command that opens a page, and is the BROWSER of Claude's commands, so
+    # a script's own webbrowser.open waits too instead of jumping ahead.
     jq --arg cmd "$cmd" --arg context "$context" --arg gate "$gate" --argjson events "$events_json" '
         def has($name): any(.hooks[]?; (.command // "") | contains($name));
         reduce $events[] as $ev (.;
@@ -157,6 +159,10 @@ function install_hooks() {
             | if any($list[]; has("ghostty-dock-screen-gate")) then $list
               else $list + [{matcher: "mcp__claude-in-chrome__.*|mcp__playwright__.*|mcp__computer-use__.*",
                              hooks: [{type: "command", command: $gate, timeout: 600}]}] end)
+        | .hooks.PreToolUse = (.hooks.PreToolUse as $list
+            | if any($list[]; .matcher == "Bash" and has("ghostty-dock-screen-gate")) then $list
+              else $list + [{matcher: "Bash", hooks: [{type: "command", command: $gate, timeout: 600}]}] end)
+        | .env.BROWSER //= ($gate + " --open %s")
     ' "$SETTINGS" >"$tmp" && jq -e . "$tmp" >/dev/null && mv -f "$tmp" "$SETTINGS" || {
         rm -f "$tmp"
         print_error "could not update $SETTINGS (backup: $backup)"
@@ -331,6 +337,7 @@ function uninstall_all() {
                 .value |= (map(.hooks |= map(select((.command // "") | test("ghostty-dock-(hook|context|screen-gate)") | not)))
                            | map(select(.hooks | length > 0))))
             else . end
+            | if (.env.BROWSER // "") | contains("ghostty-dock-screen-gate") then del(.env.BROWSER) else . end
             | if (.theme // "") | startswith("custom:ghostty-dock-") then .theme |= ltrimstr("custom:ghostty-dock-") else . end
         ' "$SETTINGS" >"$tmp" && mv -f "$tmp" "$SETTINGS"
     fi

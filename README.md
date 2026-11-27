@@ -286,8 +286,12 @@ reports each session's status.
   takes focus, so you can finish what you are typing. **Go Now** lets it go
   at once and **Not Now** tells the agent to carry on without the screen.
   Its next actions within 30 seconds go straight on, and reading a page or
-  taking a screenshot never waits. It is the `ghostty-dock-screen-gate`
-  hook; without the app running it is a notification.
+  a desktop screenshot never waits. A command that opens a page (`open
+  https://…`, `gh … --web`, a script calling Python's `webbrowser.open`) waits
+  the same way, before the page comes up: the gate also checks Bash commands
+  and is the `BROWSER` of Claude's commands. It is the
+  `ghostty-dock-screen-gate` hook; without the app running it is a
+  notification.
 - **Remote Control reconnects by itself** (Settings, App, on by default):
   when a session's Remote Control drops because the server was unreachable
   or the connection kept dropping, Ghostty Dock types `/remote-control` into

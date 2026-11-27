@@ -121,6 +121,43 @@ function main() {
     sleep 1
     check "Go Now lets it through" "$(kill -0 $pid 2>/dev/null && echo waiting || cat "$TMP/out4")" ""
 
+    # Commands: most go straight on; one that opens a page waits like a
+    # browser tool, so the panel comes before the page, not after it.
+    r=$(run_gate 0 "$(hook_json Bash '{"command":"git status --short"}' b1)")
+    check "an ordinary command goes straight on" "$r" "0 "
+    r=$(run_gate 0 "$(hook_json Bash '{"command":"grep -n open foo.py"}' b1)")
+    check "a command that only mentions open goes straight on" "$r" "0 "
+    echo 99 >"$TMP/idle"
+    GHOSTTY_DOCK_STATE="$TMP/state" GHOSTTY_DOCK_TEST_IDLE="$TMP/idle" GHOSTTY_DOCK_SCREEN_QUIET=10 \
+        "$GATE" <<<"$(hook_json Bash '{"command":"cd x && open http://127.0.0.1:8765/#over"}' b2)" >/dev/null &
+    pid=$!
+    sleep 1
+    check "open http://… waits and names the page" \
+        "$(jq -r .what "$TMP/state/screen-wait/b2.json" 2>/dev/null)" "Browser: open http://127.0.0.1:8765/#over"
+    wait $pid
+    r=$(run_gate 99 "$(hook_json Bash '{"command":"python3 -c \"import webbrowser; webbrowser.open(u)\""}' b3)")
+    check "webbrowser.open in a command waits" "${r%% *}" "3"
+
+    # --open, the BROWSER of Claude Code's commands: waits, then opens; the
+    # lease then lets the session's browser tools straight on.
+    local opener="$TMP/opener"
+    printf '#!/bin/sh\necho "$1" >"%s/opened"\n' "$TMP" >"$opener"
+    chmod +x "$opener"
+    echo 99 >"$TMP/idle"
+    local t0=$SECONDS
+    CLAUDE_CODE_SESSION_ID=b4 GHOSTTY_DOCK_TEST_OPENER="$opener" GHOSTTY_DOCK_STATE="$TMP/state" \
+        GHOSTTY_DOCK_TEST_IDLE="$TMP/idle" GHOSTTY_DOCK_SCREEN_QUIET=10 "$GATE" --open %s http://x.test/a
+    check "--open waits for the pause first" "$((SECONDS - t0 >= 3))" "1"
+    check "--open then opens the page (skipping gh's %s)" "$(cat "$TMP/opened" 2>/dev/null)" "http://x.test/a"
+    r=$(run_gate 0 "$(hook_json mcp__claude-in-chrome__navigate '{"url":"http://x.test/a"}' b4)")
+    check "the browser tool after it has the lease" "$r" "0 "
+    rm -f "$TMP/opened"
+    t0=$SECONDS
+    env -u CLAUDE_CODE_SESSION_ID GHOSTTY_DOCK_TEST_OPENER="$opener" GHOSTTY_DOCK_STATE="$TMP/state" \
+        "$GATE" --open http://x.test/b
+    check "--open outside Claude Code opens at once" "$((SECONDS - t0 < 2)):$(cat "$TMP/opened" 2>/dev/null)" \
+        "1:http://x.test/b"
+
     echo "passed: $PASSED, failed: $FAILED"
     [ "$FAILED" -eq 0 ]
 }
