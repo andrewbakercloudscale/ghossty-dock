@@ -59,7 +59,7 @@ function save_patch() {
     # src/Surface.zig: ⌘-click opens links while a program has the mouse.
     # src/apprt/embedded.zig: free_text takes the surface the header says it does.
     # src/config/Config.zig: no progress bar by default (Claude Code's distracted).
-    local only=(macos/Sources src/Surface.zig src/apprt/embedded.zig src/config/Config.zig ':(exclude,glob)**/.omc/**')
+    local only=(macos/Sources src/Surface.zig src/apprt/embedded.zig src/config/Config.zig src/renderer/generic.zig ':(exclude,glob)**/.omc/**')
     git -C "$SRC" add -N -- "${only[@]}" || exit 1
     # Against the release tag, not HEAD: the fork's own commits are part of the patch.
     git -C "$SRC" diff "$GHOSTTY_TAG" -- "${only[@]}" >"$PATCH" || exit 1

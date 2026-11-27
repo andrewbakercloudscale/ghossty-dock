@@ -16420,3 +16420,64 @@ index 278ffd7..6eafb4c 100644
  
  /// Modifies the color used for bold text in the terminal.
  ///
+diff --git a/src/renderer/generic.zig b/src/renderer/generic.zig
+index ff632f6..cce1de4 100644
+--- a/src/renderer/generic.zig
++++ b/src/renderer/generic.zig
+@@ -1062,6 +1062,56 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+                     display_link.stop() catch {};
+                 }
+             }
++
++            // Ghostty Dock: a hidden tab gives back its GPU memory. Each
++            // frame of the swap chain holds a screen-sized target and its
++            // own copy of the font atlases, about 50 MB a tab on a Retina
++            // screen, which 17 tabs made 1 GB on an 8 GB Mac. Nothing is
++            // drawn while hidden (Thread.drawFrame), and the next draw
++            // remakes them at the right size, so they come back on show.
++            if (!visible) self.releaseHidden();
++        }
++
++        fn releaseHidden(self: *Self) void {
++            self.draw_mutex.lock();
++            defer self.draw_mutex.unlock();
++            const sc = &self.swap_chain;
++            if (sc.defunct) return;
++
++            // Wait for frames still on the GPU, as deinit does.
++            for (0..SwapChain.buf_count) |_| sc.frame_sema.wait();
++            defer for (0..SwapChain.buf_count) |_| sc.frame_sema.post();
++
++            for (&sc.frames) |*frame| {
++                if (frame.target.width > 1 or frame.target.height > 1) {
++                    if (self.api.initTarget(1, 1)) |t| {
++                        frame.target.deinit();
++                        frame.target = t;
++                    } else |_| {}
++                }
++                if (frame.grayscale.width > 1) {
++                    if (self.api.initAtlasTexture(&.{
++                        .data = undefined,
++                        .size = 1,
++                        .format = .grayscale,
++                    })) |t| {
++                        frame.grayscale.deinit();
++                        frame.grayscale = t;
++                        frame.grayscale_modified = 0;
++                    } else |_| {}
++                }
++                if (frame.color.width > 1) {
++                    if (self.api.initAtlasTexture(&.{
++                        .data = undefined,
++                        .size = 1,
++                        .format = .bgra,
++                    })) |t| {
++                        frame.color.deinit();
++                        frame.color = t;
++                        frame.color_modified = 0;
++                    } else |_| {}
++                }
++            }
+         }
+ 
+         /// Set the new font grid.

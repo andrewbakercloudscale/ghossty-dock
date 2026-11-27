@@ -172,6 +172,31 @@ time.sleep(2)
 check("K closes the tab and ends the session", os.waitpid(pid, os.WNOHANG)[0] == pid and lst() == "")
 fake.kill()
 
+# Parking: the program ends to free memory and the tab stays; the first key
+# runs the resume command (under the login shell it had), and closing a
+# parked tab ends the holder.
+fake = app(); env["GHOSTTY_DOCK_SURFACE"] = "S7"
+pid, fd = spawn(["new", "--login", "--", "/bin/sh"])
+read(fd, 1)
+os.write(fd, b"sleep 300; echo first-ended\r"); read(fd, 1)
+name = lst().split("\t")[0]
+r = subprocess.run([HOLD, "park", name, "echo resumed-$((40+2))"], env=env)
+out = read(fd, 3)
+check("park answers", r.returncode == 0)
+check("a parked tab stays and says so", b"Parked to free memory" in out and os.waitpid(pid, os.WNOHANG)[0] == 0)
+check("it lists as parked", lst().rstrip("\n").endswith("\tparked"))
+os.write(fd, b"x")
+out = read(fd, 3)
+check("a key resumes it with the command", b"resumed-42" in out)
+check("then the login shell, not the end of the tab", os.waitpid(pid, os.WNOHANG)[0] == 0 and "\t1\t" in lst())
+os.write(fd, b"echo still-here\r")
+check("which takes keys", b"still-here" in read(fd, 2))
+name = lst().split("\t")[0]
+subprocess.run([HOLD, "park", name, "true"], env=env); read(fd, 3)
+os.kill(pid, signal.SIGHUP); time.sleep(1.5)
+check("closing a parked tab ends its holder", lst() == "")
+fake.kill()
+
 stalls = open(st + "/hold-stalls.log").read() if os.path.exists(st + "/hold-stalls.log") else ""
 check("stalls are written down", "not taking output" in stalls and "tab asked" in stalls and "answer: K" in stalls)
 

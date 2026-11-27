@@ -42,12 +42,14 @@
 #include <unistd.h>
 #include <util.h>
 
-#define RING_SIZE (4 * 1024 * 1024)
+// The output kept for a reattach: 4 MB, or 1 MB on a Mac with 8 GB or
+// less, where 20 tabs' worth was 80 MB (see ring_size_for_mac).
+static size_t RING_SIZE = 4 * 1024 * 1024;
 #define MAX_MODES 32
 #define MAX_KITTY 16
 
 enum { PKT_HELLO = 'H', PKT_INPUT = 'I', PKT_WINSIZE = 'W', PKT_INFO = 'Q', PKT_KILL = 'K',
-       PKT_DETACH = 'D', PKT_CLOSE = 'C' };
+       PKT_DETACH = 'D', PKT_CLOSE = 'C', PKT_PARK = 'P' };
 
 static char hold_dir[512];
 static char state_dir[512];
@@ -434,7 +436,7 @@ static int replay(int pty, struct winsize ws) {
                        || oq_add("\x07", 1) < 0)) return -1;
 
     // A program redraws on a size change; a shell would only print its prompt again.
-    pid_t fg = tcgetpgrp(pty);
+    pid_t fg = pty >= 0 ? tcgetpgrp(pty) : 0;
     if (fg > 0 && !shell_only(fg) && ws.ws_col > 2) {
         struct winsize nudge = ws;
         nudge.ws_col--;
@@ -457,15 +459,17 @@ static void on_chld(int sig) { (void)sig; child_exited = 1; }
 
 struct hello { uint16_t rows, cols; int32_t app; };
 
-static void master(const char *name, int listen_fd, int ready_fd, struct winsize ws, int login, char **argv) {
-    hold_name = name;
-    ring = malloc(RING_SIZE);
-    if (!ring) exit(1);
-    int pty;
-    char hold_env[64];
-    snprintf(hold_env, sizeof hold_env, "GHOSTTY_DOCK_HOLD=%s", name);
-    pid_t child = forkpty(&pty, NULL, NULL, &ws);
-    if (child < 0) exit(1);
+static size_t ring_size_for_mac(void) {
+    uint64_t mem = 0;
+    size_t len = sizeof mem;
+    if (sysctlbyname("hw.memsize", &mem, &len, NULL, 0) == 0 && mem && mem <= (8ULL << 30)) return 1024 * 1024;
+    return 4 * 1024 * 1024;
+}
+
+// Starts argv in a new pseudo-terminal: its pid, and the pty in *pty.
+static pid_t spawn(int *pty, struct winsize *ws, int login, char **argv, char *hold_env) {
+    pid_t child = forkpty(pty, NULL, NULL, ws);
+    if (child < 0) return -1;
     if (child == 0) {
         putenv(hold_env);
         // Ghostty sets up its shell integration only for a shell it starts
@@ -493,6 +497,38 @@ static void master(const char *name, int listen_fd, int ready_fd, struct winsize
         fprintf(stderr, "ghostty-dock-hold: %s: %s\n", file, strerror(errno));
         _exit(127);
     }
+    return child;
+}
+
+// Parking: the Dock ends an idle Claude Code session to give its memory
+// back (about 400 MB) and keeps the tab. The tab says it is parked, and
+// the first key resumes it with the command the Dock gave.
+static char park_cmd[4096];
+static char park_shell[512];
+
+// The command that resumes a parked tab: under the login shell it had, so
+// quitting claude afterwards leaves that shell, as before; else as is.
+static void park_argv(char **out, char *buf, size_t n) {
+    if (park_shell[0]) {
+        snprintf(buf, n, "%s; exec %s -l", park_cmd, park_shell);
+        out[0] = park_shell; out[1] = "-l"; out[2] = "-c"; out[3] = buf; out[4] = NULL;
+    } else {
+        snprintf(buf, n, "%s", park_cmd);
+        out[0] = "/bin/sh"; out[1] = "-c"; out[2] = buf; out[3] = NULL;
+    }
+}
+
+static void master(const char *name, int listen_fd, int ready_fd, struct winsize ws, int login, char **argv) {
+    hold_name = name;
+    RING_SIZE = ring_size_for_mac();
+    ring = malloc(RING_SIZE);
+    if (!ring) exit(1);
+    int pty;
+    static char hold_env[64];
+    snprintf(hold_env, sizeof hold_env, "GHOSTTY_DOCK_HOLD=%s", name);
+    if (login) snprintf(park_shell, sizeof park_shell, "%s", argv[0]);
+    pid_t child = spawn(&pty, &ws, login, argv, hold_env);
+    if (child < 0) exit(1);
     signal(SIGCHLD, on_chld);
     signal(SIGPIPE, SIG_IGN);
     signal(SIGHUP, SIG_IGN);
@@ -514,41 +550,68 @@ static void master(const char *name, int listen_fd, int ready_fd, struct winsize
     int lagging = 0;
     char buf[65536];
     int st = -1;
+    // Parking: asked (and when, to make sure), then parked with no program.
+    int parking = 0, parked = 0;
+    time_t park_at = 0;
+    struct winsize cur = ws;
 
     for (;;) {
-        if (child_exited) {
+        if (child_exited && !parked) {
             if (waitpid(child, &st, WNOHANG) == child) {
                 // Drain what it wrote last.
                 ssize_t r;
                 fcntl(pty, F_SETFL, O_NONBLOCK);
-                while ((r = read(pty, buf, sizeof buf)) > 0) if (client >= 0 && !lagging) oq_add(buf, (size_t)r);
-                break;
+                while ((r = read(pty, buf, sizeof buf)) > 0) {
+                    if (parking) keep(buf, (size_t)r);
+                    if (client >= 0 && !lagging) oq_add(buf, (size_t)r);
+                }
+                if (!parking || hung_up) break;
+                // Parked: the tab stays, with no program, until a key.
+                close(pty);
+                pty = -1;
+                child = 0;
+                parking = 0;
+                parked = 1;
+                child_exited = 0;
+                // Modes claude set are put back, so the key arrives plainly.
+                const char *note =
+                    "\x1b[0m\x1b[?25h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[<99u\x1b[>4;0m\x1b>"
+                    "\r\n\x1b[2m-- Parked to free memory while idle. Press any key to resume it. --\x1b[0m\r\n";
+                keep(note, strlen(note));
+                if (client >= 0 && !lagging) { oq_add(note, strlen(note)); oq_flush(client); }
+                log_stall(name, "parked: its program ended to free memory");
+                continue;
             }
             child_exited = 0;
         }
-        if (hung_up && time(NULL) - hup_at > 5) kill(-child, SIGKILL);
+        if (hung_up && time(NULL) - hup_at > 5 && child > 0) kill(-child, SIGKILL);
+        // A session that does not end when asked is made to.
+        if (parking && time(NULL) - park_at > 10 && child > 0) kill(-child, SIGKILL);
+        // Closed or killed while parked: nothing left to wait for.
+        if (parked && hung_up) break;
         if (client >= 0 && stuck_since && !stuck_logged && time(NULL) - stuck_since >= 3) {
             stuck_logged = 1;
             log_stall(name, "tab not taking output for 3s+ (%zu KB waiting)", (oq_len - oq_off) / 1024);
         }
 
-        struct pollfd pf[3] = {{listen_fd, POLLIN, 0}, {pty, POLLIN, 0},
+        struct pollfd pf[3] = {{listen_fd, POLLIN, 0}, {pty, (short)(pty >= 0 ? POLLIN : 0), 0},
                                {client, (short)(POLLIN | (lagging || oq_len > oq_off ? POLLOUT : 0)), 0}};
         int np = client >= 0 ? 3 : 2;
         if (poll(pf, (nfds_t)np, 1000) < 0) { if (errno == EINTR) continue; break; }
 
-        if (pf[1].revents & (POLLIN | POLLHUP | POLLERR)) {
+        if (pty >= 0 && (pf[1].revents & (POLLIN | POLLHUP | POLLERR))) {
             ssize_t r = read(pty, buf, sizeof buf);
             if (r > 0) {
                 keep(buf, (size_t)r);
                 if (client >= 0 && !lagging) {
                     if (oq_add(buf, (size_t)r) < 0) {
                         lagging = 1;
-                        log_stall(name, "tab fell %d MB behind: it is redrawn when it reads again", OQ_MAX >> 20);
+                        log_stall(name, "tab fell %d MB behind: it is redrawn when it reads again", (int)(OQ_MAX >> 20));
                     }
                     else oq_flush(client);
                 }
             } else if (r == 0 || (errno != EINTR && errno != EAGAIN)) {
+                if (parking && !hung_up) { child_exited = 1; continue; }
                 waitpid(child, &st, 0);
                 break;
             }
@@ -561,7 +624,7 @@ static void master(const char *name, int listen_fd, int ready_fd, struct winsize
                 lagging = 0;
                 oq_reset();
                 struct winsize w = {0};
-                ioctl(pty, TIOCGWINSZ, &w);
+                if (pty >= 0) ioctl(pty, TIOCGWINSZ, &w); else w = cur;
                 if (oq_add("\x18\x1b[0m\x1b[H\x1b[2J\x1b[3J", 16) < 0 || replay(pty, w) < 0) lagging = 1;
             }
             oq_flush(client);
@@ -576,12 +639,26 @@ static void master(const char *name, int listen_fd, int ready_fd, struct winsize
                 if (len > 8192) { closed = 1; pend = 0; break; }
                 if (pend < 5 + len) break;
                 char type = pending[0];
-                if (type == PKT_INPUT) write_all(pty, pending + 5, len);
+                if (type == PKT_INPUT && parked) {
+                    // The key that resumes it is not passed on.
+                    char *pa[6], line[4700];
+                    park_argv(pa, line, sizeof line);
+                    pid_t c = spawn(&pty, &cur, 0, pa, hold_env);
+                    if (c > 0) {
+                        child = c;
+                        parked = 0;
+                        const char *go = "\r\n\x1b[2m-- Resuming... --\x1b[0m\r\n";
+                        keep(go, strlen(go));
+                        oq_add(go, strlen(go));
+                        log_stall(name, "resumed after parking");
+                    } else pty = -1;
+                } else if (type == PKT_INPUT) write_all(pty, pending + 5, len);
                 else if (type == PKT_WINSIZE && len >= 4) {
                     struct winsize w = {0};
                     memcpy(&w.ws_row, pending + 5, 2);
                     memcpy(&w.ws_col, pending + 7, 2);
-                    ioctl(pty, TIOCSWINSZ, &w);
+                    cur = w;
+                    if (pty >= 0) ioctl(pty, TIOCSWINSZ, &w);
                 } else if (type == PKT_DETACH || type == PKT_CLOSE) verdict = type;
                 memmove(pending, pending + 5 + len, pend - 5 - len);
                 pend -= 5 + len;
@@ -600,9 +677,9 @@ static void master(const char *name, int listen_fd, int ready_fd, struct winsize
                 int keep_it = verdict == PKT_DETACH ||
                               (verdict == 0 && (!alive(client_app) || app_quitting(client_app)));
                 if (!keep_it && !hung_up) {
-                    pid_t fg = tcgetpgrp(pty);
+                    pid_t fg = pty >= 0 ? tcgetpgrp(pty) : 0;
                     if (fg > 0) kill(-fg, SIGHUP);
-                    kill(-child, SIGHUP);
+                    if (child > 0) kill(-child, SIGHUP);
                     hung_up = 1;
                     hup_at = time(NULL);
                 }
@@ -624,18 +701,31 @@ static void master(const char *name, int listen_fd, int ready_fd, struct winsize
             if (len > sizeof body || read_all(fd, body, len) < 0) { close(fd); continue; }
             if (hdr[0] == PKT_INFO) {
                 char cwd[1100], line[2048];
-                pid_t fg = tcgetpgrp(pty);
-                cwd_of(fg > 0 ? fg : child, cwd, sizeof cwd);
+                pid_t fg = pty >= 0 ? tcgetpgrp(pty) : 0;
+                if (child > 0 || fg > 0) cwd_of(fg > 0 ? fg : child, cwd, sizeof cwd);
+                else cwd[0] = 0;
                 char fgname[PROC_PIDPATHINFO_MAXSIZE] = "";
-                proc_name(fg > 0 ? fg : child, fgname, sizeof fgname);
+                if (parked) snprintf(fgname, sizeof fgname, "parked");
+                else proc_name(fg > 0 ? fg : child, fgname, sizeof fgname);
                 int n = snprintf(line, sizeof line, "%s\t%d\t%d\t%s\t%ld\t%d\t%s\n", name, getpid(), client >= 0,
                                  cwd, (long)created, child, fgname);
                 write_all(fd, line, (size_t)n);
                 close(fd);
             } else if (hdr[0] == PKT_KILL) {
-                kill(-child, SIGHUP);
+                if (child > 0) kill(-child, SIGHUP);
                 hung_up = 1;
                 hup_at = time(NULL);
+                close(fd);
+            } else if (hdr[0] == PKT_PARK && len > 0 && len < sizeof park_cmd && !parked && !parking && !hung_up) {
+                // Ends the program, keeping the tab; the body is the command that resumes it.
+                memcpy(park_cmd, body, len);
+                park_cmd[len] = 0;
+                parking = 1;
+                park_at = time(NULL);
+                pid_t fg = tcgetpgrp(pty);
+                if (fg > 0 && fg != child) kill(-fg, SIGHUP);
+                kill(-child, SIGHUP);
+                write_all(fd, "ok\n", 3);
                 close(fd);
             } else if (hdr[0] == PKT_HELLO && len >= sizeof(struct hello) && !hung_up) {
                 struct hello h;
@@ -651,6 +741,7 @@ static void master(const char *name, int listen_fd, int ready_fd, struct winsize
                 stuck_since = 0;
                 stuck_logged = 0;
                 struct winsize w = {.ws_row = h.rows, .ws_col = h.cols};
+                cur = w;
                 struct timeval none = {0, 0};
                 setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &none, sizeof none);
                 fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
@@ -1178,6 +1269,21 @@ static int query(const char *name, char type, char *out, size_t n) {
 
 
 
+// Parks holder <name>: its program ends and the tab stays, and the next
+// key in it runs <command> (claude --resume <id> ...).
+static int cmd_park(const char *name, const char *command) {
+    size_t len = strlen(command);
+    if (len == 0 || len >= 4000) return 2;
+    int fd = connect_to(name);
+    if (fd < 0) return 1;
+    struct timeval tv = {3, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    char ok[8] = "";
+    int bad = send_pkt(fd, PKT_PARK, command, (uint32_t)len) < 0 || read(fd, ok, sizeof ok - 1) < 2;
+    close(fd);
+    return bad;
+}
+
 // One line per holder: name, holder pid, attached (1/0), folder, started
 // (epoch), program pid, foreground program.
 static int cmd_list(int detached_only, int kill_them) {
@@ -1237,6 +1343,7 @@ static void usage(void) {
           "       ghostty-dock-hold attach <name>\n"
           "       ghostty-dock-hold list [--detached]\n"
           "       ghostty-dock-hold kill <name>\n"
+          "       ghostty-dock-hold park <name> <command>   end it, keep the tab; a key resumes it with <command>\n"
           "       ghostty-dock-hold kill-detached\n",
           stderr);
     exit(2);
@@ -1263,6 +1370,7 @@ int main(int argc, char **argv) {
     }
     if (strcmp(cmd, "list") == 0) return cmd_list(argc > 2 && strcmp(argv[2], "--detached") == 0, 0);
     if (strcmp(cmd, "kill") == 0 && argc == 3) return query(argv[2], PKT_KILL, NULL, 0) < 0;
+    if (strcmp(cmd, "park") == 0 && argc == 4) return cmd_park(argv[2], argv[3]);
     if (strcmp(cmd, "kill-detached") == 0) return cmd_list(1, 1);
     usage();
     return 2;
