@@ -388,6 +388,11 @@ Five tabs: **Sidebar** (with Compaction), **Theme**, **Notifications**,
 | Version / About and Updates… | | The version, and an **Update…** button when GitHub has something newer. |
 | Edit Ghostty Config… | | Fonts, colours and keys live in Ghostty's own config file. |
 
+Unlike stock Ghostty, programs cannot draw a progress bar along the top of
+the window: Claude Code shows one sliding for its whole turn, which
+distracted from the text, and the sidebar already shows which sessions are
+working. Put `progress-style = true` in the Ghostty config to have it back.
+
 The sidebar width is set by dragging its edge, not here. The settings are
 ordinary macOS defaults (`defaults read consulting.cloudscale.ghosttydock`).
 
