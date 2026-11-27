@@ -5307,10 +5307,10 @@ index 0000000..b35bf4a
 +}
 diff --git a/macos/Sources/Features/Dock/DockImages.swift b/macos/Sources/Features/Dock/DockImages.swift
 new file mode 100644
-index 0000000..8a4646f
+index 0000000..74c9c9c
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockImages.swift
-@@ -0,0 +1,360 @@
+@@ -0,0 +1,482 @@
 +import AppKit
 +import SwiftUI
 +
@@ -5325,17 +5325,19 @@ index 0000000..8a4646f
 +        let number: Int         // the N of [Image #N]
 +        let said: String        // the message it came with
 +        let when: Date?
-+        let thumb: NSImage
++        var thumb: NSImage?     // only the strip's last `keep`; More loads the rest from `file`
 +        let file: URL           // full size, for opening
 +
 +        static func == (a: Pasted, b: Pasted) -> Bool { a.id == b.id }
 +    }
 +
-+    /// Newest last, the last `keep` per session.
++    /// Newest last, up to `most` per session; the strip shows the last
++    /// `keep`, and More all of them.
 +    @Published private(set) var images: [String: [Pasted]] = [:]
 +    private var offsets: [String: UInt64] = [:]
 +    private var reading: Set<String> = []
-+    private let keep = 2
++    static let keep = 2
++    private let most = 200
 +    private let queue = DispatchQueue(label: "dock.images", qos: .utility)
 +
 +    /// An image on the clipboard that hasn't been pasted into a session yet.
@@ -5424,11 +5426,14 @@ index 0000000..8a4646f
 +                    data.append(chunk)
 +                    guard let nl = data.lastIndex(of: 0x0A) else { carry = data; continue }
 +                    found += Self.parse(data[data.startIndex...nl], sid: sid)
-+                    if found.count > self.keep { found.removeFirst(found.count - self.keep) }
++                    if found.count > self.most { found.removeFirst(found.count - self.most) }
 +                    end += UInt64(nl - data.startIndex + 1)
 +                    carry = Data(data[(nl + 1)...])
 +                }
 +            }
++            // Thumbnails only for what the strip shows: a few hundred
++            // screenshots in memory would cost 100s of MB.
++            for i in found.indices.suffix(Self.keep) { found[i].thumb = Self.thumbnail(url: found[i].file) }
 +            let fresh = start == 0
 +            DispatchQueue.main.async {
 +                self.reading.remove(sid)
@@ -5440,8 +5445,9 @@ index 0000000..8a4646f
 +                if let c = self.clip, found.contains(where: { ($0.when ?? .distantPast) > c.at }) {
 +                    self.clip = nil
 +                }
-+                var all = (self.images[sid] ?? []) + found
-+                if all.count > self.keep { all.removeFirst(all.count - self.keep) }
++                var all = (fresh ? [] : self.images[sid] ?? []) + found
++                if all.count > self.most { all.removeFirst(all.count - self.most) }
++                for i in all.indices.dropLast(Self.keep) where all[i].thumb != nil { all[i].thumb = nil }
 +                self.images[sid] = all
 +            }
 +        }
@@ -5481,14 +5487,13 @@ index 0000000..8a4646f
 +            for block in content where block["type"] as? String == "image" {
 +                defer { i += 1 }
 +                guard let src = block["source"] as? [String: Any], src["type"] as? String == "base64",
-+                      let b64 = src["data"] as? String, let raw = Data(base64Encoded: b64),
-+                      let thumb = thumbnail(raw) else { continue }
++                      let b64 = src["data"] as? String, let raw = Data(base64Encoded: b64) else { continue }
 +                let n = i < ids.count ? ids[i] : 0
 +                let uuid = (o["uuid"] as? String) ?? UUID().uuidString
 +                let ext = (src["media_type"] as? String)?.split(separator: "/").last.map(String.init) ?? "png"
 +                let file = cache.appendingPathComponent("\(sid.prefix(8))-\(uuid.prefix(8))-\(i).\(ext)")
 +                if !FileManager.default.fileExists(atPath: file.path) { try? raw.write(to: file) }
-+                out.append(Pasted(id: "\(uuid)-\(i)", number: n, said: said, when: when, thumb: thumb, file: file))
++                out.append(Pasted(id: "\(uuid)-\(i)", number: n, said: said, when: when, thumb: nil, file: file))
 +            }
 +        }
 +        return out
@@ -5496,10 +5501,19 @@ index 0000000..8a4646f
 +
 +    /// A small copy, so a screenful of screenshots costs little memory.
 +    private static func thumbnail(_ raw: Data) -> NSImage? {
-+        guard let src = CGImageSourceCreateWithData(raw as CFData, nil),
-+              let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, [
++        guard let src = CGImageSourceCreateWithData(raw as CFData, nil) else { return nil }
++        return thumbnail(src)
++    }
++
++    static func thumbnail(url: URL, size: Int = 480) -> NSImage? {
++        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
++        return thumbnail(src, size: size)
++    }
++
++    private static func thumbnail(_ src: CGImageSource, size: Int = 480) -> NSImage? {
++        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, [
 +                  kCGImageSourceCreateThumbnailFromImageAlways: true,
-+                  kCGImageSourceThumbnailMaxPixelSize: 480,
++                  kCGImageSourceThumbnailMaxPixelSize: size,
 +                  kCGImageSourceCreateThumbnailWithTransform: true,
 +              ] as CFDictionary)
 +        else { return nil }
@@ -5523,17 +5537,19 @@ index 0000000..8a4646f
 +    @ObservedObject private var store = DockImages.shared
 +    @AppStorage("dock.images.open") private var open = true
 +    @AppStorage(DockSettings.showImagesKey) private var enabled = true
++    @State private var showAll = false
 +
 +    private var sid: String? { model.rows.first(where: \.selected)?.sessionId }
 +
 +    var body: some View {
 +        if enabled, let sid {
-+            let shown = Array((store.images[sid] ?? []).reversed())
++            let all = store.images[sid] ?? []
++            let shown = Array(all.suffix(DockImages.keep).reversed())
 +            let clip = store.clip
 +            VStack(spacing: 0) {
 +                if !shown.isEmpty || clip != nil {
 +                    Divider().opacity(0.4)
-+                    bar(count: shown.count + (clip == nil ? 0 : 1))
++                    bar(count: all.count + (clip == nil ? 0 : 1), more: all.count > shown.count ? sid : nil)
 +                    if open {
 +                        // The last two, plus the clipboard, sharing the width.
 +                        HStack(spacing: 6) {
@@ -5559,7 +5575,7 @@ index 0000000..8a4646f
 +    // The whole bar toggles, not just its left: a tap on a full-width
 +    // shape, with a system tooltip that never covers the chevron (the
 +    // drawn tip sat over the right half and the clicks there were lost).
-+    private func bar(count: Int) -> some View {
++    private func bar(count: Int, more sid: String?) -> some View {
 +        HStack(spacing: 6) {
 +            Image(systemName: "photo.on.rectangle").font(.system(size: 11, weight: .semibold))
 +                .foregroundStyle(DockPalette.mauve)
@@ -5570,6 +5586,21 @@ index 0000000..8a4646f
 +                .padding(.horizontal, 6).padding(.vertical, 1)
 +                .background(Capsule().fill(DockPalette.mauve.opacity(0.15)))
 +            Spacer()
++            // Every image pasted into the session, not just the last two.
++            if let sid {
++                Button { showAll = true } label: {
++                    Text("More").font(.system(size: 10.5, weight: .semibold))
++                        .foregroundStyle(DockPalette.mauve)
++                        .padding(.horizontal, 7).padding(.vertical, 2)
++                        .background(Capsule().strokeBorder(DockPalette.mauve.opacity(0.45), lineWidth: 1))
++                        .contentShape(Capsule())
++                }
++                .buttonStyle(.plain)
++                .help("All the images pasted into this session")
++                .popover(isPresented: $showAll, arrowEdge: .trailing) {
++                    DockAllImages(sid: sid) { showAll = false }
++                }
++            }
 +            Image(systemName: open ? "chevron.down" : "chevron.up").font(.system(size: 9, weight: .bold))
 +                .foregroundStyle(DockPalette.mauve)
 +        }
@@ -5582,7 +5613,7 @@ index 0000000..8a4646f
 +
 +    private func tile(_ p: DockImages.Pasted) -> some View {
 +        Button { NSWorkspace.shared.open(p.file) } label: {
-+            Image(nsImage: p.thumb)
++            Image(nsImage: p.thumb ?? NSImage())
 +                .resizable()
 +                // The whole image, not a crop of its middle: a wide
 +                // screenshot filled the tile with a few words of it.
@@ -5604,25 +5635,116 @@ index 0000000..8a4646f
 +                }
 +        }
 +        .buttonStyle(.plain)
-+        .help(tip(p))
-+        .contextMenu {
-+            Button("Open") { NSWorkspace.shared.open(p.file) }
-+            Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([p.file]) }
-+            Button("Copy Image") {
-+                if let img = NSImage(contentsOf: p.file) {
-+                    NSPasteboard.general.clearContents()
-+                    NSPasteboard.general.writeObjects([img])
-+                    store.copied()
-+                }
++        .help(DockImages.tip(p))
++        .contextMenu { DockImages.menu(p) }
++    }
++}
++
++extension DockImages {
++    static func tip(_ p: Pasted) -> String {
++        var parts = [p.number > 0 ? "Image #\(p.number)" : "Image"]
++        if let w = p.when { parts.append(w.formatted(date: .abbreviated, time: .shortened)) }
++        let head = parts.joined(separator: " · ")
++        return p.said.isEmpty ? head : head + "\n" + String(p.said.prefix(160))
++    }
++
++    @ViewBuilder static func menu(_ p: Pasted) -> some View {
++        Button("Open") { NSWorkspace.shared.open(p.file) }
++        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([p.file]) }
++        Button("Copy Image") {
++            if let img = NSImage(contentsOf: p.file) {
++                NSPasteboard.general.clearContents()
++                NSPasteboard.general.writeObjects([img])
++                shared.copied()
 +            }
 +        }
 +    }
++}
 +
-+    private func tip(_ p: DockImages.Pasted) -> String {
-+        var parts = [p.number > 0 ? "Image #\(p.number)" : "Image"]
-+        if let w = p.when { parts.append(w.formatted(date: .omitted, time: .shortened)) }
-+        let head = parts.joined(separator: " · ")
-+        return p.said.isEmpty ? head : head + "\n" + String(p.said.prefix(160))
++/// More: every image pasted into the session, newest first, in a grid.
++/// Thumbnails are made as they scroll into view and kept only while it is
++/// open, so a session with hundreds of screenshots costs nothing until then.
++private struct DockAllImages: View {
++    let sid: String
++    let done: () -> Void
++    @ObservedObject private var store = DockImages.shared
++    @StateObject private var thumbs = DockThumbs()
++
++    var body: some View {
++        let all = Array((store.images[sid] ?? []).reversed())
++        VStack(alignment: .leading, spacing: 8) {
++            HStack {
++                Text("All images").font(.system(size: 13, weight: .semibold))
++                Text("\(all.count)").font(.system(size: 11, weight: .semibold)).monospacedDigit()
++                    .foregroundStyle(DockPalette.mauve)
++                    .padding(.horizontal, 6).padding(.vertical, 1)
++                    .background(Capsule().fill(DockPalette.mauve.opacity(0.15)))
++                Spacer()
++                Text("Newest first. Click one to open it").font(.caption).foregroundStyle(.secondary)
++            }
++            ScrollView {
++                LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 8)], spacing: 8) {
++                    ForEach(all) { p in
++                        Button {
++                            NSWorkspace.shared.open(p.file)
++                            done()
++                        } label: { cell(p) }
++                        .buttonStyle(.plain)
++                        .help(DockImages.tip(p))
++                        .contextMenu { DockImages.menu(p) }
++                    }
++                }
++                .padding(.bottom, 4)
++            }
++        }
++        .padding(12)
++        .frame(width: 460, height: 520)
++    }
++
++    private func cell(_ p: DockImages.Pasted) -> some View {
++        VStack(alignment: .leading, spacing: 3) {
++            ZStack {
++                DockPalette.grey.opacity(0.12)
++                if let img = p.thumb ?? thumbs.images[p.id] {
++                    Image(nsImage: img).resizable().aspectRatio(contentMode: .fit)
++                } else {
++                    ProgressView().controlSize(.small)
++                }
++            }
++            .frame(height: 96)
++            .clipShape(RoundedRectangle(cornerRadius: 5))
++            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(DockPalette.grey.opacity(0.35), lineWidth: 1))
++            .onAppear { if p.thumb == nil { thumbs.load(p) } }
++            HStack(spacing: 4) {
++                if p.number > 0 {
++                    Text("#\(p.number)").font(.system(size: 10, weight: .bold)).monospacedDigit()
++                }
++                if let w = p.when {
++                    Text(w.formatted(date: .omitted, time: .shortened)).font(.system(size: 10))
++                        .foregroundStyle(.secondary)
++                }
++            }
++            if !p.said.isEmpty {
++                Text(p.said).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2)
++            }
++        }
++        .contentShape(Rectangle())
++    }
++}
++
++/// The More grid's thumbnails, made off the main thread, one at a time.
++private final class DockThumbs: ObservableObject {
++    @Published private(set) var images: [String: NSImage] = [:]
++    private var asked: Set<String> = []
++    private let queue = DispatchQueue(label: "dock.images.more", qos: .userInitiated)
++
++    func load(_ p: DockImages.Pasted) {
++        guard asked.insert(p.id).inserted else { return }
++        let id = p.id, file = p.file
++        queue.async { [weak self] in
++            let img = DockImages.thumbnail(url: file, size: 300)
++            DispatchQueue.main.async { if let img { self?.images[id] = img } }
++        }
 +    }
 +}
 +
