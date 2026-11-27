@@ -5307,10 +5307,10 @@ index 0000000..b35bf4a
 +}
 diff --git a/macos/Sources/Features/Dock/DockImages.swift b/macos/Sources/Features/Dock/DockImages.swift
 new file mode 100644
-index 0000000..348d5d3
+index 0000000..8a4646f
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockImages.swift
-@@ -0,0 +1,354 @@
+@@ -0,0 +1,360 @@
 +import AppKit
 +import SwiftUI
 +
@@ -5584,8 +5584,11 @@ index 0000000..348d5d3
 +        Button { NSWorkspace.shared.open(p.file) } label: {
 +            Image(nsImage: p.thumb)
 +                .resizable()
-+                .aspectRatio(contentMode: .fill)
++                // The whole image, not a crop of its middle: a wide
++                // screenshot filled the tile with a few words of it.
++                .aspectRatio(contentMode: .fit)
 +                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
++                .background(DockPalette.grey.opacity(0.12))
 +                .clipped()
 +                .clipShape(RoundedRectangle(cornerRadius: 5))
 +                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(DockPalette.grey.opacity(0.35), lineWidth: 1))
@@ -5633,8 +5636,11 @@ index 0000000..348d5d3
 +        Button { NSWorkspace.shared.open(clip.file) } label: {
 +            Image(nsImage: clip.thumb)
 +                .resizable()
-+                .aspectRatio(contentMode: .fill)
++                // The whole image, not a crop of its middle: a wide
++                // screenshot filled the tile with a few words of it.
++                .aspectRatio(contentMode: .fit)
 +                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
++                .background(DockPalette.grey.opacity(0.12))
 +                .clipped()
 +                .clipShape(RoundedRectangle(cornerRadius: 5))
 +                .overlay(
@@ -8522,10 +8528,10 @@ index 0000000..520fa75
 +}
 diff --git a/macos/Sources/Features/Dock/DockScripts.swift b/macos/Sources/Features/Dock/DockScripts.swift
 new file mode 100644
-index 0000000..bdeee02
+index 0000000..77f5dd7
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockScripts.swift
-@@ -0,0 +1,48 @@
+@@ -0,0 +1,73 @@
 +import Darwin
 +import Foundation
 +
@@ -8553,7 +8559,20 @@ index 0000000..bdeee02
 +    }
 +
 +    static func isClaudeShell(_ command: String) -> Bool {
-+        command.contains("/.claude/shell-snapshots/")
++        has(command, "/.claude/shell-snapshots/")
++    }
++
++    /// `text` contains `needle`, byte for byte: Foundation's contains and
++    /// range(of:) took a third of a second a refresh over screens and
++    /// command lines (2026-11-26 stall samples).
++    static func has(_ text: String, _ needle: String) -> Bool {
++        var text = text, needle = needle
++        return text.withUTF8 { t in
++            needle.withUTF8 { n in
++                guard n.count > 0, t.count >= n.count else { return n.count == 0 }
++                return memmem(t.baseAddress, t.count, n.baseAddress, n.count) != nil
++            }
++        }
 +    }
 +
 +    private static func children(of pid: Int32) -> [Int32] {
@@ -8570,8 +8589,20 @@ index 0000000..bdeee02
 +        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 4 else { return "" }
 +        var buf = [UInt8](repeating: 0, count: size)
 +        guard sysctl(&mib, 3, &buf, &size, nil, 0) == 0 else { return "" }
-+        // argc, then the executable path, then NUL-separated arguments.
-+        return String(decoding: buf[4..<size].map { $0 == 0 ? 0x20 : $0 }, as: UTF8.self)
++        // argc, then the executable path, then NUL-separated arguments,
++        // then the environment: only the arguments, the environment was most
++        // of what was searched.
++        let argc = buf.withUnsafeBytes { $0.load(as: Int32.self) }
++        var i = 4
++        while i < size, buf[i] != 0 { i += 1 }  // the executable path
++        while i < size, buf[i] == 0 { i += 1 }  // its padding
++        let start = i
++        var seen: Int32 = 0
++        while i < size, seen < argc {
++            if buf[i] == 0 { seen += 1 }
++            i += 1
++        }
++        return String(decoding: buf[start..<i].map { $0 == 0 ? 0x20 : $0 }, as: UTF8.self)
 +    }
 +}
 diff --git a/macos/Sources/Features/Dock/DockSearch.swift b/macos/Sources/Features/Dock/DockSearch.swift
@@ -8812,10 +8843,10 @@ index 0000000..764cc07
 +}
 diff --git a/macos/Sources/Features/Dock/DockSessions.swift b/macos/Sources/Features/Dock/DockSessions.swift
 new file mode 100644
-index 0000000..1fc4de4
+index 0000000..bee0c9d
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockSessions.swift
-@@ -0,0 +1,2192 @@
+@@ -0,0 +1,2262 @@
 +import AppKit
 +import Combine
 +import UserNotifications
@@ -9092,9 +9123,18 @@ index 0000000..1fc4de4
 +    private var costLoaded = false
 +    private var costSaved = Date.distantPast
 +    private let costQueue = DispatchQueue(label: "ghostty-dock.cost", qos: .utility)
++    /// For the answered and interrupted checks alone: on `costQueue` they
++    /// waited behind the cost and workspace reads (git in every folder,
++    /// whole transcripts), and an answered question stayed in the sidebar
++    /// for minutes (2026-11-27).
++    private let statusQueue = DispatchQueue(label: "ghostty-dock.status", qos: .userInitiated)
++    private var statusTimer: Timer?
++    private var checkingStatus = false
++    /// The last screens found stopped (checkSpinners), for the checks between.
++    private var quietScreens: Set<String> = []
 +    /// Each busy transcript's last interruption check, by path: its size,
 +    /// modified date and hook time then, and what it found. Only read on
-+    /// `costQueue`; the check reads 64 KB, so not again until one changes.
++    /// `statusQueue`; the check reads 64 KB, so not again until one changes.
 +    private var interruptChecks: [String: (size: UInt64, modified: Date, since: Int, stopped: Bool)] = [:]
 +    /// Subagent files whose meta says finished: they never start again, so
 +    /// are not looked at again. Only read on `costQueue`.
@@ -9119,7 +9159,7 @@ index 0000000..1fc4de4
 +    /// software timed every hook out for two hours), which left a question
 +    /// in the sidebar the window had long answered.
 +    private var answered: Set<String> = []
-+    /// As interruptChecks, for `answered`. Only read on `costQueue`.
++    /// As interruptChecks, for `answered`. Only read on `statusQueue`.
 +    private var answerChecks: [String: (size: UInt64, modified: Date, since: Int, moved: Bool)] = [:]
 +    /// Running sessions by id, with when the hook said busy and how many
 +    /// checks in a row their screen has had no "esc to interrupt": Ctrl+C
@@ -9133,8 +9173,16 @@ index 0000000..1fc4de4
 +    /// Of those, the ones whose screen shows it working again: running.
 +    private var resumed: Set<String> = []
 +    /// The hook's session files as last read, by path, with their change
-+    /// date: refresh, twice a second, decodes only those that changed.
++    /// date: each read decodes only those that changed. On `ioQueue` only.
 +    private var sessionFiles: [String: (changed: Date, session: Session)] = [:]
++    /// The hooks' files and the holders' names, read on `ioQueue`: on the
++    /// main thread an open() that security software held for 30 s froze the
++    /// app, and an answered question stayed in the sidebar (2026-11-27).
++    private let ioQueue = DispatchQueue(label: "ghostty-dock.io", qos: .userInitiated)
++    /// What the last read found, by surface id: refresh builds the rows from it.
++    private var sessionSnapshot: [String: Session] = [:]
++    private var loadingSessions = false
++    private var loadAgain = false
 +
 +    private init() {
 +        seen = (try? JSONDecoder().decode([String: Int].self,
@@ -9184,6 +9232,12 @@ index 0000000..1fc4de4
 +    func start() {
 +        guard timer == nil else { return }
 +        try? FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
++        // The first rows from what is there, as before: once, waiting here.
++        let dir = sessionsDir
++        ioQueue.sync {
++            sessionSnapshot = readSessions(dir)
++            if let names = readHoldNames() { holdNames = names }
++        }
 +        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
 +            self?.refresh()
 +            DockWindowClose.reattachIfWindow()
@@ -9201,6 +9255,8 @@ index 0000000..1fc4de4
 +        costTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in self?.refreshCosts() }
 +        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.refreshCosts() }
 +        agentTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.refreshAgentsRunning() }
++        // Every second, and only reads a transcript that has changed.
++        statusTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.checkStatus() }
 +        remoteTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
 +            self?.refreshRemoteNames()
 +        }
@@ -9635,7 +9691,7 @@ index 0000000..1fc4de4
 +    private var sessionsDir: URL { stateDir.appendingPathComponent("sessions") }
 +
 +    /// What the hook writes; only the fields the sidebar needs.
-+    private struct Session: Decodable {
++    private struct Session: Decodable, Equatable {
 +        var status: String
 +        var since: Int
 +        var name: String
@@ -9683,9 +9739,8 @@ index 0000000..1fc4de4
 +    /// to their transcript in the last 15 minutes, as DockAgents.Agent.live.
 +    private func refreshAgentsRunning() {
 +        let files = rows.compactMap { r in r.sessionId.flatMap { sid in transcript(sid).map { (sid, $0) } } }
-+        let busyFiles = busy.compactMap { sid, since in transcript(sid).map { (sid, $0, since) } }
-+        let waitingFiles = waiting.compactMap { sid, since in transcript(sid).map { (sid, $0, since) } }
-+        let quietScreens = checkSpinners()
++        quietScreens = checkSpinners()
++        checkStatus()
 +        let working = Set(rows.compactMap { row -> String? in
 +            guard let sid = row.sessionId, done.contains(sid),
 +                  let view = row.controller.flatMap({ $0.focusedSurface ?? $0.surfaceTree.first }),
@@ -9698,17 +9753,6 @@ index 0000000..1fc4de4
 +        }
 +        costQueue.async { [weak self] in
 +            guard let self else { return }
-+            let stopped = Set(busyFiles.filter { self.checkInterrupted($0.1, since: $0.2) }.map(\.0))
-+                .union(quietScreens)
-+            self.interruptChecks = self.interruptChecks.filter { path, _ in busyFiles.contains { $0.1.path == path } }
-+            let moved = Set(waitingFiles.filter { self.checkAnswered($0.1, since: $0.2) }.map(\.0))
-+            self.answerChecks = self.answerChecks.filter { path, _ in waitingFiles.contains { $0.1.path == path } }
-+            DispatchQueue.main.async {
-+                guard stopped != self.interrupted || moved != self.answered else { return }
-+                self.interrupted = stopped
-+                self.answered = moved
-+                self.refresh()
-+            }
 +            let fm = FileManager.default
 +            let now = Date()
 +            var running = 0
@@ -9825,7 +9869,7 @@ index 0000000..1fc4de4
 +    static func backgroundWait(_ screen: String) -> (count: Int, kind: String)? {
 +        // Runs for every idle session twice a second: most screens say
 +        // neither, so a plain search first skips splitting the whole screen.
-+        guard screen.range(of: " still running") != nil || screen.range(of: "Waiting for ") != nil
++        guard DockScripts.has(screen, " still running") || DockScripts.has(screen, "Waiting for ")
 +        else { return nil }
 +        let tail = lastLines(screen)
 +        // Newer Claude Code ends a turn with "· 1 shell still running".
@@ -9840,12 +9884,38 @@ index 0000000..1fc4de4
 +        return (n, String(words[4]))
 +    }
 +
++    /// Busy sessions stopped by Esc and waiting ones answered without the
++    /// hook saying so, from their transcripts, on `statusQueue`.
++    private func checkStatus() {
++        guard !checkingStatus, !busy.isEmpty || !waiting.isEmpty || !interrupted.isEmpty || !answered.isEmpty
++        else { return }
++        let busyFiles = busy.compactMap { sid, since in transcript(sid).map { (sid, $0, since) } }
++        let waitingFiles = waiting.compactMap { sid, since in transcript(sid).map { (sid, $0, since) } }
++        let quiet = quietScreens
++        checkingStatus = true
++        statusQueue.async { [weak self] in
++            guard let self else { return }
++            let stopped = Set(busyFiles.filter { self.checkInterrupted($0.1, since: $0.2) }.map(\.0))
++                .union(quiet)
++            self.interruptChecks = self.interruptChecks.filter { path, _ in busyFiles.contains { $0.1.path == path } }
++            let moved = Set(waitingFiles.filter { self.checkAnswered($0.1, since: $0.2) }.map(\.0))
++            self.answerChecks = self.answerChecks.filter { path, _ in waitingFiles.contains { $0.1.path == path } }
++            DispatchQueue.main.async {
++                self.checkingStatus = false
++                guard stopped != self.interrupted || moved != self.answered else { return }
++                self.interrupted = stopped
++                self.answered = moved
++                self.refresh()
++            }
++        }
++    }
++
 +    /// The transcript's last turn is over, after the hook last said busy (a
 +    /// new prompt comes after it): its last entry is the turn's end marker
 +    /// (an API error ends a turn with no Stop hook) or "[Request interrupted
 +    /// by user…]".
 +    /// `wasInterrupted`, read again only once the transcript or the hook's
-+    /// time has changed. On `costQueue` only.
++    /// time has changed. On `statusQueue` only.
 +    private func checkInterrupted(_ url: URL, since: Int) -> Bool {
 +        guard let a = try? FileManager.default.attributesOfItem(atPath: url.path),
 +              let size = (a[.size] as? NSNumber)?.uint64Value,
@@ -9969,10 +10039,35 @@ index 0000000..1fc4de4
 +        }
 +    }
 +
-+    func refresh() {
++    /// Reads the hooks' files and the holders' names on `ioQueue`, one read
++    /// at a time, and builds the rows again when they changed.
++    private func loadSessions() {
++        guard !loadingSessions else { loadAgain = true; return }
++        loadingSessions = true
++        let dir = sessionsDir
++        ioQueue.async { [weak self] in
++            guard let self else { return }
++            let sessions = self.readSessions(dir)
++            let names = self.readHoldNames()
++            DispatchQueue.main.async {
++                self.loadingSessions = false
++                var changed = false
++                if sessions != self.sessionSnapshot { self.sessionSnapshot = sessions; changed = true }
++                if let names, names != self.holdNames { self.holdNames = names; changed = true }
++                if changed { self.refresh() }
++                if self.loadAgain {
++                    self.loadAgain = false
++                    self.loadSessions()
++                }
++            }
++        }
++    }
++
++    /// The hooks' files by surface id. On `ioQueue` only.
++    private func readSessions(_ dir: URL) -> [String: Session] {
 +        var sessions: [String: Session] = [:]
 +        let files = (try? FileManager.default.contentsOfDirectory(
-+            at: sessionsDir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
++            at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
 +        var read: [String: (changed: Date, session: Session)] = [:]
 +        defer { sessionFiles = read }
 +        for url in files where url.lastPathComponent.hasPrefix("srf-") && url.pathExtension == "json" {
@@ -9994,6 +10089,12 @@ index 0000000..1fc4de4
 +            read[url.path] = (changed, s)
 +            sessions[String(url.deletingPathExtension().lastPathComponent.dropFirst(4))] = s
 +        }
++        return sessions
++    }
++
++    func refresh() {
++        loadSessions()
++        let sessions = sessionSnapshot
 +
 +        let now = Int(Date().timeIntervalSince1970)
 +        let appActive = NSApp.isActive
@@ -10008,7 +10109,6 @@ index 0000000..1fc4de4
 +        // left no row selected: the frontmost terminal window stands in.
 +        let anyMain = TerminalController.all.contains { $0.window?.isKeyWindow == true || $0.window?.isMainWindow == true }
 +        let front = anyMain ? nil : NSApp.orderedWindows.first { $0.isVisible && $0.windowController is TerminalController }
-+        refreshHoldNames()
 +        for controller in TerminalController.all {
 +            guard let window = controller.window else { continue }
 +            let id = ObjectIdentifier(controller)
@@ -10314,9 +10414,10 @@ index 0000000..1fc4de4
 +
 +    /// Surface id to holder name, from hold/<name>.surface, which a holder
 +    /// rewrites when a tab attaches to it. Read again when the folder changes.
-+    private func refreshHoldNames() {
++    /// Nil when the folder has not changed since the last read. On `ioQueue` only.
++    private func readHoldNames() -> [String: String]? {
 +        let changed = (try? FileManager.default.attributesOfItem(atPath: Self.holdDir.path))?[.modificationDate] as? Date
-+        guard changed != holdNamesAt || changed == nil else { return }
++        guard changed != holdNamesAt || changed == nil else { return nil }
 +        holdNamesAt = changed
 +        let files = (try? FileManager.default.contentsOfDirectory(at: Self.holdDir, includingPropertiesForKeys: nil)) ?? []
 +        var names: [String: String] = [:]
@@ -10325,7 +10426,7 @@ index 0000000..1fc4de4
 +            let surface = text.trimmingCharacters(in: .whitespacesAndNewlines)
 +            if !surface.isEmpty { names[surface] = f.deletingPathExtension().lastPathComponent }
 +        }
-+        holdNames = names
++        return names
 +    }
 +
 +    private static let selectionFile = FileManager.default.homeDirectoryForCurrentUser
