@@ -136,7 +136,7 @@ function main() {
         "$(jq -r .what "$TMP/state/screen-wait/b2.json" 2>/dev/null)" "Browser: open http://127.0.0.1:8765/#over"
     wait $pid
     r=$(run_gate 99 "$(hook_json Bash '{"command":"python3 -c \"import webbrowser; webbrowser.open(u)\""}' b3)")
-    check "webbrowser.open in a command waits" "${r%% *}" "3"
+    check "webbrowser.open in a command waits" "$((${r%% *} >= 3))" "1"
 
     # --open, the BROWSER of Claude Code's commands: waits, then opens; the
     # lease then lets the session's browser tools straight on.

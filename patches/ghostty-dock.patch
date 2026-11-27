@@ -8381,10 +8381,10 @@ index 0000000..3636924
 +}
 diff --git a/macos/Sources/Features/Dock/DockScreenGate.swift b/macos/Sources/Features/Dock/DockScreenGate.swift
 new file mode 100644
-index 0000000..520fa75
+index 0000000..d6ce617
 --- /dev/null
 +++ b/macos/Sources/Features/Dock/DockScreenGate.swift
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,144 @@
 +import AppKit
 +import SwiftUI
 +
@@ -8509,8 +8509,11 @@ index 0000000..520fa75
 +                    VStack(alignment: .leading, spacing: 2) {
 +                        Text("\(w.name) wants the screen").fontWeight(.semibold)
 +                        Text(w.what).font(.callout).lineLimit(2).fixedSize(horizontal: false, vertical: true)
++                        // While you type the count stays full, which read as stuck:
++                        // say it is waiting for you, and count only once you stop.
 +                        Text(gate.idle >= w.quiet ? "Starting…"
-+                             : "Starts when you stop typing for \(w.quiet)s (\(max(0, w.quiet - gate.idle))s)")
++                             : gate.idle < 1 ? "Waiting while you type: starts \(w.quiet)s after you stop"
++                             : "Starts in \(w.quiet - gate.idle)s unless you type")
 +                            .font(.caption).foregroundStyle(.secondary).monospacedDigit()
 +                        HStack {
 +                            Button("Go Now") { gate.go(w) }
