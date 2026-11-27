@@ -16276,3 +16276,25 @@ index 0d5a4f8..08e5ba3 100644
          ptr.deinit();
      }
  
+diff --git a/src/config/Config.zig b/src/config/Config.zig
+index 278ffd7..6eafb4c 100644
+--- a/src/config/Config.zig
++++ b/src/config/Config.zig
+@@ -3645,10 +3645,13 @@ else
+ /// notifications using certain escape sequences such as OSC 9 or OSC 777.
+ @"desktop-notifications": bool = true,
+ 
+-/// If `true` (default), applications running in the terminal can show
+-/// graphical progress bars using the ConEmu OSC 9;4 escape sequence.
+-/// If `false`, progress bar sequences are silently ignored.
+-@"progress-style": bool = true,
++/// If `true`, applications running in the terminal can show graphical
++/// progress bars using the ConEmu OSC 9;4 escape sequence. If `false`
++/// (default in Ghostty Dock), progress bar sequences are silently ignored:
++/// Claude Code reports "busy" this way for its whole turn, and the bar
++/// sliding along the top of the window distracted from the text. The
++/// sidebar already shows which sessions are working.
++@"progress-style": bool = false,
+ 
+ /// Modifies the color used for bold text in the terminal.
+ ///
